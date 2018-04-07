@@ -136,6 +136,48 @@ static void init_delay_params(SyncClocks *sc, const CPUState *cpu)
 }
 #endif /* CONFIG USER ONLY */
 
+/* preprocess_tip_array : preprocesses the tip array so that truncated addresses contain the fully-qualified address 
+ * parameters : struct tip_address_info *tip_array, int size
+ * returns the modified tip_address_array
+ */
+
+static struct tip_address_info *preprocess_tip_array(struct tip_address_info *tip_array, int size) {
+  int i,j;
+  int chars_to_copy;
+  for(i=1;i<=size;i++) {
+    if(tip_array[i].ip_bytes==4 || tip_array[i].ip_bytes == 2) {   // some other value
+      chars_to_copy=12-strlen(tip_array[i].address);
+      tip_array[i].address=realloc(tip_array[i].address,13);
+      for(j=strlen(tip_array[i].address)-1; j>=0; j--) {
+	tip_array[i].address[j+chars_to_copy] = tip_array[i].address[j];
+      }
+
+      for(j=0;j<chars_to_copy;j++) {
+	tip_array[i].address[j]=tip_array[i-1].address[j];
+      }
+      tip_array[i].address[12]='\0';
+    }
+  }
+  return tip_array;
+}
+
+/* find_newline_and_copy(char *buffer, int pos, int end, char *copy)
+ *  *    - copies characters into copy till a newline
+ *   *    - returns number of characters copied
+ *    */
+
+int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
+  int i = 0;
+  int count = 0;
+  while(buffer[pos+i] != '\n' && pos+i <= end) {
+    copy[i] = buffer[pos+i];
+    count++;
+    i++;
+  }
+  if(pos+i > end) return -1;
+  copy[i] = '\0'; return count;
+}
+
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
 static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 {
