@@ -36,6 +36,10 @@
 #endif
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
+#include "index_array_header.h"
+/* added header files to handle gzlib files */
+#include <zlib.h>
+#include <errno.h>
 
 /* -icount align implementation. */
 
@@ -54,6 +58,8 @@ typedef struct SyncClocks {
 #define THRESHOLD_REDUCE 1.5
 #define MAX_DELAY_PRINT_RATE 2000000000LL
 #define MAX_NB_PRINTS 100
+
+#define LENGTH  0x1000
 
 static void align_clocks(SyncClocks *sc, const CPUState *cpu)
 {
@@ -136,10 +142,8 @@ static void init_delay_params(SyncClocks *sc, const CPUState *cpu)
 }
 #endif /* CONFIG USER ONLY */
 
-/* preprocess_tip_array : preprocesses the tip array so that truncated addresses contain the fully-qualified address 
- * parameters : struct tip_address_info *tip_array, int size
- * returns the modified tip_address_array
- */
+
+/* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
 static struct tip_address_info *preprocess_tip_array(struct tip_address_info *tip_array, int size) {
   int i,j;
@@ -149,11 +153,11 @@ static struct tip_address_info *preprocess_tip_array(struct tip_address_info *ti
       chars_to_copy=12-strlen(tip_array[i].address);
       tip_array[i].address=realloc(tip_array[i].address,13);
       for(j=strlen(tip_array[i].address)-1; j>=0; j--) {
-	tip_array[i].address[j+chars_to_copy] = tip_array[i].address[j];
+        tip_array[i].address[j+chars_to_copy] = tip_array[i].address[j];
       }
 
       for(j=0;j<chars_to_copy;j++) {
-	tip_array[i].address[j]=tip_array[i-1].address[j];
+        tip_array[i].address[j]=tip_array[i-1].address[j];
       }
       tip_array[i].address[12]='\0';
     }
@@ -161,10 +165,10 @@ static struct tip_address_info *preprocess_tip_array(struct tip_address_info *ti
   return tip_array;
 }
 
-/* find_newline_and_copy(char *buffer, int pos, int end, char *copy)
- *  *    - copies characters into copy till a newline
- *   *    - returns number of characters copied
- *    */
+/* find_newline_and_copy(char *buffer, int pos, int end, char *copy) 
+ *    - copies characters into copy till a newline
+ *    - returns number of characters copied
+ */
 
 int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
   int i = 0;
@@ -178,10 +182,145 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
   copy[i] = '\0'; return count;
 }
 
+
+/* get_array_of_tnt_bits()
+ *  parameters : one : array of struct tip_address_info
+ *  returns : the array containing the TNT bits
+ *  use the gzlib standard library
+ */
+
+char *get_array_of_tnt_bits(struct tip_address_info *tip_addresses) { 
+  char *pch;
+  char *pch_pip;
+  gzFile file;
+
+  int is_ignore_tip = 0;
+  unsigned long long k, prev_count;
+  unsigned long long j;
+
+  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
+
+  char *tnt_array = malloc(1);
+  tnt_array[0] = 'P';
+
+  file = gzopen(filename, "r");
+  unsigned long long count = 1;
+  int remainder = 0;
+
+  unsigned long long count_tip = 1;
+  tip_addresses = malloc(1 * sizeof(struct tip_address_info));   // tip_addresses is !global
+
+  tip_addresses[0].address = '\0';   // equivalent to NULL strings
+  tip_addresses[0].is_useful=0;
+  tip_addresses[0].ip_bytes=-1;
+
+  if(!file) {
+    fprintf(stderr, "gzopen of %s failed.\n", filename);
+    exit(EXIT_FAILURE);
+  }
+
+  while(1) {
+    int err;
+    int bytes_read;
+    int start=0,pos=0;
+    char buffer[LENGTH];
+    char copy[100];
+    bytes_read =gzread(file,buffer,LENGTH-1);
+    buffer[bytes_read]='\0';
+
+    while(1) {
+      pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
+      if(pos == -1) {
+        remainder = bytes_read-start;
+        break;
+      }
+      else {
+        remainder = 0;
+        if(strncmp(copy, "TNT", 3) == 0) {
+          if(is_ignore_tip == 1) {
+	    is_ignore_tip = 0;
+	  }
+	  pch = strchr(copy, '(');
+	  prev_count = count;
+	  count += ((*++pch) - '0');
+	  tnt_array = realloc(tnt_array, count);
+	  for(j=prev_count,k=0; j<count; j++, k++) {
+	    tnt_array[j]=copy[4+k];
+	  }
+        }
+        else if(strncmp(copy, "PIP", 3) == 0) {
+          pch_pip = strchr(copy, '=');
+	  if((*++pch_pip - '0') == 1) {
+
+	    is_ignore_tip = 1;
+	  }
+        }
+        else {
+          if(strncmp(copy, "TIP", 3) == 0) {
+	    if(is_ignore_tip == 0) {
+	      tnt_array = realloc(tnt_array, count+1);
+	      tnt_array[count] = 'P';
+	      count++;
+	      // enter TIP addresses into global tip_address_array //
+	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	      tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+	      strncpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	      tip_addresses[count_tip].is_useful=1;
+	      /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
+	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	      count_tip++;
+	    }
+	    else {
+	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	      tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+	      strncpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	      tip_addresses[count_tip].is_useful=0;
+	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	      count_tip++;
+
+	      is_ignore_tip=0;
+	    }
+	  }
+      
+        }
+        start += pos+1;
+      }
+    }
+    if(bytes_read<LENGTH-1) {
+      tnt_array[count]='\0';
+      tip_addresses[count_tip].address='\0';
+      tip_addresses[count_tip].is_useful=0;
+      tip_addresses[count_tip].ip_bytes=-1;
+      if(gzeof(file)) break;
+      else {
+        const char *error_string;
+        error_string=gzerror(file,&err);
+        printf("error_string : %s\n", error_string);
+        if(err) {
+          exit(EXIT_FAILURE);
+        }
+      }
+    }
+  }
+ 
+
+ // preprocess the tip addresses //
+  tip_addresses = preprocess_tip_array(tip_addresses, count_tip);
+
+  printf("final count : %llu\n", count);
+  gzclose(file);
+  return tnt_array;
+}
+
+
+
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
 static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 {
-    CPUArchState *env = cpu->env_ptr;
+
+    	CPUArchState *env = cpu->env_ptr;
     uintptr_t ret;
     TranslationBlock *last_tb;
     int tb_exit;
