@@ -26,6 +26,8 @@
 #include "sysemu/qtest.h"
 #include "qemu/timer.h"
 #include "exec/address-spaces.h"
+#include "exec/cpu_ldst.h"    // for cpu_ldl_kernel functions
+
 #include "qemu/rcu.h"
 #include "exec/tb-hash.h"
 #include "exec/tb-lookup.h"
@@ -40,6 +42,46 @@
 /* added header files to handle gzlib files */
 #include <zlib.h>
 #include <errno.h>
+
+#ifdef CONFIG_USER_ONLY
+#define MEMSUFFIX _kernel
+#define DATA_SIZE 1
+#include "exec/cpu_ldst_useronly_template.h"
+
+#define DATA_SIZE 2
+#include "exec/cpu_ldst_useronly_template.h"
+
+#define DATA_SIZE 4
+#include "exec/cpu_ldst_template.h"
+
+#define DATA_SIZE 8
+#include "exec/cpu_ldst_template.h"
+#undef MEMSUFFIX
+#else
+#define CPU_MMU_INDEX (cpu_mmu_index_kernel(env))
+#define MEMSUFFIX _kernel
+#define DATA_SIZE 1
+#include "exec/cpu_ldst_template.h"
+
+#define DATA_SIZE 2
+#include "exec/cpu_ldst_template.h"
+
+#define DATA_SIZE 4
+#include "exec/cpu_ldst_template.h"
+
+#define DATA_SIZE 8
+#include "exec/cpu_ldst_template.h"
+#undef CPU_MMU_INDEX
+#undef MEMSUFFIX
+#endif
+
+/* definition of tb_insn_array */
+
+unsigned long *tb_insn_array = NULL;
+
+int stopped_execution_of_tb_chain = 0;
+
+struct hash_buckets *interrupt_hash_table = NULL;
 
 /* -icount align implementation. */
 
@@ -60,6 +102,9 @@ typedef struct SyncClocks {
 #define MAX_NB_PRINTS 100
 
 #define LENGTH  0x1000
+
+struct tip_address_info *tip_addresses = NULL;    // definition here
+char **pip_cr3_values = NULL;
 
 static void align_clocks(SyncClocks *sc, const CPUState *cpu)
 {
@@ -145,24 +190,89 @@ static void init_delay_params(SyncClocks *sc, const CPUState *cpu)
 
 /* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
-static struct tip_address_info *preprocess_tip_array(struct tip_address_info *tip_array, int size) {
+static void preprocess_tip_array(int size) {
   int i,j;
   int chars_to_copy;
+  int short_length;
   for(i=1;i<=size;i++) {
-    if(tip_array[i].ip_bytes==4 || tip_array[i].ip_bytes == 2) {   // some other value
-      chars_to_copy=12-strlen(tip_array[i].address);
-      tip_array[i].address=realloc(tip_array[i].address,13);
-      for(j=strlen(tip_array[i].address)-1; j>=0; j--) {
-        tip_array[i].address[j+chars_to_copy] = tip_array[i].address[j];
+    if(tip_addresses[i].ip_bytes==4) {   // some other value
+      //chars_to_copy=12-strlen(tip_addresses[i].address);
+      chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
+      if(chars_to_copy < 0) {
+        chars_to_copy=0;
+      }
+    
+      //short_length=8-strlen(tip_addresses[i].address);
+      tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+
+      
+      for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
+        tip_addresses[i].address[j+chars_to_copy]=tip_addresses[i].address[j];
       }
 
       for(j=0;j<chars_to_copy;j++) {
-        tip_array[i].address[j]=tip_array[i-1].address[j];
+        tip_addresses[i].address[j]=tip_addresses[i-1].address[j];
       }
-      tip_array[i].address[12]='\0';
+      tip_addresses[i].address[12]='\0';
+    }
+    else if(tip_addresses[i].ip_bytes==2) {
+      if(strlen(tip_addresses[i-1].address)==6) {
+	if(strlen(tip_addresses[i].address) < 4) {
+	  short_length = 4-strlen(tip_addresses[i].address);
+	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address)-short_length;
+	  if(chars_to_copy<0) {
+	    chars_to_copy=0;
+	  }
+	}
+	else if(strlen(tip_addresses[i].address)==4) {
+	  short_length=0;
+	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
+	  if(chars_to_copy<0) {
+	    chars_to_copy=0;
+	  }
+	}
+      }
+      else {
+        if(strlen(tip_addresses[i].address) < 4) {
+	  short_length = 4-strlen(tip_addresses[i].address);
+	  chars_to_copy = strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address)-short_length;
+	  if(chars_to_copy<0) {
+	    chars_to_copy=0;
+	  }
+	}
+	else if(strlen(tip_addresses[i].address)==4) {
+	  short_length = 0;
+	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
+          if(chars_to_copy<0) {
+	    chars_to_copy=0;
+	  }	  
+	}
+      }  
+    
+
+      tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+      /*
+      if(short_length) {
+        for(j=0;j<short_length;j++) {
+          tip_addresses[i].address[chars_to_copy+j] = '0';
+        }
+      }*/
+
+      for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
+        tip_addresses[i].address[j+chars_to_copy+short_length]=tip_addresses[i].address[j];
+      }
+
+      for(j=0;j<chars_to_copy;j++) {
+        tip_addresses[i].address[j]=tip_addresses[i-1].address[j];
+      }
+      if(short_length) {
+        for(j=0;j<short_length;j++) {
+	  tip_addresses[i].address[chars_to_copy+j]='0';
+	}
+      }
+      tip_addresses[i].address[12]='\0';
     }
   }
-  return tip_array;
 }
 
 /* find_newline_and_copy(char *buffer, int pos, int end, char *copy) 
@@ -184,35 +294,38 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
 
 
 /* get_array_of_tnt_bits()
- *  parameters : one : array of struct tip_address_info
+ *  parameters : none
  *  returns : the array containing the TNT bits
  *  use the gzlib standard library
+ *  formation of tip_addresses as a global array of structs
  */
 
-char *get_array_of_tnt_bits(struct tip_address_info *tip_addresses) { 
+char *get_array_of_tnt_bits(void) { 
   char *pch;
   char *pch_pip;
   gzFile file;
+  int len;
 
   int is_ignore_tip = 0;
+  int is_ignore_pip = 0;
   unsigned long long k, prev_count;
   unsigned long long j;
 
-  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
+  //const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
 
+  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_18_apr.txt.gz";   // new test
   char *tnt_array = malloc(1);
-  tnt_array[0] = 'P';
+
+  //tnt_array[0] = 'P';
 
   file = gzopen(filename, "r");
-  unsigned long long count = 1;
+  unsigned long long count = 0;
   int remainder = 0;
 
-  unsigned long long count_tip = 1;
-  tip_addresses = malloc(1 * sizeof(struct tip_address_info));   // tip_addresses is !global
+  unsigned long long count_tip = 0;
+  unsigned int count_pip=0;
 
-  tip_addresses[0].address = '\0';   // equivalent to NULL strings
-  tip_addresses[0].is_useful=0;
-  tip_addresses[0].ip_bytes=-1;
+  tip_addresses = malloc(1 * sizeof(struct tip_address_info));   // tip_addresses is global
 
   if(!file) {
     fprintf(stderr, "gzopen of %s failed.\n", filename);
@@ -250,9 +363,38 @@ char *get_array_of_tnt_bits(struct tip_address_info *tip_addresses) {
         }
         else if(strncmp(copy, "PIP", 3) == 0) {
           pch_pip = strchr(copy, '=');
-	  if((*++pch_pip - '0') == 1) {
-
-	    is_ignore_tip = 1;
+	  if((*++pch_pip - '0') == 0) {
+	    // the next PIP bit should be (NR = 1) - you need to ignore those PIP bits
+	    // only stray PIP (NR=1) packets should be considered and stored
+	    // these stray PIP packets indicate context switch events 
+	    is_ignore_pip = 1;
+	  }
+	  else {
+            is_ignore_tip = 1;
+	    if(is_ignore_pip == 1) {
+	      is_ignore_pip = 0;
+	    }
+	    else {
+	      // if is_ignore_pip == 0, this means you will have to store this PIP(NR=1) 
+	      // packet - this is a context switch within the guest not
+	      // a context switch between the guest and the host
+	      if(count != 0) {
+	        tnt_array = realloc(tnt_array, count+1); 
+	        tnt_array[count] = 'K';   // K indicates PIP
+	        int pos1,i;
+	        pos1 = strchr(copy,')') - copy + 1;
+	        pip_cr3_values = realloc(pip_cr3_values, (count_pip+1)*sizeof(char *));   
+                len = strlen(copy)-pos1-1;
+	        pip_cr3_values[count_pip] = malloc(sizeof(char) * len);
+		for(i=0;i<len;i++) {
+	          pip_cr3_values[count_pip][i] = copy[pos1+1+i];
+		}
+	        pip_cr3_values[count_pip][len] = '\0';
+		//printf("pip_cr3_values[%d]: %s\n", count_pip, pip_cr3_values[count_pip]);
+	        count_pip++;
+	        count++;
+	      }
+	    }
 	  }
         }
         else {
@@ -307,9 +449,10 @@ char *get_array_of_tnt_bits(struct tip_address_info *tip_addresses) {
  
 
  // preprocess the tip addresses //
-  tip_addresses = preprocess_tip_array(tip_addresses, count_tip);
+  preprocess_tip_array(count_tip);
 
   printf("final count : %llu\n", count);
+  
   gzclose(file);
   return tnt_array;
 }
@@ -358,6 +501,13 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
          * counter hit zero); we must restore the guest PC to the address
          * of the start of the TB.
          */
+	/* Change by Arnab : stopped execution of tb chain is a global 
+	 * variable - this indicates if the exception that occurs later           
+	 * occurred as a result of cpu->exit_request becoming 1  
+	 */
+	stopped_execution_of_tb_chain = 1;
+        printf("stopped_execution_of_tb_chain is 1\n");
+
         CPUClass *cc = CPU_GET_CLASS(cpu);
         qemu_log_mask_and_addr(CPU_LOG_EXEC, last_tb->pc,
                                "Stopped execution of TB chain before %p ["
@@ -557,10 +707,182 @@ static inline void tb_add_jump(TranslationBlock *tb, int n,
     tb_next->jmp_list_first = (uintptr_t)tb | n;
 }
 
+
+/* this function determines if there is a conflict in the hash table 
+ * returns : true if there is a conflict, false otherwise
+ * parameters : integer index of the hash table
+ */
+
+static int is_hash_table_conflict(int index) {
+  if(interrupt_hash_table[index].interrupt_handler_address != NULL) { 
+    //printf("there are conflicts\n");
+    return 1;
+  }
+  else {
+    //printf("there are no conflicts\n");
+    return 0;
+  }
+}
+
+static int compute_hash(char *interrupt_handler_pointer) {
+  if(strlen(interrupt_handler_pointer) < 12) {
+    printf("handler address may be wrong\n");
+    return -1;
+  }
+  int length=strlen(interrupt_handler_pointer);
+  int hash;
+  char *p = malloc(5 * sizeof(char));
+  int i;
+  for(i=0; i<4; i++) {
+    p[i] = interrupt_handler_pointer[length-4+i];  // last 4 characters only needed
+  }
+  p[4] = '\0';
+  hash = (((p[0]-'0')+(p[1]-'0')+(p[2]-'0')+(p[3]-'0')) % 256);
+  //printf("hash : %d\n", hash);
+  return hash;
+}
+
+/* this function fills up the interrupt hash tables
+ * parameters : none
+ * returns : void
+ */
+
+static void fill_interrupt_hash_table(CPUX86State *env) {
+  /* 256 interrupt handlers in linux */
+  uint32_t e1, e2, e3;
+  SegmentCache *dt;
+  target_ulong ptr;
+  target_ulong offset;
+  interrupt_hash_table = malloc(256 * sizeof(struct hash_buckets));
+  memset(interrupt_hash_table, 0, 256 * sizeof(struct hash_buckets));
+  int index, is_conflict;
+
+  char *buffer = malloc(16 * sizeof(char));
+  int intno;
+  dt = &env->idt;
+  for(intno=0; intno < 256; intno++) {
+    printf("intno : %d\n", intno);
+    ptr = dt->base + intno*16;
+    e1 = cpu_ldl_kernel(env, ptr);
+    e2 = cpu_ldl_kernel(env, ptr+4);
+    e3 = cpu_ldl_kernel(env, ptr+8);
+    offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
+    sprintf(buffer, "%lx", offset);   // convert into string
+    
+    //printf("buffer : %s\n", buffer);
+    index = compute_hash(buffer);
+    // determine if there is a conflict
+    is_conflict = is_hash_table_conflict(index);
+    if(is_conflict) {
+      // there is a conflict
+      struct hash_buckets *hb = interrupt_hash_table[index].pointer;
+      struct hash_buckets *prev = NULL;
+      while(hb != NULL) {
+	prev = hb;
+        hb = hb->pointer;
+      }
+      hb = malloc(sizeof(struct hash_buckets *));
+      hb->interrupt_number = intno;
+      hb->interrupt_handler_address = malloc(17 * sizeof(char));
+      strncpy(hb->interrupt_handler_address, buffer, strlen(buffer));
+      hb->interrupt_handler_address[strlen(buffer)] = '\0';
+      hb->pointer = NULL;
+      if(prev == NULL) {
+        interrupt_hash_table[index].pointer = hb;
+      }
+      else {
+        prev->pointer = hb;   // update pointer
+      }
+    }
+    else {
+      interrupt_hash_table[index].interrupt_number=intno;
+      interrupt_hash_table[index].interrupt_handler_address = malloc(17 * sizeof(char));  // length is 16
+      strncpy(interrupt_hash_table[index].interrupt_handler_address, buffer, strlen(buffer));
+      interrupt_hash_table[index].interrupt_handler_address[strlen(buffer)] = '\0';
+      interrupt_hash_table[index].pointer = NULL;
+    }
+  }
+}
+
+
+/* this function returns the interrupt vector number
+ * from the interrupt hash table - 
+ * parameters : interrupt_handler_pointer in string format
+ */
+
+static int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
+    int hash_index = compute_hash(interrupt_handler_pointer);
+    int diff;
+    char *address;
+    if(interrupt_hash_table[hash_index].interrupt_handler_address == NULL) {
+      printf("Cannot find the interrupt in the hash table... return\n");
+      return -1;
+    }
+    struct hash_buckets hb = interrupt_hash_table[hash_index];
+    if(strlen(interrupt_handler_pointer) == 12) {  // either length is 12 or 16
+      diff=strlen(hb.interrupt_handler_address) - strlen(interrupt_handler_pointer);
+      printf("diff : %d\n", diff);
+
+      address = &(hb.interrupt_handler_address[diff]);
+      printf("%s\n", address);
+
+      if(strncmp(interrupt_handler_pointer, address, strlen(interrupt_handler_pointer)) == 0) {
+        return hb.interrupt_number;
+      }
+      // if they do not match - then you have to traverse the linked list
+      else {
+	struct hash_buckets *hb = interrupt_hash_table[hash_index].pointer;
+        while(hb != NULL) {
+          diff = strlen(hb->interrupt_handler_address) - strlen(interrupt_handler_pointer);
+          address = &(hb->interrupt_handler_address[diff]);
+	  printf("address : %s\n", address);
+          if(strncmp(interrupt_handler_pointer, address, strlen(interrupt_handler_pointer)) == 0){
+	    return hb->interrupt_number;
+	  }
+	  hb = hb->pointer;
+	}
+      }
+    }
+    else {
+      if(strncmp(interrupt_handler_pointer, hb.interrupt_handler_address, strlen(interrupt_handler_pointer)) == 0) {
+        return hb.interrupt_number;
+      }
+      else {
+        struct hash_buckets *hb = interrupt_hash_table[hash_index].pointer;
+	while(hb != NULL) {
+	  if(strncmp(interrupt_handler_pointer, hb->interrupt_handler_address, strlen(interrupt_handler_pointer)) == 0) {
+	    return hb->interrupt_number;
+	  }
+	  hb = hb->pointer;
+	}
+      }
+    }
+  
+   return -1;   
+}
+
 static inline TranslationBlock *tb_find(CPUState *cpu,
                                         TranslationBlock *last_tb,
                                         int tb_exit, uint32_t cf_mask)
 {
+
+    /* if you are about to access kernel space from user space please get ready */
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+
+
+    if(is_handle_interrupt_in_userspace) {
+        /* this indicates that execution has unexpectedly entered the kernel space */
+      printf("interrupt handler address reported by TIP : 0x%s\n", tip_addresses[index_tip_address-1].address);
+      if(interrupt_hash_table == NULL) {
+        fill_interrupt_hash_table(env);
+      }
+      int intno;
+      intno = get_interrupt_number_from_hashtable(tip_addresses[index_tip_address-1].address);
+      printf("intno : %d\n", intno);
+      do_userspace_interrupt(env, intno /* fixed at this point */, 0, 0, do_strtoul(tip_addresses[index_tip_address-2].address), 1);	      
+    }
+
     TranslationBlock *tb;
     target_ulong cs_base, pc;
     uint32_t flags;
@@ -579,7 +901,8 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
         /* There's a chance that our desired tb has been translated while
          * taking the locks so we check again inside the lock.
          */
-        tb = tb_htable_lookup(cpu, pc, cs_base, flags, cf_mask);
+	/* disable code cache usage here */
+        //tb = tb_htable_lookup(cpu, pc, cs_base, flags, cf_mask);
         if (likely(tb == NULL)) {
             /* if no translated code available, then translate it now */
             tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);
@@ -668,6 +991,19 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
 
     if (cpu->exception_index >= EXCP_INTERRUPT) {
         /* exit request from the cpu execution loop */
+	/* Change by Arnab : account for cases 
+	 * in the user-space when the cpu->exit_request 
+	 * becomes 1 suddenly in the middle of TB */
+	if(index_array != 0) {
+	  X86CPU *x86_cpu = X86_CPU(cpu);
+	  CPUX86State *env = &x86_cpu->env;
+	  int cpl = env->hflags & HF_CPL_MASK;
+	  if(cpl > 0 && stopped_execution_of_tb_chain) {
+	    index_array = index_array - 1;
+	    printf("stopped_execution_of_tb_chain is 0\n");
+	    stopped_execution_of_tb_chain = 0;
+	  }
+	} 
         *ret = cpu->exception_index;
         if (*ret == EXCP_DEBUG) {
             cpu_handle_debug_exception(cpu);
@@ -765,7 +1101,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
            and via longjmp via cpu_loop_exit.  */
         else {
             if (cc->cpu_exec_interrupt(cpu, interrupt_request)) {
-                replay_interrupt();
+                //replay_interrupt();
                 cpu->exception_index = -1;
                 *last_tb = NULL;
             }
@@ -891,6 +1227,9 @@ int cpu_exec(CPUState *cpu)
             qemu_mutex_unlock_iothread();
         }
     }
+    if(tnt_array == NULL) {
+      printf("tnt_array is empty\n");
+    }
 
     /* if an exception is pending, we execute it here */
     while (!cpu_handle_exception(cpu, &ret)) {
@@ -911,6 +1250,12 @@ int cpu_exec(CPUState *cpu)
             } else {
                 cpu->cflags_next_tb = -1;
             }
+
+	    if(tb_insn_array != NULL) {
+	      tb_insn_array = NULL;
+	      free(tb_insn_array);
+	      size_of_tb_insn_array=0;
+	    }
 
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
