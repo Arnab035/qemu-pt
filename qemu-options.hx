@@ -147,6 +147,8 @@ no incompatible TCG features have been enabled (e.g. icount/replay).
 @end table
 ETEXI
 
+
+
 DEF("smp", HAS_ARG, QEMU_OPTION_smp,
     "-smp [cpus=]n[,maxcpus=cpus][,cores=cores][,threads=threads][,sockets=sockets]\n"
     "                set the number of CPUs to 'n' [default=1]\n"
@@ -3539,6 +3541,20 @@ Enable @option{driftfix} (i386 targets only) if you experience time drift proble
 specifically with Windows' ACPI HAL. This option will try to figure out how
 many timer interrupts were not processed by the Windows guest and will
 re-inject them.
+ETEXI
+
+DEF("arnab_replay", HAS_ARG, QEMU_OPTION_rr, \
+    "-arnab_replay [mode=record|replay,file=<filename>]\n"
+    "		     configure a new replay mode without using the -icount feature\n"
+    "		     mode corresponds to the mode of record-replay\n", QEMU_ARCH_ALL)
+
+STEXI
+@item -arnab_replay [mode=record|replay][,rrfile=@var{filename}]
+@findex -arnab_replay
+Sets record/replay mode without the use of -icount feature. This is a minimal record-replay
+feature that we are using. We only record NETWORK, DISK and VMENTRY events into file @var{filename}. 
+Later we replay these events using @var{mode}=REPLAY. The configuration of the record-replay mechanism 
+will mostly follow the same process as the original record-replay with icount.
 ETEXI
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \

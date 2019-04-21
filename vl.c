@@ -108,6 +108,7 @@ int main(int argc, char **argv)
 #include "sysemu/qtest.h"
 
 #include "disas/disas.h"
+#include "index_array_header.h"
 
 
 #include "slirp/libslirp.h"
@@ -185,6 +186,8 @@ bool boot_strict;
 uint8_t *boot_splash_filedata;
 size_t boot_splash_filedata_size;
 uint8_t qemu_extra_params_fw[2];
+
+bool start_recording = false;
 
 int icount_align_option;
 
@@ -481,6 +484,22 @@ static QemuOptsList qemu_mem_opts = {
             .type = QEMU_OPT_SIZE,
         },
         { /* end of list */ }
+    },
+};
+
+static QemuOptsList qemu_arnab_record_replay_opts = {
+    .name = "arnab_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	},
+        { /* end of list */}
     },
 };
 
@@ -1853,7 +1872,8 @@ void qemu_system_killed(int signal, pid_t pid)
 void qemu_system_shutdown_request(ShutdownCause reason)
 {
     trace_qemu_system_shutdown_request(reason);
-    replay_shutdown_request(reason);
+    //replay_shutdown_request(reason);
+    arnab_replay_shutdown_request(reason);  /* no shutdown reason necessary */
     shutdown_requested = reason;
     qemu_notify_event();
 }
@@ -3028,6 +3048,7 @@ int main(int argc, char **argv, char **envp)
     DisplayState *ds;
     QemuOpts *opts, *machine_opts;
     QemuOpts *icount_opts = NULL, *accel_opts = NULL;
+    QemuOpts *arnab_record_replay_opts = NULL;
     QemuOptsList *olist;
     int optind;
     const char *optarg;
@@ -3101,6 +3122,7 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_msg_opts);
     qemu_add_opts(&qemu_name_opts);
     qemu_add_opts(&qemu_numa_opts);
+    qemu_add_opts(&qemu_arnab_record_replay_opts);
     qemu_add_opts(&qemu_icount_opts);
     qemu_add_opts(&qemu_semihosting_config_opts);
     qemu_add_opts(&qemu_fw_cfg_opts);
@@ -3155,6 +3177,7 @@ int main(int argc, char **argv, char **envp)
     /* second pass of option parsing */
     optind = 1;
     for(;;) {
+	printf("About to start parsing\n");
         if (optind >= argc)
             break;
         if (argv[optind][0] != '-') {
@@ -3901,6 +3924,15 @@ int main(int argc, char **argv, char **envp)
                     exit(1);
                 }
                 break;
+	    case QEMU_OPTION_rr:
+		printf("parsed qemu options");
+		arnab_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_replay"),
+				                                   optarg, true);
+		printf("parsed qemu options\n");
+		if (!arnab_record_replay_opts) {
+		    exit(1);
+		}
+                break;
             case QEMU_OPTION_icount:
                 icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                       optarg, true);
@@ -4070,8 +4102,13 @@ int main(int argc, char **argv, char **envp)
      * Best done right after the loop.  Do not insert code here!
      */
     loc_set_none();
-
-    replay_configure(icount_opts);
+    
+    if(!icount_opts) {
+        replay_configure(arnab_record_replay_opts, 0);
+    }
+    else {
+    	replay_configure(icount_opts, 1);
+    }
 
     machine_class = select_machine();
 
@@ -4589,7 +4626,7 @@ int main(int argc, char **argv, char **envp)
     /* This checkpoint is required by replay to separate prior clock
        reading from the other reads, because timer polling functions query
        clock values from the log. */
-    replay_checkpoint(CHECKPOINT_INIT);
+    replay_checkpoint(CHECKPOINT_INIT); 
     qdev_machine_init();
 
     current_machine->ram_size = ram_size;
@@ -4693,12 +4730,19 @@ int main(int argc, char **argv, char **envp)
         exit(1);
     }
 
+    /* when we start the machine in kvm mode, 
+     * we expect to start recording very late
+     * specifically after savevm() operation */
+
+    
     replay_start();
+    
 
     /* This checkpoint is required by replay to separate prior clock
        reading from the other reads, because timer polling functions query
        clock values from the log. */
-    replay_checkpoint(CHECKPOINT_RESET);
+
+    replay_checkpoint(CHECKPOINT_RESET); 
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
     register_global_state();
     if (replay_mode != REPLAY_MODE_NONE) {
