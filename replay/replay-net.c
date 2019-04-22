@@ -62,6 +62,7 @@ void replay_net_packet_event(ReplayNetState *rns, unsigned flags,
     iov_to_buf(iov, iovcnt, 0, event->data, event->size);
 
     replay_add_event(REPLAY_ASYNC_EVENT_NET, event, NULL, 0);
+    // write to the file directly instead of adding to queue
 }
 
 void replay_event_net_run(void *opaque)
@@ -84,6 +85,10 @@ void replay_event_net_run(void *opaque)
 void replay_event_net_save(void *opaque)
 {
     NetEvent *event = opaque;
+
+    //printf("event->id is %d\n", event->id);
+    //printf("event->flags is %d\n", event->flags);
+    //printf("event->data is %s and event->size is %lu\n", event->data, event->size);
 
     replay_put_byte(event->id);
     replay_put_dword(event->flags);

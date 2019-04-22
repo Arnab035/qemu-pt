@@ -96,7 +96,7 @@ void *replay_event_char_read_load(void)
 
 void replay_char_write_event_save(int res, int offset)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     replay_save_instructions();
     replay_put_event(EVENT_CHAR_WRITE);
@@ -106,9 +106,9 @@ void replay_char_write_event_save(int res, int offset)
 
 void replay_char_write_event_load(int *res, int *offset)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
-    replay_account_executed_instructions();
+    //replay_account_executed_instructions();
     if (replay_next_event_is(EVENT_CHAR_WRITE)) {
         *res = replay_get_dword();
         *offset = replay_get_dword();
@@ -121,7 +121,7 @@ void replay_char_write_event_load(int *res, int *offset)
 
 int replay_char_read_all_load(uint8_t *buf)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     if (replay_next_event_is(EVENT_CHAR_READ_ALL)) {
         size_t size;
@@ -143,7 +143,7 @@ int replay_char_read_all_load(uint8_t *buf)
 
 void replay_char_read_all_save_error(int res)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     assert(res < 0);
     replay_save_instructions();
     replay_put_event(EVENT_CHAR_READ_ALL_ERROR);
@@ -152,7 +152,7 @@ void replay_char_read_all_save_error(int res)
 
 void replay_char_read_all_save_buf(uint8_t *buf, int offset)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     replay_save_instructions();
     replay_put_event(EVENT_CHAR_READ_ALL);
     replay_put_array(buf, offset);

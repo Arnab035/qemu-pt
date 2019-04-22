@@ -9,6 +9,14 @@
  *
  */
 
+
+/*
+ * We have modified replay-events such that
+ * only the network and disk events are
+ * stored inside of the queue 
+ *
+ */
+
 #include "qemu/osdep.h"
 #include "qemu-common.h"
 #include "qemu/error-report.h"
@@ -16,6 +24,7 @@
 #include "replay-internal.h"
 #include "block/aio.h"
 #include "ui/input.h"
+#include "index_array_header.h"
 
 typedef struct Event {
     ReplayAsyncEventKind event_kind;
@@ -31,6 +40,7 @@ static bool events_enabled;
 
 /* Functions */
 
+/* network and disk events have been enabled only */
 static void replay_run_event(Event *event)
 {
     switch (event->event_kind) {
@@ -75,7 +85,7 @@ bool replay_has_events(void)
 
 void replay_flush_events(void)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
@@ -96,7 +106,7 @@ void replay_disable_events(void)
 
 void replay_clear_events(void)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
@@ -130,8 +140,8 @@ void replay_add_event(ReplayAsyncEventKind event_kind,
     event->opaque2 = opaque2;
     event->id = id;
 
-    g_assert(replay_mutex_locked());
-    QTAILQ_INSERT_TAIL(&events_list, event, events);
+    //g_assert(replay_mutex_locked());
+    QTAILQ_INSERT_TAIL(&events_list, event, events);	
 }
 
 void replay_bh_schedule_event(QEMUBH *bh)
@@ -163,6 +173,8 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
     }
 }
 
+/* only save network and disk events */
+
 static void replay_save_event(Event *event, int checkpoint)
 {
     if (replay_mode != REPLAY_MODE_PLAY) {
@@ -173,6 +185,7 @@ static void replay_save_event(Event *event, int checkpoint)
 
         /* save event-specific data */
         switch (event->event_kind) {
+        
         case REPLAY_ASYNC_EVENT_BH:
             replay_put_qword(event->id);
             break;
@@ -188,6 +201,7 @@ static void replay_save_event(Event *event, int checkpoint)
             replay_put_qword(event->id);
             break;
         case REPLAY_ASYNC_EVENT_NET:
+	    //printf("REPLAY_ASYNC_EVENT_NET\n");
             replay_event_net_save(event->opaque);
             break;
         default:
@@ -197,15 +211,16 @@ static void replay_save_event(Event *event, int checkpoint)
     }
 }
 
-/* Called with replay mutex locked */
+/* Called with replay mutex locked - disable all locks */
 void replay_save_events(int checkpoint)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     g_assert(checkpoint != CHECKPOINT_CLOCK_WARP_START);
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
-        replay_save_event(event, checkpoint);
-        replay_run_event(event);
+	    
+        replay_save_event(event, checkpoint);      // nothing is written to the file
+	replay_run_event(event);
         QTAILQ_REMOVE(&events_list, event, events);
         g_free(event);
     }
@@ -286,7 +301,7 @@ static Event *replay_read_event(int checkpoint)
 /* Called with replay mutex locked */
 void replay_read_events(int checkpoint)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     while (replay_state.data_kind == EVENT_ASYNC) {
         Event *event = replay_read_event(checkpoint);
         if (!event) {
@@ -294,9 +309,9 @@ void replay_read_events(int checkpoint)
         }
         replay_finish_event();
         replay_state.read_event_kind = -1;
-        replay_run_event(event);
 
-        g_free(event);
+        replay_run_event(event);
+	g_free(event);
     }
 }
 

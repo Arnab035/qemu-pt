@@ -27,6 +27,8 @@ static QemuMutex lock;
 static bool write_error;
 FILE *replay_file;
 
+FILE *arnab_replay_file;
+
 static void replay_write_error(void)
 {
     if (!write_error) {
@@ -44,11 +46,36 @@ void replay_put_byte(uint8_t byte)
     }
 }
 
+/* all replay_put* and replay_get* functions will now be
+ * modified to arnab_replay_put* and arnab_replay_get*
+ * methods. The only difference between the new ones with
+ * the prior ones is that I now use my own replay_file */
+
+/* Instead of writing separate functions, I could have
+ * used a single function and separated the two logical
+ * blocks- one which uses my replay file and the other 
+ * which uses the previous replay file */
+
+void arnab_replay_put_byte(uint8_t byte)
+{
+    if (arnab_replay_file) {
+        if (putc(byte, arnab_replay_file) == EOF) {
+	    replay_write_error();
+	}
+    }
+}
+
 void replay_put_event(uint8_t event)
 {
     assert(event < EVENT_COUNT);
     replay_put_byte(event);
 }
+
+void arnab_replay_put_event(uint8_t event)
+{
+    assert(event < EVENT_COUNT);
+    arnab_replay_put_byte(event);
+}	
 
 
 void replay_put_word(uint16_t word)
@@ -57,16 +84,34 @@ void replay_put_word(uint16_t word)
     replay_put_byte(word);
 }
 
+void arnab_replay_put_word(uint16_t word)
+{
+    arnab_replay_put_byte(word >> 8);
+    arnab_replay_put_byte(word);
+}
+
 void replay_put_dword(uint32_t dword)
 {
     replay_put_word(dword >> 16);
     replay_put_word(dword);
 }
 
+void arnab_replay_put_dword(uint32_t dword)
+{
+    arnab_replay_put_word(dword >> 16);
+    arnab_replay_put_word(dword);
+}
+
 void replay_put_qword(int64_t qword)
 {
     replay_put_dword(qword >> 32);
     replay_put_dword(qword);
+}
+
+void arnab_replay_put_qword(int64_t qword)
+{
+    arnab_replay_put_dword(qword >> 32);
+    arnab_replay_put_dword(qword);
 }
 
 void replay_put_array(const uint8_t *buf, size_t size)
@@ -79,6 +124,16 @@ void replay_put_array(const uint8_t *buf, size_t size)
     }
 }
 
+void arnab_replay_put_array(const uint8_t *buf, size_t size)
+{
+    if (arnab_replay_file) {
+       arnab_replay_put_dword(size);
+       if (fwrite(buf, 1, size, arnab_replay_file) != size) {
+           replay_write_error();
+       }
+    }
+}
+
 uint8_t replay_get_byte(void)
 {
     uint8_t byte = 0;
@@ -86,6 +141,20 @@ uint8_t replay_get_byte(void)
         byte = getc(replay_file);
     }
     return byte;
+}
+
+uint8_t arnab_replay_get_byte(void)
+{
+    uint8_t byte = 0;
+    if (arnab_replay_file) {
+        byte = getc(arnab_replay_file);
+    }
+    return byte;
+}
+
+uint8_t arnab_replay_read_event(void)
+{
+    return arnab_replay_get_byte();
 }
 
 uint16_t replay_get_word(void)
@@ -96,6 +165,16 @@ uint16_t replay_get_word(void)
         word = (word << 8) + replay_get_byte();
     }
 
+    return word;
+}
+
+uint16_t arnab_replay_get_word(void)
+{
+    uint16_t word = 0;
+    if(arnab_replay_file) {
+        word = arnab_replay_get_byte();
+	word = (word << 8) + arnab_replay_get_byte();
+    }
     return word;
 }
 
@@ -110,6 +189,16 @@ uint32_t replay_get_dword(void)
     return dword;
 }
 
+uint32_t arnab_replay_get_dword(void)
+{
+    uint32_t dword = 0;
+    if (arnab_replay_file) {
+        dword = arnab_replay_get_word();
+        dword = (dword << 16) + arnab_replay_get_word();
+    }
+    return dword;
+}
+
 int64_t replay_get_qword(void)
 {
     int64_t qword = 0;
@@ -118,6 +207,16 @@ int64_t replay_get_qword(void)
         qword = (qword << 32) + replay_get_dword();
     }
 
+    return qword;
+}
+
+int64_t arnab_replay_get_qword(void) 
+{
+    int64_t qword = 0;
+    if (arnab_replay_file) {
+        qword = arnab_replay_get_dword();
+    	qword = (qword << 32) + arnab_replay_get_dword();	
+    }
     return qword;
 }
 
@@ -131,6 +230,16 @@ void replay_get_array(uint8_t *buf, size_t *size)
     }
 }
 
+void arnab_replay_get_array(uint8_t *buf, size_t *size)
+{
+    if (arnab_replay_file) {
+        *size = arnab_replay_get_dword();
+	if (fread(buf, 1, *size, arnab_replay_file) != *size) {
+	    error_report("replay read error");
+	}
+    } 
+}	
+
 void replay_get_array_alloc(uint8_t **buf, size_t *size)
 {
     if (replay_file) {
@@ -139,6 +248,17 @@ void replay_get_array_alloc(uint8_t **buf, size_t *size)
         if (fread(*buf, 1, *size, replay_file) != *size) {
             error_report("replay read error");
         }
+    }
+}
+
+void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size)
+{
+    if (replay_file) {
+        *size = arnab_replay_get_dword();
+	*buf = g_malloc(*size);
+         if (fread(*buf, 1, *size, arnab_replay_file) != *size) {
+	     error_report("replay read error");
+	 }
     }
 }
 
@@ -154,6 +274,22 @@ void replay_check_error(void)
             qemu_system_vmstop_request_prepare();
             qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
         }
+    }
+}
+
+void arnab_replay_check_error(void)
+{
+    if (arnab_replay_file) {
+        if (feof(arnab_replay_file)) {
+	    error_report("replay file is over");
+	    qemu_system_vmstop_request_prepare();
+	    qemu_system_vmstop_request(RUN_STATE_PAUSED);
+
+	} else if (ferror(arnab_replay_file)) {
+	    error_report("replay file is over or something goes wrong");
+	    qemu_system_vmstop_request_prepare();
+	    qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+	}
     }
 }
 
@@ -218,15 +354,22 @@ void replay_mutex_unlock(void)
 }
 
 /*! Saves cached instructions. */
+
+/*  this will never matter
+ *  diff is bound to always
+ *  return zero and hence
+ *  nothing would be recorded to file
+ */
+
 void replay_save_instructions(void)
 {
     if (replay_file && replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         int diff = (int)(replay_get_current_step() - replay_state.current_step);
 
         /* Time can only go forward */
         assert(diff >= 0);
-
+        
         if (diff > 0) {
             replay_put_event(EVENT_INSTRUCTION);
             replay_put_dword(diff);

@@ -19,7 +19,7 @@ int64_t replay_save_clock(ReplayClockKind kind, int64_t clock)
 {
 
     if (replay_file) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
 
         replay_save_instructions();
         replay_put_event(EVENT_CLOCK + kind);
@@ -46,9 +46,9 @@ void replay_read_next_clock(ReplayClockKind kind)
 /*! Reads next clock event from the input. */
 int64_t replay_read_clock(ReplayClockKind kind)
 {
-    g_assert(replay_file && replay_mutex_locked());
+    //g_assert(replay_file && replay_mutex_locked());
 
-    replay_account_executed_instructions();
+    //replay_account_executed_instructions();
 
     if (replay_file) {
         int64_t ret;

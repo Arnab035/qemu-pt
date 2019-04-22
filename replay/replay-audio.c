@@ -19,13 +19,14 @@
 void replay_audio_out(int *played)
 {
     if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_save_instructions();
         replay_put_event(EVENT_AUDIO_OUT);
         replay_put_dword(*played);
     } else if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_account_executed_instructions();
+	
         if (replay_next_event_is(EVENT_AUDIO_OUT)) {
             *played = replay_get_dword();
             replay_finish_event();
@@ -41,11 +42,12 @@ void replay_audio_in(int *recorded, void *samples, int *wpos, int size)
     int pos;
     uint64_t left, right;
     if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_save_instructions();
         replay_put_event(EVENT_AUDIO_IN);
         replay_put_dword(*recorded);
         replay_put_dword(*wpos);
+	
         for (pos = (*wpos - *recorded + size) % size ; pos != *wpos
              ; pos = (pos + 1) % size) {
             audio_sample_to_uint64(samples, pos, &left, &right);
@@ -53,8 +55,9 @@ void replay_audio_in(int *recorded, void *samples, int *wpos, int size)
             replay_put_qword(right);
         }
     } else if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_account_executed_instructions();
+	
         if (replay_next_event_is(EVENT_AUDIO_IN)) {
             *recorded = replay_get_dword();
             *wpos = replay_get_dword();
