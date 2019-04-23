@@ -1422,7 +1422,7 @@ static void audio_run_out (AudioState *s)
 
         prev_rpos = hw->rpos;
         played = hw->pcm_ops->run_out (hw, live);
-        replay_audio_out(&played);
+        //replay_audio_out(&played);
         if (audio_bug(__func__, hw->rpos >= hw->samples)) {
             dolog ("hw->rpos=%d hw->samples=%d played=%d\n",
                    hw->rpos, hw->samples, played);
@@ -1491,7 +1491,7 @@ static void audio_run_in (AudioState *s)
         if (replay_mode != REPLAY_MODE_PLAY) {
             captured = hw->pcm_ops->run_in(hw);
         }
-        replay_audio_in(&captured, hw->conv_buf, &hw->wpos, hw->samples);
+        //replay_audio_in(&captured, hw->conv_buf, &hw->wpos, hw->samples);
 
         min = audio_pcm_hw_find_min_in (hw);
         hw->total_samples_captured += captured - min;
