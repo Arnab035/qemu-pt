@@ -55,6 +55,7 @@
 #include "io/channel-buffer.h"
 #include "io/channel-file.h"
 #include "sysemu/replay.h"
+#include "index_array_header.h"
 
 #ifndef ETH_P_RARP
 #define ETH_P_RARP 0x8035
@@ -2221,6 +2222,7 @@ int save_snapshot(const char *name, Error **errp)
     struct tm tm;
     AioContext *aio_context;
 
+    
     if (!replay_can_snapshot()) {
         error_report("Record/replay does not allow making snapshot "
                      "right now. Try once more later.");
@@ -2313,8 +2315,16 @@ int save_snapshot(const char *name, Error **errp)
         goto the_end;
     }
 
-    ret = 0;
+    if (ret == 0) {
+        if (start_recording) {
+	    printf("Should not have started recording .. exiting\n");
+	    exit(0);
+	}
+        start_recording = true;
+    }
 
+    ret = 0;
+    
  the_end:
     if (aio_context) {
         aio_context_release(aio_context);
