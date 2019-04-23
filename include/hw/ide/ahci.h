@@ -82,4 +82,6 @@ struct AllwinnerAHCIState {
     uint32_t regs[ALLWINNER_AHCI_MMIO_SIZE/4];
 };
 
+void ncq_cb(void *opaque, int ret);
+
 #endif /* HW_IDE_AHCI_H */

@@ -4,6 +4,10 @@
 #include "hw/qdev.h"
 #include "exec/memory.h"
 #include "sysemu/dma.h"
+#include "events.h"
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+#include "index_array_header.h"
 
 /* PCI includes legacy ISA access.  */
 #include "hw/isa/isa.h"
@@ -771,6 +775,41 @@ static inline int pci_dma_read(PCIDevice *dev, dma_addr_t addr,
 static inline int pci_dma_write(PCIDevice *dev, dma_addr_t addr,
                                 const void *buf, dma_addr_t len)
 {
+    /*
+     *  WHAT ALL TO STORE IN THE REPLAY FILE 
+     *  WILL BE ADDED HERE  
+     *  to be patched 
+     */
+    void *device_data = malloc(sizeof(PCIDevice));
+
+    memcpy(device_data, dev, sizeof(PCIDevice));
+    if (start_recording) {
+        if(arnab_replay_mode == REPLAY_MODE_RECORD)   // record
+        {
+	    if(!arnab_replay_file) 
+	    {
+	        printf("No replay file available\n");
+	        exit(0);
+	    }
+	    /* replay_put_event */
+	    arnab_replay_put_event(PCI_NETWORK_EVENT);
+
+	    // record only e1000 packets - the application will record
+	    // e1000 packets only.. since we use an e1000 driver
+	    
+	    if(strcmp(dev->name, "e1000") == 0){
+	    //vent = (struct replay_network_event *)malloc(sizeof(struct replay_network_event));
+
+	        arnab_replay_put_qword(addr);    // dma address
+                arnab_replay_put_qword(len);
+
+		arnab_replay_put_array(buf, len);
+                arnab_replay_put_array(device_data, sizeof(PCIDevice));
+	    }
+	}
+    }
+   
+    //printf("device name : %s\n", dev->name);
     return pci_dma_rw(dev, addr, (void *) buf, len, DMA_DIRECTION_FROM_DEVICE);
 }
 
