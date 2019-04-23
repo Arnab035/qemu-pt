@@ -53,6 +53,7 @@
 #include "hw/nmi.h"
 #include "sysemu/replay.h"
 #include "hw/boards.h"
+#include "index_array_header.h"
 
 #ifdef CONFIG_LINUX
 
@@ -78,6 +79,8 @@ int64_t max_advance;
 /* vcpu throttling controls */
 static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
+
+char *tnt_array = NULL;   // tnt_array is NOW a global 
 
 #define CPU_THROTTLE_PCT_MIN 1
 #define CPU_THROTTLE_PCT_MAX 99
@@ -620,6 +623,8 @@ static void qemu_account_warp_timer(void)
     if (!runstate_is_running()) {
         return;
     }
+
+    /* expect these checkpoints to return FALSE anyway, so this would escape */
 
     /* warp clock deterministically in record/replay mode */
     if (!replay_checkpoint(CHECKPOINT_CLOCK_WARP_ACCOUNT)) {
@@ -1268,23 +1273,24 @@ static int64_t tcg_get_icount_limit(void)
 {
     int64_t deadline;
 
-    if (replay_mode != REPLAY_MODE_PLAY) {
-        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
+    //if (replay_mode != REPLAY_MODE_PLAY) {
+    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
 
         /* Maintain prior (possibly buggy) behaviour where if no deadline
          * was set (as there is no QEMU_CLOCK_VIRTUAL timer) or it is more than
          * INT32_MAX nanoseconds ahead, we still use INT32_MAX
-         * nanoseconds.
-         */
-        if ((deadline < 0) || (deadline > INT32_MAX)) {
-            deadline = INT32_MAX;
-        }
-
-        return qemu_icount_round(deadline);
-    } else {
-        return replay_get_instructions();
+         * nanoseconds. */
+         
+    if ((deadline < 0) || (deadline > INT32_MAX)) {
+        deadline = INT32_MAX;
     }
+
+    return qemu_icount_round(deadline);
+    // else {
+       // return replay_get_instructions();   // expected to always return 0, comment it out
+    //}
 }
+
 
 static void handle_icount_deadline(void)
 {
@@ -1346,6 +1352,17 @@ static int tcg_cpu_exec(CPUState *cpu)
 #ifdef CONFIG_PROFILER
     int64_t ti;
 #endif
+
+    /* create tnt_array here */
+    // static char *tnt_array = NULL;
+
+    if(tnt_array == NULL) {
+      tnt_array = get_array_of_tnt_bits();
+    }
+
+    if(!tnt_array) {
+      printf("get_array_of_tnt_bits returns NULL\n");
+    }
 
 #ifdef CONFIG_PROFILER
     ti = profile_getclock();
