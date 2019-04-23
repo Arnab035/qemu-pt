@@ -29,6 +29,8 @@
 #include "hw/i386/apic_internal.h"
 #endif
 
+int index_cr3_value = 0;
+
 void cpu_sync_bndcs_hflags(CPUX86State *env)
 {
     uint32_t hflags = env->hflags;
@@ -670,6 +672,19 @@ void cpu_x86_update_cr0(CPUX86State *env, uint32_t new_cr0)
    the PDPT */
 void cpu_x86_update_cr3(CPUX86State *env, target_ulong new_cr3)
 {
+    /*
+    printf("...updating cr3... new value : 0x%lx\n", new_cr3);
+    if(tnt_array[index_array] == 'K' ) {
+      printf("about to examine CR3 changes\n");
+      unsigned long modified_cr3 = do_strtoul(pip_cr3_values[index_cr3_value]);
+      printf("modified cr3 value is : 0x%lx\n", modified_cr3);
+      if(modified_cr3 != new_cr3) {
+        new_cr3 = modified_cr3;
+      }
+    }*/
+    //index_array++;
+    //index_cr3_value++;
+    
     X86CPU *cpu = x86_env_get_cpu(env);
 
     env->cr[3] = new_cr3;

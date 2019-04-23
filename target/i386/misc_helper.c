@@ -302,6 +302,7 @@ void helper_wrmsr(CPUX86State *env)
         env->segs[R_GS].base = val;
         break;
     case MSR_KERNELGSBASE:
+	printf("env->kernelgsbase is 0x%lx\n", val);
         env->kernelgsbase = val;
         break;
 #endif
