@@ -59,8 +59,13 @@ void tcg_gen_op3(TCGOpcode opc, TCGArg a1, TCGArg a2, TCGArg a3)
 {
     TCGOp *op = tcg_emit_op(opc);
     op->args[0] = a1;
+    /*
+    if(opc == INDEX_op_qemu_ld_i64) {
+      printf("addr: 0x%lx\n", a2);
+    }*/
     op->args[1] = a2;
     op->args[2] = a3;
+    
 }
 
 void tcg_gen_op4(TCGOpcode opc, TCGArg a1, TCGArg a2, TCGArg a3, TCGArg a4)
@@ -2652,6 +2657,7 @@ void tcg_gen_qemu_st_i32(TCGv_i32 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 
 void tcg_gen_qemu_ld_i64(TCGv_i64 val, TCGv addr, TCGArg idx, TCGMemOp memop)
 {
+    //printf("address: 0x%p\n", addr);
     tcg_gen_req_mo(TCG_MO_LD_LD | TCG_MO_ST_LD);
     if (TCG_TARGET_REG_BITS == 32 && (memop & MO_SIZE) < MO_64) {
         tcg_gen_qemu_ld_i32(TCGV_LOW(val), addr, idx, memop);
