@@ -924,7 +924,7 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
         if (desc.buffer_addr) {
             if (desc_offset < size) {
                 size_t iov_copy;
-                hwaddr ba = le64_to_cpu(desc.buffer_addr);
+                hwaddr ba = le64_to_cpu(desc.buffer_addr);	
                 size_t copy_size = size - desc_offset;
                 if (copy_size > s->rxbuf_size) {
                     copy_size = s->rxbuf_size;
@@ -1259,7 +1259,6 @@ e1000_mmio_write(void *opaque, hwaddr addr, uint64_t val,
 {
     E1000State *s = opaque;
     unsigned int index = (addr & 0x1ffff) >> 2;
-
     if (index < NWRITEOPS && macreg_writeops[index]) {
         if (!(mac_reg_access[index] & MAC_ACCESS_FLAG_NEEDED)
             || (s->compat_flags & (mac_reg_access[index] >> 2))) {

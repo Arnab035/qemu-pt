@@ -190,7 +190,6 @@ ssize_t qemu_net_queue_send(NetQueue *queue,
                             NetPacketSent *sent_cb)
 {
     ssize_t ret;
-
     if (queue->delivering || !qemu_can_send_packet(sender)) {
         qemu_net_queue_append(queue, sender, flags, data, size, sent_cb);
         return 0;
@@ -215,7 +214,6 @@ ssize_t qemu_net_queue_send_iov(NetQueue *queue,
                                 NetPacketSent *sent_cb)
 {
     ssize_t ret;
-
     if (queue->delivering || !qemu_can_send_packet(sender)) {
         qemu_net_queue_append_iov(queue, sender, flags, iov, iovcnt, sent_cb);
         return 0;

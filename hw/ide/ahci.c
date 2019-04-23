@@ -957,7 +957,12 @@ static void ncq_finish(NCQTransferState *ncq_tfs)
     ncq_tfs->used = 0;
 }
 
-static void ncq_cb(void *opaque, int ret)
+
+/* change the function specifier from static to non-static
+ *
+ */
+
+void ncq_cb(void *opaque, int ret)
 {
     NCQTransferState *ncq_tfs = (NCQTransferState *)opaque;
     IDEState *ide_state = &ncq_tfs->drive->port.ifs[0];

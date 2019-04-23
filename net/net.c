@@ -629,10 +629,8 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
     int ret;
 
 #ifdef DEBUG_NET
-    printf("qemu_send_packet_async:\n");
     qemu_hexdump((const char *)buf, stdout, "net", size);
 #endif
-
     if (sender->link_down || !sender->peer) {
         return size;
     }
