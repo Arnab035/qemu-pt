@@ -39,6 +39,7 @@
 #include "trace.h"
 #include "hw/irq.h"
 #include "sysemu/sev.h"
+#include "sysemu/replay.h"
 
 #include "hw/boards.h"
 
@@ -1926,6 +1927,15 @@ int kvm_cpu_exec(CPUState *cpu)
          * Matching barrier in kvm_eat_signals.
          */
         smp_rmb();
+        
+	/* VMENTRY checkpoint */
+
+	if (start_recording) {
+	    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+	        arnab_replay_put_event(VMENTRY_EVENT);
+	    }  
+	  //replay_checkpoint(CHECKPOINT_VMENTRY);
+        }
 
         run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
 
@@ -1966,6 +1976,7 @@ int kvm_cpu_exec(CPUState *cpu)
         switch (run->exit_reason) {
         case KVM_EXIT_IO:
             DPRINTF("handle_io\n");
+	    //printf("KVM_EXIT_IO\n");
             /* Called outside BQL */
             kvm_handle_io(run->io.port, attrs,
                           (uint8_t *)run + run->io.data_offset,
@@ -1977,11 +1988,17 @@ int kvm_cpu_exec(CPUState *cpu)
         case KVM_EXIT_MMIO:
             DPRINTF("handle_mmio\n");
             /* Called outside BQL */
+	    //printf("KVM_EXIT_MMIO\n");
+	    //printf("mmio len: %d\n", run->mmio.len);
+	    //printf("mmio data: %s\n", run->mmio.data);
+	    
+	    //printf("\n");
             address_space_rw(&address_space_memory,
                              run->mmio.phys_addr, attrs,
                              run->mmio.data,
                              run->mmio.len,
                              run->mmio.is_write);
+
             ret = 0;
             break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
