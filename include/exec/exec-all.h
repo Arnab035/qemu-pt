@@ -65,6 +65,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
                               uint32_t flags,
                               int cflags);
 
+int find_newline_and_copy(char *buffer, int pos, int end, char *copy);
+
+char *get_array_of_tnt_bits(void);
+
 void QEMU_NORETURN cpu_loop_exit(CPUState *cpu);
 void QEMU_NORETURN cpu_loop_exit_restore(CPUState *cpu, uintptr_t pc);
 void QEMU_NORETURN cpu_loop_exit_atomic(CPUState *cpu, uintptr_t pc);
