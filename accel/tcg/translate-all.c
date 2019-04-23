@@ -58,6 +58,7 @@
 #include "qemu/main-loop.h"
 #include "exec/log.h"
 #include "sysemu/cpus.h"
+#include "index_array_header.h"
 
 /* #define DEBUG_TB_INVALIDATE */
 /* #define DEBUG_TB_FLUSH */
@@ -113,6 +114,9 @@ typedef struct PageDesc {
     unsigned long flags;
 #endif
 } PageDesc;
+
+
+int is_io_instruction = 0;
 
 /* In system mode we want L1_MAP to be based on ram offsets,
    while in user mode we want it to be based on virtual addresses.  */
@@ -1764,6 +1768,9 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     /* Generate a new TB executing the I/O insn.  */
     cpu->cflags_next_tb = curr_cflags() | CF_LAST_IO | n;
 
+    printf("n is %d\n", n);
+    is_io_instruction = 1;   // global extern
+
     if (tb->cflags & CF_NOCACHE) {
         if (tb->orig_tb) {
             /* Invalidate original TB if this TB was generated in
@@ -1781,7 +1788,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
      *
      * cpu_loop_exit_noexc will longjmp back to cpu_exec where the
      * tb_lock gets reset.
-     */
+     * (tb_gen_code) is gone */
     cpu_loop_exit_noexc(cpu);
 }
 

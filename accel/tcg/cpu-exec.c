@@ -16,6 +16,11 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
+
+/* comment out all usages of replay_interrupt and replay_has_interrrupt */
+
+
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "trace.h"
@@ -39,9 +44,20 @@
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
 #include "index_array_header.h"
+
+#include "hw/ide/ahci.h"
+
 /* added header files to handle gzlib files */
 #include <zlib.h>
 #include <errno.h>
+
+// use below includes for replay functions
+#include "sysemu/dma.h"
+#include "hw/pci/pci.h"
+#include "replay/replay-internal.h"
+#include "events.h"
+#include "qemu/iov.h"
+#include "sysemu/block-backend.h"
 
 #ifdef CONFIG_USER_ONLY
 #define MEMSUFFIX _kernel
@@ -83,6 +99,11 @@ int stopped_execution_of_tb_chain = 0;
 
 struct hash_buckets *interrupt_hash_table = NULL;
 
+/* definition of replay network events */
+
+struct replay_network_event *network_event_params = NULL;
+uint64_t network_event_params_index = 0;
+
 /* -icount align implementation. */
 
 typedef struct SyncClocks {
@@ -104,7 +125,7 @@ typedef struct SyncClocks {
 #define LENGTH  0x1000
 
 struct tip_address_info *tip_addresses = NULL;    // definition here
-char **pip_cr3_values = NULL;
+//char **pip_cr3_values = NULL;
 
 static void align_clocks(SyncClocks *sc, const CPUState *cpu)
 {
@@ -304,16 +325,16 @@ char *get_array_of_tnt_bits(void) {
   char *pch;
   char *pch_pip;
   gzFile file;
-  int len;
+  //int len;
 
   int is_ignore_tip = 0;
   int is_ignore_pip = 0;
   unsigned long long k, prev_count;
   unsigned long long j;
 
-  //const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
+  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
 
-  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_18_apr.txt.gz";   // new test
+  //const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_18_apr.txt.gz";   // new test
   char *tnt_array = malloc(1);
 
   //tnt_array[0] = 'P';
@@ -323,7 +344,7 @@ char *get_array_of_tnt_bits(void) {
   int remainder = 0;
 
   unsigned long long count_tip = 0;
-  unsigned int count_pip=0;
+  //unsigned int count_pip=0;
 
   tip_addresses = malloc(1 * sizeof(struct tip_address_info));   // tip_addresses is global
 
@@ -363,14 +384,23 @@ char *get_array_of_tnt_bits(void) {
         }
         else if(strncmp(copy, "PIP", 3) == 0) {
           pch_pip = strchr(copy, '=');
+	  
+	  /* VMEXIT */
 	  if((*++pch_pip - '0') == 0) {
 	    // the next PIP bit should be (NR = 1) - you need to ignore those PIP bits
 	    // only stray PIP (NR=1) packets should be considered and stored
 	    // these stray PIP packets indicate context switch events 
 	    is_ignore_pip = 1;
 	  }
+          
+	  /* VMENTRY */
+	  /* we will store a character into the array - as an indication that this is a
+	   * VMENTRY event - let this character be 'V' */
 	  else {
             is_ignore_tip = 1;
+	    tnt_array = realloc(tnt_array, count+1);
+	    tnt_array[count] = 'V';       /* for VMENTRY */
+	    count++;
 	    if(is_ignore_pip == 1) {
 	      is_ignore_pip = 0;
 	    }
@@ -378,6 +408,7 @@ char *get_array_of_tnt_bits(void) {
 	      // if is_ignore_pip == 0, this means you will have to store this PIP(NR=1) 
 	      // packet - this is a context switch within the guest not
 	      // a context switch between the guest and the host
+	      /*
 	      if(count != 0) {
 	        tnt_array = realloc(tnt_array, count+1); 
 	        tnt_array[count] = 'K';   // K indicates PIP
@@ -393,7 +424,7 @@ char *get_array_of_tnt_bits(void) {
 		//printf("pip_cr3_values[%d]: %s\n", count_pip, pip_cr3_values[count_pip]);
 	        count_pip++;
 	        count++;
-	      }
+	      }*/
 	    }
 	  }
         }
@@ -421,15 +452,17 @@ char *get_array_of_tnt_bits(void) {
 	      tip_addresses[count_tip].is_useful=0;
 	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
 	      count_tip++;
-
+              //printf("count: %llu\n", count);
 	      is_ignore_tip=0;
 	    }
 	  }
       
         }
+	//printf("count: %llu\n", count);
         start += pos+1;
       }
     }
+   
     if(bytes_read<LENGTH-1) {
       tnt_array[count]='\0';
       tip_addresses[count_tip].address='\0';
@@ -456,8 +489,6 @@ char *get_array_of_tnt_bits(void) {
   gzclose(file);
   return tnt_array;
 }
-
-
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
 static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
@@ -743,7 +774,7 @@ static int compute_hash(char *interrupt_handler_pointer) {
 }
 
 /* this function fills up the interrupt hash tables
- * parameters : none
+ * parameters : pointer to CPUX86State 
  * returns : void
  */
 
@@ -869,18 +900,91 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
     /* if you are about to access kernel space from user space please get ready */
     X86CPU *x86_cpu = X86_CPU(cpu);
     CPUX86State *env = &x86_cpu->env;
+    uint8_t id;
+    void (*callback_func)(void *, int );
+    /* handle replay here so that the memory contains the correct values */
 
+    void *pci_device_struct; size_t net_size; /* for network record-replay */
+    void *blk; size_t disk_size;
+
+    if(tnt_array[index_array] == 'V') {
+      //replay_checkpoint(CHECKPOINT_VMENTRY);
+      while((id = arnab_replay_read_event())) {
+	  if(id == 0) {
+	      printf("replay_file is closed\n");
+	      break;
+	  }
+	  else if(id == VMENTRY_EVENT) {
+	      break;
+	  }
+	  else if (id == PCI_NETWORK_EVENT) {
+	      /*
+	      if (!event) {
+	          printf("event is NULL - is your array index wrong?\n");
+		  exit(0);
+	      }*/
+	      dma_addr_t addr = arnab_replay_get_qword();
+	      dma_addr_t len = arnab_replay_get_qword();
+	      uint8_t *buf = malloc(len * sizeof(char));
+	      if (!buf) {
+	          printf("malloc error\n");
+		  exit(0);
+	      }
+	      arnab_replay_get_array(buf, (size_t *)&len);
+
+	      arnab_replay_get_array_alloc((uint8_t **)(&pci_device_struct), &net_size);
+	      pci_dma_rw((PCIDevice *)pci_device_struct, addr, (void *) buf, len, 
+			      DMA_DIRECTION_FROM_DEVICE);
+	  }
+
+	  else if (id == PCI_DISK_EVENT) {
+              // index tells you which element in the array is your parameter
+
+	      int64_t offset = arnab_replay_get_qword();
+	      int64_t size = arnab_replay_get_qword();
+
+	      void *iov_buf;
+	      void *cb_opaque;
+
+	      arnab_replay_get_array_alloc((uint8_t **)&iov_buf, &disk_size); // iov buffer data
+	      QEMUIOVector *iov = malloc(sizeof(QEMUIOVector));
+
+	      iov->niov = 1;
+	      iov->iov = malloc(sizeof(struct iovec) * iov->niov);
+	      
+	      iov->iov[0].iov_len = size;
+	      iov->iov[0].iov_base = malloc(iov->iov[0].iov_len);  // each member of type struct iovec
+	      // niov is 1 by default - will this affect ?
+
+	      qemu_iovec_from_buf(iov, offset, iov_buf, size);
+              arnab_replay_get_array_alloc((uint8_t **)&blk, &disk_size); // BlockBackend
+
+	      callback_func = ncq_cb;
+           
+              arnab_replay_get_array_alloc((uint8_t **)&cb_opaque, &disk_size);   
+	      blk_aio_pwritev((BlockBackend *)blk, offset, iov, 0, callback_func, 
+			       cb_opaque);   // functions return something - we ignore
+	  }
+	  else {
+	      printf("wrong id of event obtained\n");
+	      break;  // no point going further to check
+	  }
+      } 
+      index_array++;
+    }
 
     if(is_handle_interrupt_in_userspace) {
         /* this indicates that execution has unexpectedly entered the kernel space */
-      printf("interrupt handler address reported by TIP : 0x%s\n", tip_addresses[index_tip_address-1].address);
+      printf("interrupt handler address reported by TIP : 0x%s\n", 
+		      tip_addresses[index_tip_address-1].address);
       if(interrupt_hash_table == NULL) {
-        fill_interrupt_hash_table(env);
+          fill_interrupt_hash_table(env);
       }
       int intno;
       intno = get_interrupt_number_from_hashtable(tip_addresses[index_tip_address-1].address);
       printf("intno : %d\n", intno);
-      do_userspace_interrupt(env, intno /* fixed at this point */, 0, 0, do_strtoul(tip_addresses[index_tip_address-2].address), 1);	      
+      do_userspace_interrupt(env, intno, 0, 0, 
+		      do_strtoul(tip_addresses[index_tip_address-2].address), 1);	      
     }
 
     TranslationBlock *tb;
@@ -979,7 +1083,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
     if (cpu->exception_index < 0) {
 #ifndef CONFIG_USER_ONLY
         if (replay_has_exception()
-               && cpu->icount_decr.u16.low + cpu->icount_extra == 0) {
+               &&cpu->icount_decr.u16.low + cpu->icount_extra == 0) {
             /* try to cause an exception pending in the log */
             cpu_exec_nocache(cpu, 1, tb_find(cpu, NULL, 0, curr_cflags()), true);
         }
@@ -1023,14 +1127,18 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         cpu->exception_index = -1;
         return true;
 #else
+	
         if (replay_exception()) {
             CPUClass *cc = CPU_GET_CLASS(cpu);
             qemu_mutex_lock_iothread();
             cc->do_interrupt(cpu);
             qemu_mutex_unlock_iothread();
             cpu->exception_index = -1;
-        } else if (!replay_has_interrupt()) {
-            /* give a chance to iothread in replay mode */
+
+        }
+        	
+	else if (!replay_has_interrupt()) {
+            
             *ret = EXCP_INTERRUPT;
             return true;
         }
@@ -1066,7 +1174,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
             qemu_mutex_unlock_iothread();
             return true;
         }
-        if (replay_mode == REPLAY_MODE_PLAY && !replay_has_interrupt()) {
+        if (replay_mode == REPLAY_MODE_PLAY  && !replay_has_interrupt() ) {
             /* Do nothing */
         } else if (interrupt_request & CPU_INTERRUPT_HALT) {
             replay_interrupt();
@@ -1101,7 +1209,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
            and via longjmp via cpu_loop_exit.  */
         else {
             if (cc->cpu_exec_interrupt(cpu, interrupt_request)) {
-                //replay_interrupt();
+                replay_interrupt();
                 cpu->exception_index = -1;
                 *last_tb = NULL;
             }

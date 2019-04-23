@@ -108,6 +108,9 @@ static inline DATA_TYPE glue(io_read, SUFFIX)(CPUArchState *env,
 WORD_TYPE helper_le_ld_name(CPUArchState *env, target_ulong addr,
                             TCGMemOpIdx oi, uintptr_t retaddr)
 {
+    //printf("helper_le_ld_name is called\n");
+    //printf("env->eip is 0x%lx\n", env->eip);
+    //printf("addr is 0x%lx\n", addr);
     unsigned mmu_idx = get_mmuidx(oi);
     int index = (addr >> TARGET_PAGE_BITS) & (CPU_TLB_SIZE - 1);
     target_ulong tlb_addr = env->tlb_table[mmu_idx][index].ADDR_READ;
