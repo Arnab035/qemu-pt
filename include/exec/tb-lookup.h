@@ -17,16 +17,20 @@
 #include "exec/tb-hash.h"
 
 /* Might cause an exception, so have a longjmp destination ready */
+
+/* Changed by Arnab : force this function to return NULL */
+
 static inline TranslationBlock *
 tb_lookup__cpu_state(CPUState *cpu, target_ulong *pc, target_ulong *cs_base,
                      uint32_t *flags, uint32_t cf_mask)
 {
     CPUArchState *env = (CPUArchState *)cpu->env_ptr;
-    TranslationBlock *tb;
+    TranslationBlock *tb = NULL;
     uint32_t hash;
 
     cpu_get_tb_cpu_state(env, pc, cs_base, flags);
     hash = tb_jmp_cache_hash_func(*pc);
+    /*
     tb = atomic_rcu_read(&cpu->tb_jmp_cache[hash]);
     if (likely(tb &&
                tb->pc == *pc &&
@@ -37,6 +41,7 @@ tb_lookup__cpu_state(CPUState *cpu, target_ulong *pc, target_ulong *cs_base,
         return tb;
     }
     tb = tb_htable_lookup(cpu, *pc, *cs_base, *flags, cf_mask);
+    */
     if (tb == NULL) {
         return NULL;
     }
