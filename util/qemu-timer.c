@@ -477,6 +477,8 @@ bool timer_expired(QEMUTimer *timer_head, int64_t current_time)
     return timer_expired_ns(timer_head, current_time * timer_head->scale);
 }
 
+/* disable calls to replay_checkpoint - replay_checkpoint will be called later*/
+
 bool timerlist_run_timers(QEMUTimerList *timer_list)
 {
     QEMUTimer *ts;
@@ -504,11 +506,13 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
         }
         break;
     case QEMU_CLOCK_HOST:
+	
         if (!replay_checkpoint(CHECKPOINT_CLOCK_HOST)) {
             goto out;
         }
         break;
     case QEMU_CLOCK_VIRTUAL_RT:
+	
         if (!replay_checkpoint(CHECKPOINT_CLOCK_VIRTUAL_RT)) {
             goto out;
         }
@@ -533,7 +537,7 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
         qemu_mutex_unlock(&timer_list->active_timers_lock);
 
         /* run the callback (the timer list can be modified) */
-        cb(opaque);
+        cb(opaque); /* timer callback */
         progress = true;
     }
 
@@ -578,7 +582,7 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
 {
     int64_t deadline = -1;
     QEMUClockType type;
-    bool play = replay_mode == REPLAY_MODE_PLAY;
+    bool play = 0/*replay_mode == REPLAY_MODE_PLAY*/;
     for (type = 0; type < QEMU_CLOCK_MAX; type++) {
         if (qemu_clock_use_for_deadline(type)) {
             if (!play || type == QEMU_CLOCK_REALTIME) {
