@@ -137,8 +137,9 @@ int qemu_chr_write(Chardev *s, const uint8_t *buf, int len, bool write_all)
     int offset = 0;
     int res;
 
+    
     if (qemu_chr_replay(s) && replay_mode == REPLAY_MODE_PLAY) {
-        replay_char_write_event_load(&res, &offset);
+        replay_char_write_event_load(&res, &offset);   
         assert(offset <= len);
         qemu_chr_write_buffer(s, buf, offset, &offset, true);
         return res;
@@ -715,7 +716,11 @@ Chardev *qemu_chr_new(const char *label, const char *filename)
     chr = qemu_chr_new_noreplay(label, filename);
     if (chr) {
         if (replay_mode != REPLAY_MODE_NONE) {
-            qemu_chr_set_feature(chr, QEMU_CHAR_FEATURE_REPLAY);
+             // qemu_chr_set_feature(chr, QEMU_CHAR_FEATURE_REPLAY);
+	    
+	    /* commenting out above line forces all record 
+	     * and replay operations to not happen in 
+	     * the char device */
         }
         if (qemu_chr_replay(chr) && CHARDEV_GET_CLASS(chr)->chr_ioctl) {
             error_report("Replay: ioctl is not supported "

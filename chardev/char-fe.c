@@ -65,6 +65,7 @@ int qemu_chr_fe_read_all(CharBackend *be, uint8_t *buf, int len)
 
     if (qemu_chr_replay(s) && replay_mode == REPLAY_MODE_PLAY) {
         return replay_char_read_all_load(buf);
+	//return 0;
     }
 
     while (offset < len) {
