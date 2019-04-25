@@ -998,6 +998,7 @@ static inline void tcg_out_pop(TCGContext *s, int reg)
 static void tcg_out_ld(TCGContext *s, TCGType type, TCGReg ret,
                        TCGReg arg1, intptr_t arg2)
 {
+    //printf("tcg_out_ld called\n");
     switch (type) {
     case TCG_TYPE_I32:
         if (ret < 16) {
