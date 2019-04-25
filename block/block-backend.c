@@ -145,6 +145,19 @@ static char *blk_root_get_parent_desc(BdrvChild *child)
     }
 }
 
+/* 
+ * replay happens inside this file
+ * since BlockBackend * happens to be  
+ * an opaque pointer to a struct - 
+ * we make all accesses
+ * here in this file related to that opaque
+ * pointer
+ */
+
+size_t get_block_backend_size(void *opaque) {
+    return sizeof(BlockBackend);
+}
+
 static const char *blk_root_get_name(BdrvChild *child)
 {
     return blk_name(child->opaque);
