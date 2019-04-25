@@ -1470,13 +1470,17 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
         return MEMTX_OK;
     }
 
+    printf("memory_region_dispatch_write\n");
+
     if (mr->ops->write) {
+	printf("memory_region_write_accessor\n");
         return access_with_adjusted_size(addr, &data, size,
                                          mr->ops->impl.min_access_size,
                                          mr->ops->impl.max_access_size,
                                          memory_region_write_accessor, mr,
                                          attrs);
     } else if (mr->ops->write_with_attrs) {
+	printf("memory_region_write_with_attrs_accessor\n");
         return
             access_with_adjusted_size(addr, &data, size,
                                       mr->ops->impl.min_access_size,
@@ -1484,6 +1488,7 @@ MemTxResult memory_region_dispatch_write(MemoryRegion *mr,
                                       memory_region_write_with_attrs_accessor,
                                       mr, attrs);
     } else {
+	printf("memory_region_oldmmio_write_accessor\n");
         return access_with_adjusted_size(addr, &data, size, 1, 4,
                                          memory_region_oldmmio_write_accessor,
                                          mr, attrs);

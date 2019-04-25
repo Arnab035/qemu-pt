@@ -3253,7 +3253,7 @@ MemTxResult address_space_write(AddressSpace *as, hwaddr addr,
 {
     MemTxResult result = MEMTX_OK;
     FlatView *fv;
-
+    printf("address_space_write\n");
     if (len > 0) {
         rcu_read_lock();
         fv = address_space_to_flatview(as);
@@ -3268,8 +3268,10 @@ MemTxResult address_space_rw(AddressSpace *as, hwaddr addr, MemTxAttrs attrs,
                              uint8_t *buf, int len, bool is_write)
 {
     if (is_write) {
+	//printf("address_space_write\n");
         return address_space_write(as, addr, attrs, buf, len);
     } else {
+	//printf("address_space_read_full\n");
         return address_space_read_full(as, addr, attrs, buf, len);
     }
 }
