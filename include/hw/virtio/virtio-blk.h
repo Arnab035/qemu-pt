@@ -20,6 +20,11 @@
 #include "sysemu/iothread.h"
 #include "sysemu/block-backend.h"
 
+/*Record replay headers
+ */
+
+#include "replay/replay-internal.h"
+
 #define TYPE_VIRTIO_BLK "virtio-blk-device"
 #define VIRTIO_BLK(obj) \
         OBJECT_CHECK(VirtIOBlock, (obj), TYPE_VIRTIO_BLK)
@@ -80,6 +85,8 @@ typedef struct MultiReqBuffer {
     unsigned int num_reqs;
     bool is_write;
 } MultiReqBuffer;
+
+int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb);
 
 bool virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq);
 

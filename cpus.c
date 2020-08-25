@@ -53,6 +53,7 @@
 #include "hw/nmi.h"
 #include "sysemu/replay.h"
 #include "hw/boards.h"
+#include "index_array_header.h"
 
 #ifdef CONFIG_LINUX
 
@@ -78,6 +79,8 @@ int64_t max_advance;
 /* vcpu throttling controls */
 static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
+
+char *tnt_array = NULL;
 
 #define CPU_THROTTLE_PCT_MIN 1
 #define CPU_THROTTLE_PCT_MAX 99
@@ -1276,22 +1279,22 @@ static int64_t tcg_get_icount_limit(void)
 {
     int64_t deadline;
 
-    if (replay_mode != REPLAY_MODE_PLAY) {
-        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
+    //if (replay_mode != REPLAY_MODE_PLAY) {
+    deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
 
         /* Maintain prior (possibly buggy) behaviour where if no deadline
          * was set (as there is no QEMU_CLOCK_VIRTUAL timer) or it is more than
          * INT32_MAX nanoseconds ahead, we still use INT32_MAX
          * nanoseconds.
          */
-        if ((deadline < 0) || (deadline > INT32_MAX)) {
-            deadline = INT32_MAX;
-        }
-
-        return qemu_icount_round(deadline);
-    } else {
-        return replay_get_instructions();
+    if ((deadline < 0) || (deadline > INT32_MAX)) {
+        deadline = INT32_MAX;
     }
+
+    return qemu_icount_round(deadline);
+    //} else {
+        //return replay_get_instructions();
+    //}
 }
 
 static void handle_icount_deadline(void)
@@ -1355,6 +1358,13 @@ static int tcg_cpu_exec(CPUState *cpu)
     int64_t ti;
 #endif
 
+    if(tnt_array == NULL) {
+	 tnt_array = get_array_of_tnt_bits();
+    }
+    
+    if(!tnt_array) {
+         printf("get_array_of_tnt_bits returns NULL\n");
+    }
     assert(tcg_enabled());
 #ifdef CONFIG_PROFILER
     ti = profile_getclock();

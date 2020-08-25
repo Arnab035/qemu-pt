@@ -58,6 +58,7 @@
 #include "qemu/main-loop.h"
 #include "exec/log.h"
 #include "sysemu/cpus.h"
+#include "index_array_header.h"
 
 /* #define DEBUG_TB_INVALIDATE */
 /* #define DEBUG_TB_FLUSH */
@@ -116,6 +117,8 @@ typedef struct PageDesc {
     QemuSpin lock;
 #endif
 } PageDesc;
+
+int is_io_instruction = 0;
 
 /**
  * struct page_entry - page descriptor entry
@@ -2171,6 +2174,8 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
 
     /* Generate a new TB executing the I/O insn.  */
     cpu->cflags_next_tb = curr_cflags() | CF_LAST_IO | n;
+
+    is_io_instruction = 1;
 
     if (tb_cflags(tb) & CF_NOCACHE) {
         if (tb->orig_tb) {

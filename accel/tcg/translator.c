@@ -17,6 +17,11 @@
 #include "exec/gen-icount.h"
 #include "exec/log.h"
 #include "exec/translator.h"
+#include "index_array_header.h"
+
+
+unsigned int size_of_tb_insn_array = 0;
+unsigned long last_pc = 0;
 
 /* Pairs with tcg_clear_temp_count.
    To be called by #TranslatorOps.{translate_insn,tb_stop} if
@@ -43,6 +48,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     db->singlestep_enabled = cpu->singlestep_enabled;
 
     /* Instruction counting */
+    last_pc = 0;
     db->max_insns = tb_cflags(db->tb) & CF_COUNT_MASK;
     if (db->max_insns == 0) {
         db->max_insns = CF_COUNT_MASK;
@@ -56,6 +62,9 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     ops->init_disas_context(db, cpu);
     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
+
+    int translation_start;
+    translation_start = 1;
 
     /* Reset the temp count so that we can identify leaks */
     tcg_clear_temp_count();
@@ -96,12 +105,25 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
         if (db->num_insns == db->max_insns
             && (tb_cflags(db->tb) & CF_LAST_IO)) {
             /* Accept I/O on the last instruction.  */
+	    printf("IO on the last instruction\n");
             gen_io_start();
             ops->translate_insn(db, cpu);
             gen_io_end();
         } else {
             ops->translate_insn(db, cpu);
         }
+	if(translation_start == 1) {
+	    tb_insn_array = (unsigned long *)malloc(TCG_MAX_INSNS * sizeof(unsigned long *));
+	    tb_insn_array[0] = db->pc_first;
+	    tb_insn_array[1] = db->pc_next;
+	}
+	else {
+	    tb_insn_array[db->num_insns] = db->pc_next;
+	}
+
+	if(translation_start == 1) {
+	    translation_start = 0;
+	}
 
         /* Stop translation if translate_insn so indicated.  */
         if (db->is_jmp != DISAS_NEXT) {
@@ -123,6 +145,8 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     /* The disas_log hook may use these values rather than recompute.  */
     db->tb->size = db->pc_next - db->pc_first;
     db->tb->icount = db->num_insns;
+
+    size_of_tb_insn_array = db->num_insns;
 
 #ifdef DEBUG_DISAS
     if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)

@@ -29,6 +29,8 @@
 #include "hw/i386/apic_internal.h"
 #endif
 
+int index_cr3_value = 0;
+
 void cpu_sync_bndcs_hflags(CPUX86State *env)
 {
     uint32_t hflags = env->hflags;

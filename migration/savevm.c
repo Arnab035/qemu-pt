@@ -56,6 +56,7 @@
 #include "io/channel-file.h"
 #include "sysemu/replay.h"
 #include "qjson.h"
+#include "replay/replay-internal.h"
 
 #ifndef ETH_P_RARP
 #define ETH_P_RARP 0x8035
@@ -2497,6 +2498,7 @@ int save_snapshot(const char *name, Error **errp)
         goto the_end;
     }
 
+    //ret = 0;
     ret = 0;
 
  the_end:
@@ -2506,9 +2508,17 @@ int save_snapshot(const char *name, Error **errp)
 
     bdrv_drain_all_end();
 
+    if (ret == 0) {
+        if (start_recording) {
+            exit(0);
+        }
+        start_recording = true;
+    }
+
     if (saved_vm_running) {
         vm_start();
     }
+
     return ret;
 }
 

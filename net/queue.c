@@ -60,6 +60,8 @@ struct NetQueue {
     unsigned delivering : 1;
 };
 
+NetQueueForTcg *nqt_queue = NULL;
+
 NetQueue *qemu_new_net_queue(NetQueueDeliverFunc *deliver, void *opaque)
 {
     NetQueue *queue;
@@ -76,6 +78,19 @@ NetQueue *qemu_new_net_queue(NetQueueDeliverFunc *deliver, void *opaque)
     queue->delivering = 0;
 
     return queue;
+}
+
+void qemu_new_net_queue_for_tcg(void *opaque)
+{
+    nqt_queue = g_new0(NetQueueForTcg, 1);
+
+    nqt_queue->opaque = opaque;
+}
+
+NetQueueForTcg* get_new_net_queue_for_tcg() {
+    if (!nqt_queue) 
+        return NULL;
+    return nqt_queue;
 }
 
 void qemu_del_net_queue(NetQueue *queue)
@@ -110,6 +125,7 @@ static void qemu_net_queue_append(NetQueue *queue,
     memcpy(packet->data, buf, size);
 
     queue->nq_count++;
+    printf("%s: appending packet to queue of size: %lu\n", __func__, size);
     QTAILQ_INSERT_TAIL(&queue->packets, packet, entry);
 }
 
@@ -143,7 +159,7 @@ void qemu_net_queue_append_iov(NetQueue *queue,
         memcpy(packet->data + packet->size, iov[i].iov_base, len);
         packet->size += len;
     }
-
+    printf("%s: appending packet to queue: %d\n", __func__, queue->nq_count);
     queue->nq_count++;
     QTAILQ_INSERT_TAIL(&queue->packets, packet, entry);
 }
@@ -257,6 +273,7 @@ bool qemu_net_queue_flush(NetQueue *queue)
         packet = QTAILQ_FIRST(&queue->packets);
         QTAILQ_REMOVE(&queue->packets, packet, entry);
         queue->nq_count--;
+	printf("%s: flushing packet queue: %d\n", __func__, queue->nq_count);
 
         ret = qemu_net_queue_deliver(queue,
                                      packet->sender,
@@ -271,8 +288,7 @@ bool qemu_net_queue_flush(NetQueue *queue)
 
         if (packet->sent_cb) {
             packet->sent_cb(packet->sender, ret);
-        }
-
+	}
         g_free(packet);
     }
     return true;

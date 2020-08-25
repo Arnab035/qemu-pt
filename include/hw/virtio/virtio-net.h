@@ -18,6 +18,9 @@
 #include "standard-headers/linux/virtio_net.h"
 #include "hw/virtio/virtio.h"
 
+#include "replay/replay-internal.h"
+#include "net/net.h"
+
 #define TYPE_VIRTIO_NET "virtio-net-device"
 #define VIRTIO_NET(obj) \
         OBJECT_CHECK(VirtIONet, (obj), TYPE_VIRTIO_NET)
@@ -107,5 +110,8 @@ typedef struct VirtIONet {
 
 void virtio_net_set_netclient_name(VirtIONet *n, const char *name,
                                    const char *type);
+
+ssize_t virtio_net_receive(NetClientState *nc, const uint8_t *buf,
+		                   size_t size);
 
 #endif

@@ -69,6 +69,9 @@
 #undef MEMSUFFIX
 #endif
 
+int is_within_block = 0; 
+int index_fup_address = 0;
+
 /* return non zero if error */
 static inline int load_segment_ra(CPUX86State *env, uint32_t *e1_ptr,
                                uint32_t *e2_ptr, int selector,
@@ -843,12 +846,62 @@ static inline target_ulong get_rsp_from_tss(CPUX86State *env, int level)
     return cpu_ldq_kernel(env, env->tr.base + index);
 }
 
+/* returns the index i of the ith instruction 
+ * within a tb where page fault occurred 
+ * parameters : eip is the instruction pointer where page fault occurs
+ * */
+
+static int return_index_of_instruction(target_ulong eip) {
+  int index=0;
+  while(index < size_of_tb_insn_array) {
+    if(tb_insn_array[index] == eip) {
+      return index;
+    }
+    index++;
+  }
+  return -1;
+}
+
+
+/*  convert a string address to an unsigned long integer
+ *  address
+ */
+
+unsigned long do_strtoul(char *address) {
+  char *full_address = malloc(17 * sizeof(char));
+  int i;
+  unsigned long address_in_int;
+  if(strncmp(address, "ffff", 4)==0) {
+    for(i=0;i<=3;i++) {
+      full_address[i]='f';
+    }
+    for(i=4;i<=15;i++) {
+      full_address[i] = address[i-4];
+    }
+    full_address[i]='\0';
+  }
+  else {
+    for(i=0;i<=15;i++) {
+      if(address[i] == '\0') {
+        break;
+      }
+      full_address[i]=address[i];
+      
+    }
+    full_address[i]='\0';
+  }
+  //printf("full_address : %s\n", full_address);
+  address_in_int = strtoul(full_address, NULL, 16);
+  return address_in_int;
+}
+
 /* 64 bit interrupt */
-static void do_interrupt64(CPUX86State *env, int intno, int is_int,
+static void do_orig_interrupt64(CPUX86State *env, int intno, int is_int,
                            int error_code, target_ulong next_eip, int is_hw)
 {
     SegmentCache *dt;
     target_ulong ptr;
+    printf("next_eip: 0x%lx\n", next_eip);
     int type, dpl, selector, cpl, ist;
     int has_error_code, new_stack;
     uint32_t e1, e2, e3, ss;
@@ -959,6 +1012,203 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
                    get_seg_base(e1, e2),
                    get_seg_limit(e1, e2),
                    e2);
+    if (tnt_array[index_array] == 'F' && tnt_array[index_array+1] == 'P') {
+	while(tip_addresses[index_tip_address].is_useful == 0) {
+		index_tip_address++;
+	}
+	index_tip_address++;
+	index_fup_address++;
+	index_array+=2;
+    }
+    env->eip = offset;
+}
+
+/* modified 64 bit interrupt */
+static void do_interrupt64(CPUX86State *env, int intno, int is_int,
+                           int error_code, target_ulong next_eip, int is_hw)
+{
+  target_ulong old_eip;
+  int index;
+  if(is_int) {
+    old_eip=next_eip;
+  } else {
+    printf("env->eip(inside do_interrupt64) is 0x%lx\n", env->eip);
+    old_eip=env->eip;
+  }
+
+  /* if there is a page fault in the kernel, 
+   * get the next instruction following the page fault
+   * (do not run page fault handler) */
+
+  if(tb_insn_array==NULL) {
+    printf("cannot access tb_insn_array: not well formed\n");
+  }
+  else {
+    index=return_index_of_instruction(old_eip);
+    if(index==-1) {
+      printf("Panic:index should not be negative\n");
+    }
+    else {
+      env->eip=tb_insn_array[index+1];
+      printf("next env->eip to be executed is : 0x%lx\n", env->eip);
+      if((intno == 14 || intno == 13 || intno == 0) && ((index+1) < size_of_tb_insn_array)) 
+      {
+	is_within_block = 1;    // global var to indicate execution within original block
+        goto end;
+      }
+    }
+  }
+  /*
+  if(index_array_incremented) {  
+    index_array=index_array-1;
+  }*/
+  /* convert string(tip_address_info.address) to unsigned long long int */
+  /* index into tip address array : index_tip_address */
+  if(intno != 7) {
+    /* 
+    address = do_strtoul(tip_addresses[index_tip_address].address); 
+    printf("%s: address : %lx\n", __func__, address);
+    if(address != env->eip) {
+      env->eip = address;
+    }*/
+  }
+  else {
+    do_userspace_interrupt(env, intno, 0, 0, do_strtoul(tip_addresses[index_tip_address + 1].address), 0);
+    // consume tip address and the tip bits
+    index_tip_address++;
+    index_array++;
+  }
+  /* otherwise continue with env->eip */
+  return;
+end:
+  if(index_array_incremented) {
+    index_array=index_array-1;
+  }
+  if(index_tip_address_incremented) {
+    index_tip_address=index_tip_address-1;
+  }
+return;   
+}
+
+void do_userspace_interrupt(CPUX86State *env, int intno, int is_int,
+                           int error_code, target_ulong next_eip, int is_hw)
+{
+    SegmentCache *dt;
+    target_ulong ptr;
+    int type, dpl, selector, cpl, ist;
+    int has_error_code, new_stack;
+    uint32_t e1, e2, e3, ss;
+    target_ulong old_eip, esp, offset;
+
+    has_error_code = 0;
+
+    printf("error/interrupt in the userspace\n");
+
+    if (!is_int && !is_hw) {
+        has_error_code = exception_has_error_code(intno);
+    }
+    if (is_int) {
+        old_eip = next_eip;
+    } else {
+        old_eip = env->eip;
+    }
+
+    dt = &env->idt;
+    if (intno * 16 + 15 > dt->limit) {
+        raise_exception_err(env, EXCP0D_GPF, intno * 16 + 2);
+    }
+    ptr = dt->base + intno * 16;
+    e1 = cpu_ldl_kernel(env, ptr);
+    e2 = cpu_ldl_kernel(env, ptr + 4);
+    e3 = cpu_ldl_kernel(env, ptr + 8);
+    /* check gate type */
+    type = (e2 >> DESC_TYPE_SHIFT) & 0x1f;
+    switch (type) {
+    case 14: /* 386 interrupt gate */
+    case 15: /* 386 trap gate */
+        break;
+    default:
+        raise_exception_err(env, EXCP0D_GPF, intno * 16 + 2);
+        break;
+    }
+    dpl = (e2 >> DESC_DPL_SHIFT) & 3;
+    cpl = env->hflags & HF_CPL_MASK;
+    /* check privilege if software int */
+    if (is_int && dpl < cpl) {
+        raise_exception_err(env, EXCP0D_GPF, intno * 16 + 2);
+    }
+    /* check valid bit */
+    if (!(e2 & DESC_P_MASK)) {
+        raise_exception_err(env, EXCP0B_NOSEG, intno * 16 + 2);
+    }
+    selector = e1 >> 16;
+    offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
+    ist = e2 & 7;
+    if ((selector & 0xfffc) == 0) {
+        raise_exception_err(env, EXCP0D_GPF, 0);
+    }
+
+    if (load_segment(env, &e1, &e2, selector) != 0) {
+        raise_exception_err(env, EXCP0D_GPF, selector & 0xfffc);
+    }
+    if (!(e2 & DESC_S_MASK) || !(e2 & (DESC_CS_MASK))) {
+        raise_exception_err(env, EXCP0D_GPF, selector & 0xfffc);
+    }
+    dpl = (e2 >> DESC_DPL_SHIFT) & 3;
+    if (dpl > cpl) {
+        raise_exception_err(env, EXCP0D_GPF, selector & 0xfffc);
+    }
+    if (!(e2 & DESC_P_MASK)) {
+        raise_exception_err(env, EXCP0B_NOSEG, selector & 0xfffc);
+    }
+    if (!(e2 & DESC_L_MASK) || (e2 & DESC_B_MASK)) {
+        raise_exception_err(env, EXCP0D_GPF, selector & 0xfffc);
+    }
+    if (e2 & DESC_C_MASK) {
+        dpl = cpl;
+    }
+    if (dpl < cpl || ist != 0) {
+        /* to inner privilege */
+        new_stack = 1;
+        esp = get_rsp_from_tss(env, ist != 0 ? ist + 3 : dpl);
+        ss = 0;
+    } else {
+        /* to same privilege */
+        if (env->eflags & VM_MASK) {
+            raise_exception_err(env, EXCP0D_GPF, selector & 0xfffc);
+        }
+        new_stack = 0;
+        esp = env->regs[R_ESP];
+    }
+    esp &= ~0xfLL; /* align stack */
+
+    PUSHQ(esp, env->segs[R_SS].selector);
+    PUSHQ(esp, env->regs[R_ESP]);
+    PUSHQ(esp, cpu_compute_eflags(env));
+    PUSHQ(esp, env->segs[R_CS].selector);
+    PUSHQ(esp, old_eip);
+    if (has_error_code) {
+        PUSHQ(esp, error_code);
+    }
+
+    /* interrupt gate clear IF mask */
+    if ((type & 1) == 0) {
+        env->eflags &= ~IF_MASK;
+    }
+    env->eflags &= ~(TF_MASK | VM_MASK | RF_MASK | NT_MASK);
+
+    if (new_stack) {
+        ss = 0 | dpl;
+        cpu_x86_load_seg_cache(env, R_SS, ss, 0, 0, dpl << DESC_DPL_SHIFT);
+    }
+    env->regs[R_ESP] = esp;
+
+    selector = (selector & ~3) | dpl;
+    cpu_x86_load_seg_cache(env, R_CS, selector,
+                   get_seg_base(e1, e2),
+                   get_seg_limit(e1, e2),
+                   e2);
+    printf("offset is 0x%lx\n", offset);
     env->eip = offset;
 }
 #endif
@@ -1199,7 +1449,8 @@ static void handle_even_inj(CPUX86State *env, int intno, int is_int,
  * instruction. It is only relevant if is_int is TRUE.
  */
 static void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
-                             int error_code, target_ulong next_eip, int is_hw)
+                             int error_code, target_ulong next_eip, int is_hw,
+			     int is_actual)
 {
     CPUX86State *env = &cpu->env;
 
@@ -1245,7 +1496,11 @@ static void do_interrupt_all(X86CPU *cpu, int intno, int is_int,
 #endif
 #ifdef TARGET_X86_64
         if (env->hflags & HF_LMA_MASK) {
-            do_interrupt64(env, intno, is_int, error_code, next_eip, is_hw);
+	    if (is_actual) {
+		do_orig_interrupt64(env, intno, is_int, error_code, next_eip, is_hw);
+	    } else {
+            	do_interrupt64(env, intno, is_int, error_code, next_eip, is_hw);
+	    }
         } else
 #endif
         {
@@ -1298,7 +1553,7 @@ void x86_cpu_do_interrupt(CPUState *cs)
         do_interrupt_all(cpu, cs->exception_index,
                          env->exception_is_int,
                          env->error_code,
-                         env->exception_next_eip, 0);
+                         env->exception_next_eip, 0, 0);
         /* successfully delivered */
         env->old_exception = -1;
     }
@@ -1307,7 +1562,7 @@ void x86_cpu_do_interrupt(CPUState *cs)
 
 void do_interrupt_x86_hardirq(CPUX86State *env, int intno, int is_hw)
 {
-    do_interrupt_all(x86_env_get_cpu(env), intno, 0, 0, 0, is_hw);
+    do_interrupt_all(x86_env_get_cpu(env), intno, 0, 0, 0, is_hw, 1);
 }
 
 bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
@@ -1315,6 +1570,7 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     X86CPU *cpu = X86_CPU(cs);
     CPUX86State *env = &cpu->env;
     bool ret = false;
+    printf("interrupt rquest\n");
 
 #if !defined(CONFIG_USER_ONLY)
     if (interrupt_request & CPU_INTERRUPT_POLL) {
@@ -1359,10 +1615,14 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             intno = cpu_get_pic_interrupt(env);
             qemu_log_mask(CPU_LOG_TB_IN_ASM,
                           "Servicing hardware INT=0x%02x\n", intno);
-            do_interrupt_x86_hardirq(env, intno, 1);
+	    if(tnt_array[index_array] == 'F' && 
+	        fup_addresses[index_fup_address].type_of_fup == FUP_TYPE_INTERRUPT) {
+		/* TODO: get correct interrupt number from the TIP destination */
+            	do_interrupt_x86_hardirq(env, 113, 1);
+	    }
             /* ensure that no TB jump will be modified as
                the program flow was changed */
-            ret = true;
+            ret = false;
 #if !defined(CONFIG_USER_ONLY)
         } else if ((interrupt_request & CPU_INTERRUPT_VIRQ) &&
                    (env->eflags & IF_MASK) &&

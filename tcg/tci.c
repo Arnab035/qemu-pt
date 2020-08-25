@@ -1094,11 +1094,13 @@ uintptr_t tcg_qemu_tb_exec(CPUArchState *env, uint8_t *tb_ptr)
             /* QEMU specific operations. */
 
         case INDEX_op_exit_tb:
+	    printf("%s: INDEX_op_exit_tb: 0x%lx\n", __func__, env->eip);
             ret = *(uint64_t *)tb_ptr;
             goto exit;
             break;
         case INDEX_op_goto_tb:
             /* Jump address is aligned */
+	    printf("%s: INDEX_op_goto_tb: 0x%lx\n", __func__, env->eip);
             tb_ptr = QEMU_ALIGN_PTR_UP(tb_ptr, 4);
             t0 = atomic_read((int32_t *)tb_ptr);
             tb_ptr += sizeof(int32_t);

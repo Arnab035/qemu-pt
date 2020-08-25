@@ -478,8 +478,23 @@ static bool virtio_blk_sect_range_ok(VirtIOBlock *dev,
     return true;
 }
 
-static int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb)
+int virtio_blk_handle_request(VirtIOBlockReq *req, MultiReqBuffer *mrb)
 {
+    /* function being recorded here
+     */
+    if (start_recording) {
+    	if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+		if (!arnab_replay_file) {
+			printf("No replay file available");
+			exit(0);
+		}
+	}
+        arnab_replay_put_event(PCI_DISK_EVENT);
+
+        arnab_replay_put_qword((int64_t)req);
+        arnab_replay_put_qword((int64_t)mrb);
+    }
+
     uint32_t type;
     struct iovec *in_iov = req->elem.in_sg;
     struct iovec *iov = req->elem.out_sg;

@@ -259,6 +259,7 @@ static void qemu_net_client_setup(NetClientState *nc,
     }
     QTAILQ_INSERT_TAIL(&net_clients, nc, next);
 
+    qemu_new_net_queue_for_tcg(nc);
     nc->incoming_queue = qemu_new_net_queue(qemu_deliver_packet_iov, nc);
     nc->destructor = destructor;
     QTAILQ_INIT(&nc->filters);

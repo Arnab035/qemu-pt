@@ -1,6 +1,8 @@
 #ifndef REPLAY_INTERNAL_H
 #define REPLAY_INTERNAL_H
 
+#include "sysemu/replay.h"
+
 /*
  * replay-internal.h
  *
@@ -59,6 +61,12 @@ enum ReplayAsyncEventKind {
     REPLAY_ASYNC_COUNT
 };
 
+/* event IDs corresponding to arnab record-replay */
+
+#define PCI_DISK_EVENT        1
+#define PCI_NETWORK_EVENT     2
+#define VMENTRY_EVENT         3
+
 typedef enum ReplayAsyncEventKind ReplayAsyncEventKind;
 
 typedef struct ReplayState {
@@ -91,20 +99,59 @@ extern ReplayState replay_state;
 
 /* File for replay writing */
 extern FILE *replay_file;
+extern FILE *arnab_replay_file;
+
+extern bool start_recording;
+
 
 void replay_put_byte(uint8_t byte);
+void arnab_replay_put_byte(uint8_t byte);
+
+
 void replay_put_event(uint8_t event);
+void arnab_replay_put_event(uint8_t event);
+
+
 void replay_put_word(uint16_t word);
+void arnab_replay_put_word(uint16_t word);
+
+
 void replay_put_dword(uint32_t dword);
+void arnab_replay_put_dword(uint32_t dword);
+
+
 void replay_put_qword(int64_t qword);
+void arnab_replay_put_qword(int64_t qword);
+
+
 void replay_put_array(const uint8_t *buf, size_t size);
+void arnab_replay_put_array(const uint8_t *buf, size_t size);
+
 
 uint8_t replay_get_byte(void);
+uint8_t arnab_replay_get_byte(void);
+
+uint8_t arnab_replay_read_event(void);
 uint16_t replay_get_word(void);
+uint16_t arnab_replay_get_word(void);
+
+
 uint32_t replay_get_dword(void);
+uint32_t arnab_replay_get_dword(void);
+
+
 int64_t replay_get_qword(void);
+int64_t arnab_replay_get_qword(void);
+
+
 void replay_get_array(uint8_t *buf, size_t *size);
+void arnab_replay_get_array(uint8_t *buf, size_t *size);
+
+
 void replay_get_array_alloc(uint8_t **buf, size_t *size);
+void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size);
+
+
 
 /* Mutex functions for protecting replay log file and ensuring
  * synchronisation between vCPU and main-loop threads. */
@@ -114,6 +161,7 @@ bool replay_mutex_locked(void);
 
 /*! Checks error status of the file. */
 void replay_check_error(void);
+void arnab_replay_check_error(void);
 
 /*! Finishes processing of the replayed event and fetches
     the next event from the log. */

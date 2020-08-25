@@ -3577,6 +3577,20 @@ many timer interrupts were not processed by the Windows guest and will
 re-inject them.
 ETEXI
 
+DEF("arnab_replay", HAS_ARG, QEMU_OPTION_rr, \
+    "-arnab_replay [mode=record|replay,file=<filename>]\n"
+    "		     configure a new replay mode without using the -icount feature\n"
+    "		     mode corresponds to the mode of record-replay\n", QEMU_ARCH_ALL)
+
+STEXI
+@item -arnab_replay [mode=record|replay][,rrfile=@var{filename}]
+@findex -arnab_replay
+Sets record/replay mode without the use of -icount feature. This is a minimal record-replay
+feature that we are using. We only record NETWORK and DISK events into file @var{filename}. 
+Later we replay these events using @var{mode}=REPLAY. The configuration of the record-replay mechanismwill mostly follow the same process as the original record-replay with icount.
+ETEXI
+
+
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
     "-icount [shift=N|auto][,align=on|off][,sleep=on|off,rr=record|replay,rrfile=<filename>,rrsnapshot=<snapshot>]\n" \
     "                enable virtual instruction counter with 2^N clock ticks per\n" \

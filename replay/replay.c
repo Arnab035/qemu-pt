@@ -27,10 +27,16 @@
 #define HEADER_SIZE                 (sizeof(uint32_t) + sizeof(uint64_t))
 
 ReplayMode replay_mode = REPLAY_MODE_NONE;
+ReplayMode arnab_replay_mode = REPLAY_MODE_NONE;
+
+
 char *replay_snapshot;
 
 /* Name of replay file  */
 static char *replay_filename;
+static char *arnab_replay_filename;
+
+
 ReplayState replay_state;
 static GSList *replay_blockers;
 
@@ -81,7 +87,7 @@ int replay_get_instructions(void)
 void replay_account_executed_instructions(void)
 {
     if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         if (replay_state.instructions_count > 0) {
             int count = (int)(replay_get_current_step()
                               - replay_state.current_step);
@@ -107,12 +113,12 @@ bool replay_exception(void)
 {
 
     if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_save_instructions();
         replay_put_event(EVENT_EXCEPTION);
         return true;
     } else if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         bool res = replay_has_exception();
         if (res) {
             replay_finish_event();
@@ -127,7 +133,7 @@ bool replay_has_exception(void)
 {
     bool res = false;
     if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_account_executed_instructions();
         res = replay_next_event_is(EVENT_EXCEPTION);
     }
@@ -138,12 +144,12 @@ bool replay_has_exception(void)
 bool replay_interrupt(void)
 {
     if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_save_instructions();
         replay_put_event(EVENT_INTERRUPT);
         return true;
     } else if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         bool res = replay_has_interrupt();
         if (res) {
             replay_finish_event();
@@ -158,8 +164,8 @@ bool replay_has_interrupt(void)
 {
     bool res = false;
     if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
-        replay_account_executed_instructions();
+        //g_assert(replay_mutex_locked());
+        //replay_account_executed_instructions();
         res = replay_next_event_is(EVENT_INTERRUPT);
     }
     return res;
@@ -168,10 +174,24 @@ bool replay_has_interrupt(void)
 void replay_shutdown_request(ShutdownCause cause)
 {
     if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_put_event(EVENT_SHUTDOWN + cause);
     }
 }
+
+void arnab_replay_shutdown_request(ShutdownCause cause)
+{
+    if (replay_mode == REPLAY_MODE_RECORD) {
+	arnab_replay_put_event(EVENT_SHUTDOWN + cause);
+    }
+}
+
+/* we will only store checkpoint events in the file - that too
+ *  * checkpoints CHECKPOINT_VMENTRY and CHECKPOINT_VMEXIT
+ *   * so when this function runs, make sure that it never runs
+ *    * replay_save_instructions() */
+
+
 
 bool replay_checkpoint(ReplayCheckpoint checkpoint)
 {
@@ -196,7 +216,7 @@ bool replay_checkpoint(ReplayCheckpoint checkpoint)
     replay_save_instructions();
 
     if (replay_mode == REPLAY_MODE_PLAY) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         if (replay_next_event_is(EVENT_CHECKPOINT + checkpoint)) {
             replay_finish_event();
         } else if (replay_state.data_kind != EVENT_ASYNC) {
@@ -209,7 +229,7 @@ bool replay_checkpoint(ReplayCheckpoint checkpoint)
            checkpoint were processed */
         res = replay_state.data_kind != EVENT_ASYNC;
     } else if (replay_mode == REPLAY_MODE_RECORD) {
-        g_assert(replay_mutex_locked());
+        //g_assert(replay_mutex_locked());
         replay_put_event(EVENT_CHECKPOINT + checkpoint);
         /* This checkpoint belongs to several threads.
            Processing events from different threads is
@@ -225,96 +245,173 @@ out:
 }
 
 static void replay_enable(const char *fname, int mode)
-{
-    const char *fmode = NULL;
-    assert(!replay_file);
+{   
+        const char *fmode = NULL;
+        assert(!replay_file);
 
-    switch (mode) {
-    case REPLAY_MODE_RECORD:
-        fmode = "wb";
-        break;
-    case REPLAY_MODE_PLAY:
-        fmode = "rb";
-        break;
-    default:
-        fprintf(stderr, "Replay: internal error: invalid replay mode\n");
-        exit(1);
-    }
+        switch (mode) {
+            case REPLAY_MODE_RECORD:
+                fmode = "wb";
+                break;
+            case REPLAY_MODE_PLAY:
+                fmode = "rb";
+                break;
+            default:
+                fprintf(stderr, "Replay: internal error: invalid replay mode\n");
+                exit(1);
+        }
 
-    atexit(replay_finish);
+        atexit(replay_finish);
 
-    replay_file = fopen(fname, fmode);
-    if (replay_file == NULL) {
-        fprintf(stderr, "Replay: open %s: %s\n", fname, strerror(errno));
-        exit(1);
-    }
-
-    replay_filename = g_strdup(fname);
-    replay_mode = mode;
-    replay_mutex_init();
-
-    replay_state.data_kind = -1;
-    replay_state.instructions_count = 0;
-    replay_state.current_step = 0;
-    replay_state.has_unread_data = 0;
-
-    /* skip file header for RECORD and check it for PLAY */
-    if (replay_mode == REPLAY_MODE_RECORD) {
-        fseek(replay_file, HEADER_SIZE, SEEK_SET);
-    } else if (replay_mode == REPLAY_MODE_PLAY) {
-        unsigned int version = replay_get_dword();
-        if (version != REPLAY_VERSION) {
-            fprintf(stderr, "Replay: invalid input log file version\n");
+        replay_file = fopen(fname, fmode);
+        if (replay_file == NULL) {
+            fprintf(stderr, "Replay: open %s: %s\n", fname, strerror(errno));
             exit(1);
         }
-        /* go to the beginning */
-        fseek(replay_file, HEADER_SIZE, SEEK_SET);
-        replay_fetch_data_kind();
-    }
+
+        replay_filename = g_strdup(fname);
+        replay_mode = mode;
+        replay_mutex_init();
+
+        replay_state.data_kind = -1;
+        replay_state.instructions_count = 0;
+        replay_state.current_step = 0;
+        replay_state.has_unread_data = 0;
+
+        /* skip file header for RECORD and check it for PLAY */
+        if (replay_mode == REPLAY_MODE_RECORD) {
+            fseek(replay_file, HEADER_SIZE, SEEK_SET);
+        } else if (replay_mode == REPLAY_MODE_PLAY) {
+            unsigned int version = replay_get_dword();
+            if (version != REPLAY_VERSION) {
+                fprintf(stderr, "Replay: invalid input log file version\n");
+                exit(1);
+            }
+            /* go to the beginning */
+            fseek(replay_file, HEADER_SIZE, SEEK_SET);
+            replay_fetch_data_kind();
+        }
 
     replay_init_events();
 }
 
-void replay_configure(QemuOpts *opts)
-{
-    const char *fname;
-    const char *rr;
-    ReplayMode mode = REPLAY_MODE_NONE;
-    Location loc;
+static void arnab_replay_enable(const char *fname, int mode) {
+    const char *fmode = NULL;
+    assert(!replay_file);
 
-    if (!opts) {
-        return;
+    switch (mode) {
+	case REPLAY_MODE_RECORD:
+	    fmode = "wb";
+	    break;
+        case REPLAY_MODE_PLAY:
+	    fmode = "rb";
+	    break;
+	default:
+	    fprintf(stderr, "Replay: internal error: invalid replay mode\n");
+	    exit(1);
     }
 
-    loc_push_none(&loc);
-    qemu_opts_loc_restore(opts);
+    atexit(arnab_replay_finish); // studied about atexit today :)
 
-    rr = qemu_opt_get(opts, "rr");
-    if (!rr) {
-        /* Just enabling icount */
-        goto out;
-    } else if (!strcmp(rr, "record")) {
-        mode = REPLAY_MODE_RECORD;
-    } else if (!strcmp(rr, "replay")) {
-        mode = REPLAY_MODE_PLAY;
-    } else {
-        error_report("Invalid icount rr option: %s", rr);
-        exit(1);
+    arnab_replay_file = fopen(fname, fmode);
+    if (arnab_replay_file == NULL) {
+	fprintf(stderr, "Replay: open %s: %s\n", fname, strerror(errno));
+	exit(1);
     }
 
-    fname = qemu_opt_get(opts, "rrfile");
-    if (!fname) {
-        error_report("File name not specified for replay");
-        exit(1);
+    arnab_replay_filename = g_strdup(fname);
+    arnab_replay_mode = mode;
+
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+	fseek(arnab_replay_file, HEADER_SIZE, SEEK_SET);
+    } else if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+	unsigned int version = arnab_replay_get_dword();
+	if (version != REPLAY_VERSION) {
+	    fprintf(stderr, "Replay: invalid input log file version\n");
+	    exit(1);
+	}
+	fseek(arnab_replay_file, HEADER_SIZE, SEEK_SET);
     }
-
-    replay_snapshot = g_strdup(qemu_opt_get(opts, "rrsnapshot"));
-    replay_vmstate_register();
-    replay_enable(fname, mode);
-
-out:
-    loc_pop(&loc);
+    printf("Enabled replay");
 }
+
+void replay_configure(QemuOpts *opts, int is_icount)
+{
+    if(is_icount == 1) {
+    	const char *fname;
+    	const char *rr;
+    	ReplayMode mode = REPLAY_MODE_NONE;
+    	Location loc;
+
+    
+    	if (!opts) {
+            return;
+    	}
+
+    	loc_push_none(&loc);
+    	qemu_opts_loc_restore(opts);
+
+    
+    	rr = qemu_opt_get(opts, "rr");
+    	if (!rr) {
+            goto out;
+    	} else if (!strcmp(rr, "record")) {
+            mode = REPLAY_MODE_RECORD;
+    	} else if (!strcmp(rr, "replay")) {
+            mode = REPLAY_MODE_PLAY;
+    	} else {
+            error_report("Invalid icount rr option: %s", rr);
+            exit(1);
+        }
+
+        fname = qemu_opt_get(opts, "rrfile");
+        if (!fname) {
+            error_report("File name not specified for replay");
+            exit(1);
+        }
+
+        //mode = REPLAY_MODE_RECORD;
+        //fname = "replay.bin";
+
+        replay_snapshot = g_strdup(qemu_opt_get(opts, "rrsnapshot"));
+        replay_vmstate_register();
+        replay_enable(fname, mode);
+out:
+	loc_pop(&loc);
+
+    } else {
+        // this is not coming from icount mode
+        const char *fname;
+	const char *rmode;
+	ReplayMode mode = REPLAY_MODE_NONE;
+	Location loc;
+
+	if(!opts) {
+	    return;
+	}
+	printf("About to start replaying\n");
+	loc_push_none(&loc);
+	qemu_opts_loc_restore(opts);
+	fname = qemu_opt_get(opts, "file");
+	if (!fname) {
+	    printf("File name");
+	    error_report("File name not specified for replay");
+	    exit(1);
+	}
+        rmode = qemu_opt_get(opts, "mode");
+        if (!rmode) {
+	    error_report("Mode not specified for replay");
+	    exit(1);
+	} else if(strcmp(rmode, "record") == 0) {
+	    mode = REPLAY_MODE_RECORD;
+	} else if(strcmp(rmode, "replay") == 0) {
+	    mode = REPLAY_MODE_PLAY;
+	}
+        arnab_replay_enable(fname, mode);
+	loc_pop(&loc);
+    }
+}
+
 
 void replay_start(void)
 {
@@ -326,10 +423,11 @@ void replay_start(void)
         error_reportf_err(replay_blockers->data, "Record/replay: ");
         exit(1);
     }
+    /*
     if (!use_icount) {
         error_report("Please enable icount to use record/replay");
         exit(1);
-    }
+    }*/
 
     /* Timer for snapshotting will be set up here. */
 
@@ -367,6 +465,27 @@ void replay_finish(void)
     replay_snapshot = NULL;
 
     replay_finish_events();
+}
+
+void arnab_replay_finish(void)
+{
+    if (arnab_replay_mode == REPLAY_MODE_NONE) {
+        return;
+    }
+    if (arnab_replay_file) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+				            /* write end event */
+	     arnab_replay_put_event(EVENT_END);
+	     fseek(arnab_replay_file, 0, SEEK_SET);
+	     arnab_replay_put_dword(REPLAY_VERSION);
+	}
+        fclose(arnab_replay_file);
+	arnab_replay_file = NULL;
+    }
+    if (arnab_replay_filename) {
+       g_free(arnab_replay_filename);
+       arnab_replay_filename = NULL;
+    }
 }
 
 void replay_add_blocker(Error *reason)

@@ -29,6 +29,14 @@
 typedef struct NetPacket NetPacket;
 typedef struct NetQueue NetQueue;
 
+struct NetQueueForTcg {
+    void *opaque;
+};
+
+typedef struct NetQueueForTcg NetQueueForTcg;
+
+extern NetQueueForTcg *nqt_queue;
+
 typedef void (NetPacketSent) (NetClientState *sender, ssize_t ret);
 
 #define QEMU_NET_PACKET_FLAG_NONE  0
@@ -55,6 +63,10 @@ void qemu_net_queue_append_iov(NetQueue *queue,
                                NetPacketSent *sent_cb);
 
 void qemu_del_net_queue(NetQueue *queue);
+
+void qemu_new_net_queue_for_tcg(void *opaque);
+
+NetQueueForTcg* get_new_net_queue_for_tcg();
 
 ssize_t qemu_net_queue_send(NetQueue *queue,
                             NetClientState *sender,

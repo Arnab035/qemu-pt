@@ -715,7 +715,7 @@ Chardev *qemu_chr_new(const char *label, const char *filename)
     chr = qemu_chr_new_noreplay(label, filename);
     if (chr) {
         if (replay_mode != REPLAY_MODE_NONE) {
-            qemu_chr_set_feature(chr, QEMU_CHAR_FEATURE_REPLAY);
+            //qemu_chr_set_feature(chr, QEMU_CHAR_FEATURE_REPLAY);
         }
         if (qemu_chr_replay(chr) && CHARDEV_GET_CLASS(chr)->chr_ioctl) {
             error_report("Replay: ioctl is not supported "

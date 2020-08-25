@@ -1200,17 +1200,20 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     size_t offset, i, guest_offset;
 
     if (!virtio_net_can_receive(nc)) {
+	printf("Virtio net cannot receive... returning\n");
         return -1;
     }
 
     /* hdr_len refers to the header we supply to the guest */
     if (!virtio_net_has_buffers(q, size + n->guest_hdr_len - n->host_hdr_len)) {
+	printf("Virtio net has no buffers... returning\n");
         return 0;
     }
 
-    if (!receive_filter(n, buf, size))
+    if (!receive_filter(n, buf, size)) {
+	printf("No receive filter... returning\n");
         return size;
-
+    }
     offset = i = 0;
 
     while (offset < size) {
@@ -1223,6 +1226,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         elem = virtqueue_pop(q->rx_vq, sizeof(VirtQueueElement));
         if (!elem) {
             if (i) {
+		printf("virtio-net unexpected empty queue");
                 virtio_error(vdev, "virtio-net unexpected empty queue: "
                              "i %zd mergeable %d offset %zd, size %zd, "
                              "guest hdr len %zd, host hdr len %zd "
@@ -1235,6 +1239,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         }
 
         if (elem->in_num < 1) {
+	    printf("virtio-net receive queue contains no in buffers\n");
             virtio_error(vdev,
                          "virtio-net receive queue contains no in buffers");
             virtqueue_detach_element(q->rx_vq, elem, 0);
@@ -1251,7 +1256,6 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
                                     offsetof(typeof(mhdr), num_buffers),
                                     sizeof(mhdr.num_buffers));
             }
-
             receive_header(n, sg, elem->in_num, buf, size);
             offset = n->host_hdr_len;
             total += n->guest_hdr_len;
@@ -1261,6 +1265,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         }
 
         /* copy in packet.  ugh */
+	printf("offset: %ld, size-offset: %lu\n", offset, size-offset);
         len = iov_from_buf(sg, elem->in_num, guest_offset,
                            buf + offset, size - offset);
         total += len;
@@ -1275,6 +1280,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         }
 
         /* signal other side */
+	printf("Virtqueue fill\n");
         virtqueue_fill(q->rx_vq, elem, total, i++);
         g_free(elem);
     }
@@ -1292,10 +1298,22 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     return size;
 }
 
-static ssize_t virtio_net_receive(NetClientState *nc, const uint8_t *buf,
+ssize_t virtio_net_receive(NetClientState *nc, const uint8_t *buf,
                                   size_t size)
 {
     ssize_t r;
+    if (start_recording) {
+	//printf("After savevm: size of packet - %d\n", size);
+    	if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+		if (!arnab_replay_file) {
+			printf("No replay file available\n");
+			exit(0);
+		}
+		arnab_replay_put_event(PCI_NETWORK_EVENT);
+		// place the full network packet into the file
+		arnab_replay_put_array(buf, size);
+	}
+    }
 
     rcu_read_lock();
     r = virtio_net_receive_rcu(nc, buf, size);

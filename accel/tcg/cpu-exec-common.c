@@ -27,6 +27,14 @@ bool tcg_allowed;
 /* exit the current TB, but without causing any exception to be raised */
 void cpu_loop_exit_noexc(CPUState *cpu)
 {
+    if (is_io_instruction && index_array_incremented) {
+        index_array--;
+	if (index_tip_address_incremented) {
+	    index_tip_address--;
+	}
+	is_io_instruction = 0;
+    }
+
     cpu->exception_index = -1;
     cpu_loop_exit(cpu);
 }

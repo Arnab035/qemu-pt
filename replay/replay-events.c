@@ -16,6 +16,7 @@
 #include "replay-internal.h"
 #include "block/aio.h"
 #include "ui/input.h"
+#include "index_array_header.h"
 
 typedef struct Event {
     ReplayAsyncEventKind event_kind;
@@ -75,7 +76,7 @@ bool replay_has_events(void)
 
 void replay_flush_events(void)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
@@ -96,7 +97,7 @@ void replay_disable_events(void)
 
 void replay_clear_events(void)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
 
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
@@ -130,7 +131,7 @@ void replay_add_event(ReplayAsyncEventKind event_kind,
     event->opaque2 = opaque2;
     event->id = id;
 
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     QTAILQ_INSERT_TAIL(&events_list, event, events);
 }
 
@@ -200,7 +201,7 @@ static void replay_save_event(Event *event, int checkpoint)
 /* Called with replay mutex locked */
 void replay_save_events(int checkpoint)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     g_assert(checkpoint != CHECKPOINT_CLOCK_WARP_START);
     while (!QTAILQ_EMPTY(&events_list)) {
         Event *event = QTAILQ_FIRST(&events_list);
@@ -286,7 +287,7 @@ static Event *replay_read_event(int checkpoint)
 /* Called with replay mutex locked */
 void replay_read_events(int checkpoint)
 {
-    g_assert(replay_mutex_locked());
+    //g_assert(replay_mutex_locked());
     while (replay_state.data_kind == EVENT_ASYNC) {
         Event *event = replay_read_event(checkpoint);
         if (!event) {

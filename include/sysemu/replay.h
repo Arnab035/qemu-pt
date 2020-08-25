@@ -37,6 +37,8 @@ enum ReplayCheckpoint {
     CHECKPOINT_CLOCK_VIRTUAL_RT,
     CHECKPOINT_INIT,
     CHECKPOINT_RESET,
+    CHECKPOINT_VMENTRY,
+    CHECKPOINT_VMEXIT,
     CHECKPOINT_COUNT
 };
 typedef enum ReplayCheckpoint ReplayCheckpoint;
@@ -44,6 +46,7 @@ typedef enum ReplayCheckpoint ReplayCheckpoint;
 typedef struct ReplayNetState ReplayNetState;
 
 extern ReplayMode replay_mode;
+extern ReplayMode arnab_replay_mode;
 
 /* Name of the initial VM snapshot */
 extern char *replay_snapshot;
@@ -64,11 +67,13 @@ void replay_mutex_unlock(void);
 /* Replay process control functions */
 
 /*! Enables recording or saving event log with specified parameters */
-void replay_configure(struct QemuOpts *opts);
+void replay_configure(struct QemuOpts *opts, int is_icount);
 /*! Initializes timers used for snapshotting and enables events recording */
 void replay_start(void);
 /*! Closes replay log file and frees other resources. */
 void replay_finish(void);
+
+void arnab_replay_finish(void);
 /*! Adds replay blocker with the specified error description */
 void replay_add_blocker(Error *reason);
 
@@ -105,15 +110,17 @@ int64_t replay_save_clock(ReplayClockKind kind, int64_t clock);
 int64_t replay_read_clock(ReplayClockKind kind);
 /*! Saves or reads the clock depending on the current replay mode. */
 #define REPLAY_CLOCK(clock, value)                                      \
-    (replay_mode == REPLAY_MODE_PLAY ? replay_read_clock((clock))       \
+    (replay_mode == REPLAY_MODE_PLAY ? (value)                          \
         : replay_mode == REPLAY_MODE_RECORD                             \
-            ? replay_save_clock((clock), (value))                       \
+            ? (value)                                                   \
         : (value))
 
 /* Events */
 
 /*! Called when qemu shutdown is requested. */
 void replay_shutdown_request(ShutdownCause cause);
+
+void arnab_replay_shutdown_request(ShutdownCause cause);  /* you need the cause */
 /*! Should be called at check points in the execution.
     These check points are skipped, if they were not met.
     Saves checkpoint in the SAVE mode and validates in the PLAY mode.

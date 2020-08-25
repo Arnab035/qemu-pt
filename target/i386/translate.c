@@ -1,5 +1,4 @@
-/*
- *  i386 translation
+/*i386 translation
  *
  *  Copyright (c) 2003 Fabrice Bellard
  *
@@ -32,6 +31,8 @@
 #include "trace-tcg.h"
 #include "exec/log.h"
 
+#include "index_array_header.h"
+
 #define PREFIX_REPZ   0x01
 #define PREFIX_REPNZ  0x02
 #define PREFIX_LOCK   0x04
@@ -56,6 +57,10 @@
 # define ctztl  ctz32
 # define clztl  clz32
 #endif
+
+#define KERNEL_BASE   0xffffffff80000000
+
+
 
 /* For a switch indexed by MODRM, match all memory operands for a given OP.  */
 #define CASE_MODRM_MEM_OP(OP) \
@@ -87,11 +92,22 @@ static TCGv_ptr cpu_ptr0, cpu_ptr1;
 static TCGv_i32 cpu_tmp2_i32, cpu_tmp3_i32;
 static TCGv_i64 cpu_tmp1_i64;
 
+int is_handle_interrupt_in_userspace=0;
+unsigned long tb_jump_address = 0;
+
 #include "exec/gen-icount.h"
 
 #ifdef TARGET_X86_64
 static int x86_64_hregs;
 #endif
+
+int index_array_incremented=1;
+int is_tnt_return = 0;
+int index_tip_address_incremented=1;
+
+unsigned long long index_array = 0;
+
+int is_nonio_vmexit = 0;
 
 typedef struct DisasContext {
     DisasContextBase base;
@@ -223,6 +239,8 @@ static const uint8_t cc_op_live[CC_OP_NB] = {
     [CC_OP_CLR] = 0,
     [CC_OP_POPCNT] = USES_CC_SRC,
 };
+
+int index_tip_address = 0;
 
 static void set_cc_op(DisasContext *s, CCOp op)
 {
@@ -4444,6 +4462,7 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
     }
 }
 
+
 /* convert one instruction. s->base.is_jmp is set if the translation must
    be stopped. Return the next pc value */
 static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
@@ -4451,11 +4470,32 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     CPUX86State *env = cpu->env_ptr;
     int b, prefixes;
     int shift;
+ 
+    printf("disas_insn - %llu\n", index_array);
+    printf("tnt_array - %c\n", tnt_array[index_array]);
+    int is_branch_taken;
     TCGMemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
     target_ulong next_eip, tval;
     int rex_w, rex_r;
     target_ulong pc_start = s->base.pc_next;
+
+    int cpl = env->hflags & HF_CPL_MASK;
+
+    if(index_array_incremented) {
+      index_array_incremented = 0;
+    }
+
+    if(is_tnt_return)
+      is_tnt_return = 0;
+
+    if(index_tip_address_incremented) {
+      index_tip_address_incremented=0;
+    }
+
+    if(is_handle_interrupt_in_userspace) {
+      is_handle_interrupt_in_userspace=0;
+    }
 
     s->pc_start = s->pc = pc_start;
     s->override = -1;
@@ -4471,6 +4511,29 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
+    if ((tnt_array[index_array] == 'F')
+	&& (fup_addresses[index_fup_address].type_of_fup == FUP_TYPE_VMEXIT||
+		fup_addresses[index_fup_address].type_of_fup == FUP_TYPE_INTERRUPT)
+	&& do_strtoul(fup_addresses[index_fup_address].address) == last_pc) {
+        printf("VMEXIT OR INTERRUPT there\n");
+
+	//if (fup_addresses[index_fup_address].type_of_fup == FUP_TYPE_VMEXIT) {
+	//    tval = do_strtoul(tip_addresses[index_tip_address].address);
+	//    if (dflag == MO_16) {
+	//        tval &= 0xffff;
+	//    } else if (!CODE64(s)) {
+	//        tval &= 0xffffffff;
+	//    }
+	//    gen_jmp_im(tval - s->cs_base) ;
+	//    tcg_gen_exit_tb(NULL, 0);
+	//    s->base.is_jmp = DISAS_NORETURN;
+	    index_array+=2;
+	    index_fup_address++;
+	    // consume the TIP since you jumped to it.
+	//    return do_strtoul(tip_addresses[index_tip_address].address);
+        //}
+    }
+    last_pc = pc_start;
 
     prefixes = 0;
     rex_w = -1;
@@ -5018,6 +5081,24 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             break;
         case 2: /* call Ev */
             /* XXX: optimize if memory (no 'and' is necessary) */
+            while(tnt_array[index_array] == 'K') {
+	      index_array++;
+	      index_cr3_value++;
+	    }
+	    if(tnt_array[index_array] == 'P') {
+	      index_array++;
+              index_array_incremented = 1;	      // consume the TIP bit if you can
+	      while(tip_addresses[index_tip_address].is_useful == 0) {
+	        index_tip_address++;
+	      }
+	      if(cpl > 0) {
+	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+		  is_handle_interrupt_in_userspace = 1;
+		}
+	      }
+	      index_tip_address++;     // consume the TIP address
+	      index_tip_address_incremented=1;
+	    }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(cpu_T0, cpu_T0);
             }
@@ -5048,6 +5129,25 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             gen_jr(s, cpu_tmp4);
             break;
         case 4: /* jmp Ev */
+            while(tnt_array[index_array] == 'K') {
+	      index_array++;
+	      index_cr3_value++;
+	    }
+	    if(tnt_array[index_array] == 'P') {
+	      index_array++;
+	      index_array_incremented=1;
+              while(tip_addresses[index_tip_address].is_useful == 0) {
+	        index_tip_address++;
+	      }
+              if(cpl > 0) {
+	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+		  is_handle_interrupt_in_userspace=1;
+		}
+	      }
+	      // consume the TIP address
+	      index_tip_address++;
+	      index_tip_address_incremented=1;
+	    }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(cpu_T0, cpu_T0);
             }
@@ -6448,6 +6548,33 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_jr(s, cpu_T0);
         break;
     case 0xc3: /* ret */
+        while(tnt_array[index_array] == 'K') {
+	  index_cr3_value++;
+	}
+	if(stopped_execution_of_tb_chain == 1) {
+	  index_array = index_array - 1;
+	}
+	if(tnt_array[index_array] != 'P') {
+	  printf("Intel-PT trace uses a TNT (taken) bit for return\n");
+	  index_array++;
+	  index_array_incremented = 1;
+	  is_tnt_return = 1;  
+	}
+        else {
+	  printf("Intel-PT trace uses a TIP bit for return\n");
+	  index_array++;
+	  index_array_incremented=1;
+	  while(tip_addresses[index_tip_address].is_useful == 0) {
+	    index_tip_address++;
+	  }
+	  if(cpl > 0) {
+	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {   // kernel address in userspace
+	      is_handle_interrupt_in_userspace=1;
+	    }
+	  }
+	  index_tip_address++;     // consume the TIP bit
+	  index_tip_address_incremented=1;
+	}	
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
         /* Note that gen_pop_T0 uses a zero-extending load.  */
@@ -6483,12 +6610,28 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         val = 0;
         goto do_lret;
     case 0xcf: /* iret */
+        while(tnt_array[index_array] == 'K') {
+	  index_array++;
+	  index_cr3_value++;
+	}
+        if(tnt_array[index_array] == 'P') {
+	  index_array++;
+	  index_array_incremented=1;
+	  while(tip_addresses[index_tip_address].is_useful==0) {
+	    index_tip_address++;
+	  }
+
+	  index_tip_address++;
+	  index_tip_address_incremented = 1;
+	}	
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_IRET);
         if (!s->pe) {
             /* real mode */
+	    printf("real mode\n");
             gen_helper_iret_real(cpu_env, tcg_const_i32(dflag - 1));
             set_cc_op(s, CC_OP_EFLAGS);
         } else if (s->vm86) {
+	    printf("vm86 mode\n");
             if (s->iopl != 3) {
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
             } else {
@@ -6496,6 +6639,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
                 set_cc_op(s, CC_OP_EFLAGS);
             }
         } else {
+	    printf("protected mode\n");
             gen_helper_iret_protected(cpu_env, tcg_const_i32(dflag - 1),
                                       tcg_const_i32(s->pc - s->cs_base));
             set_cc_op(s, CC_OP_EFLAGS);
@@ -6584,12 +6728,68 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         }
     do_jcc:
         next_eip = s->pc - s->cs_base;
-        tval += next_eip;
+        while(tnt_array[index_array] == 'K') {
+	  index_array++;
+          index_cr3_value++;
+	}
+	/* expected to see a TNT bit - but could be an indication of things going into the kernel */
+	if(tnt_array[index_array]=='P') {
+	  printf("TIP is not expected here - but continue execution nonetheless\n");
+	  if(cpl > 0) {
+	    while(tip_addresses[index_tip_address].is_useful == 0) {
+	      index_tip_address++;
+	    }
+	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+	      is_handle_interrupt_in_userspace = 1;
+	    }
+	    index_tip_address++;  // consume TIP bits
+	    index_tip_address_incremented=1;
+	    //index_array++;
+	  }
+	  else {
+	    /* interrupts can also happen in kernel space */
+	    while(tip_addresses[index_tip_address].is_useful == 0) {
+	      index_tip_address++;
+	    }
+	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+	      is_handle_interrupt_in_userspace = 1;
+	    }
+	    index_tip_address++;   // consume TIP bits
+	    index_tip_address_incremented=1;
+	  }
+	}
+	if(stopped_execution_of_tb_chain == 1) {
+	  index_array = index_array-1;
+	}
+
+	if(tnt_array[index_array] == 'T') {
+	  printf("Branch Taken: %c\n", tnt_array[index_array]);
+	  is_branch_taken=1;
+	}
+	else {
+          printf("Branch Taken: %c\n", tnt_array[index_array]);
+	  is_branch_taken=0;
+	}
+	/* change here : original code was tval += next_eip */
+        // tval += next_eip;
+	if(is_branch_taken == 1) {
+	  tval += next_eip;
+	  next_eip=tval;
+	  printf("Next eip: 0x%lx tval: 0x%lx\n", next_eip, tval);
+	}
+	else {
+	  tval = next_eip;
+	  printf("Next eip: 0x%lx tval: 0x%lx\n", next_eip, tval);
+	}
+	index_array++;
+	index_array_incremented=1;
         if (dflag == MO_16) {
             tval &= 0xffff;
+	    next_eip &= 0xffff;  
         }
+	tb_jump_address = tval;
         gen_bnd_jmp(s);
-        gen_jcc(s, b, tval, next_eip);
+	gen_jcc(s, b, tval, next_eip);
         break;
 
     case 0x190 ... 0x19f: /* setcc Gv */
@@ -7121,6 +7321,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         break;
     case 0x130: /* wrmsr */
     case 0x132: /* rdmsr */
+	printf("wrmsr\n");
         if (s->cpl != 0) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
@@ -7129,9 +7330,11 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             if (b & 2) {
                 gen_helper_rdmsr(cpu_env);
             } else {
+		printf("wrmsr\n");
                 gen_helper_wrmsr(cpu_env);
             }
         }
+	is_nonio_vmexit = 1;
         break;
     case 0x131: /* rdtsc */
         gen_update_cc_op(s);
@@ -7175,6 +7378,20 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 #ifdef TARGET_X86_64
     case 0x105: /* syscall */
         /* XXX: is it usable in real mode ? */
+        while(tnt_array[index_array] == 'K') {
+	  index_array++;
+	  index_cr3_value++;
+	}
+	// consume TIP address if possible here as well
+	if(tnt_array[index_array] == 'P') {
+	  index_array++;
+	  index_array_incremented=1;
+	  while(tip_addresses[index_tip_address].is_useful==0) {
+	    index_tip_address++;
+	  }
+	  index_tip_address++;
+	  index_tip_address_incremented=1;
+	}
         gen_update_cc_op(s);
         gen_jmp_im(pc_start - s->cs_base);
         gen_helper_syscall(cpu_env, tcg_const_i32(s->pc - pc_start));
@@ -7184,6 +7401,20 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_eob_worker(s, false, true);
         break;
     case 0x107: /* sysret */
+        while(tnt_array[index_array] == 'K') {
+	  index_array++;
+	  index_cr3_value++;
+	}
+	// consume TIP address here as well
+	if(tnt_array[index_array] == 'P') {
+	  index_array++;
+	  index_array_incremented=1;
+	  while(tip_addresses[index_tip_address].is_useful==0) {
+	    index_tip_address++;
+	  }
+	  index_tip_address++;
+	  index_tip_address_incremented=1;
+	}
         if (!s->pe) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
@@ -7209,11 +7440,17 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         if (s->cpl != 0) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
+	    printf("halting\n");
             gen_update_cc_op(s);
             gen_jmp_im(pc_start - s->cs_base);
-            gen_helper_hlt(cpu_env, tcg_const_i32(s->pc - pc_start));
+	    if (tnt_array[index_array] != 'F') 
+            	gen_helper_hlt(cpu_env, tcg_const_i32(s->pc - pc_start));
             s->base.is_jmp = DISAS_NORETURN;
         }
+	if (tnt_array[index_array] == 'F') {
+		index_array++;
+		index_fup_address++;
+	}
         break;
     case 0x100:
         modrm = x86_ldub_code(env, s);
@@ -7321,7 +7558,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 
         case 0xca: /* clac */
             if (!(s->cpuid_7_0_ebx_features & CPUID_7_0_EBX_SMAP)
-                || s->cpl != 0) {
+               || s->cpl != 0) {
                 goto illegal_op;
             }
             gen_helper_clac(cpu_env);
@@ -8305,6 +8542,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     default:
         goto unknown_op;
     }
+    last_pc = pc_start;
     return s->pc;
  illegal_op:
     gen_illegal_opcode(s);
@@ -8408,6 +8646,7 @@ static void i386_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cpu)
     dc->addseg = (flags >> HF_ADDSEG_SHIFT) & 1;
     dc->f_st = 0;
     dc->vm86 = (flags >> VM_SHIFT) & 1;
+    printf("vm86: %d\n", dc->vm86);
     dc->cpl = (flags >> HF_CPL_SHIFT) & 3;
     dc->iopl = (flags >> IOPL_SHIFT) & 3;
     dc->tf = (flags >> TF_SHIFT) & 1;
@@ -8499,7 +8738,6 @@ static void i386_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
     target_ulong pc_next = disas_insn(dc, cpu);
-
     if (dc->tf || (dc->base.tb->flags & HF_INHIBIT_IRQ_MASK)) {
         /* if single step mode, we generate only one instruction and
            generate an exception */
@@ -8541,7 +8779,7 @@ static void i386_tr_disas_log(const DisasContextBase *dcbase,
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
 
-    qemu_log("IN: %s\n", lookup_symbol(dc->base.pc_first));
+    printf("IN: %s\n", lookup_symbol(dc->base.pc_first));
     log_target_disas(cpu, dc->base.pc_first, dc->base.tb->size);
 }
 
