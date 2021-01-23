@@ -3543,18 +3543,34 @@ many timer interrupts were not processed by the Windows guest and will
 re-inject them.
 ETEXI
 
-DEF("arnab_replay", HAS_ARG, QEMU_OPTION_rr, \
-    "-arnab_replay [mode=record|replay,file=<filename>]\n"
-    "		     configure a new replay mode without using the -icount feature\n"
-    "		     mode corresponds to the mode of record-replay\n", QEMU_ARCH_ALL)
+DEF("arnab_network_replay", HAS_ARG, QEMU_OPTION_NETWORK_rr, \
+    "-arnab_network_replay [mode=record|replay,file=<filename>]\n"
+    "		     record and replay network packets without using -icount\n", QEMU_ARCH_ALL)
 
 STEXI
-@item -arnab_replay [mode=record|replay][,rrfile=@var{filename}]
-@findex -arnab_replay
-Sets record/replay mode without the use of -icount feature. This is a minimal record-replay
-feature that we are using. We only record NETWORK, DISK and VMENTRY events into file @var{filename}. 
-Later we replay these events using @var{mode}=REPLAY. The configuration of the record-replay mechanism 
-will mostly follow the same process as the original record-replay with icount.
+@item -arnab_network_replay [mode=record|replay][,rrfile=@var{filename}]
+@findex -arnab_network_replay
+This option records and replays network packets. Network packets are written to a file. And during the process of replay, these network packets are read and replayed. The replay happens when there is a hardware interrupt(indicating a network I/O event) in the guest flow. 
+ETEXI
+
+DEF("arnab_clock_replay", HAS_ARG, QEMU_OPTION_CLOCK_rr, \
+    "-arnab_clock_replay [mode=record|replay,file=<filename>]\n"
+    "                    option to record and replay hpet clock values\n", QEMU_ARCH_ALL)
+
+STEXI
+@item -arnab_clock_replay [mode=record|replay][,rrfile=@var{filename}]
+@findex -arnab_clock_replay
+This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix the guest to use the hpet clock, we'll only record and replay hpet clock values.
+ETEXI
+
+DEF("arnab_disk_replay", HAS_ARG, QEMU_OPTION_DISK_rr, \
+    "-arnab_disk_replay [mode=record|replay,file=<filename>]\n"
+    "                   option to record and replay disk events\n", QEMU_ARCH_ALL)
+
+STEXI
+@item -arnab_disk_replay [mode=record|replay][,rrfile=@var{filename}]
+@findex -arnab_disk_replay
+This option records and replays disk I/O events. Record and replay of disk I/O events will re-use the record and replay design that has already been designed for QEMU. The only change being that there will be no -icount to indicate when to inject events. This will be taken care of by looking at hardware interrupts and injecting I/O events at the correct hardware interrupt.
 ETEXI
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
