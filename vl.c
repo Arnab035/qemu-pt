@@ -487,10 +487,10 @@ static QemuOptsList qemu_mem_opts = {
     },
 };
 
-static QemuOptsList qemu_arnab_record_replay_opts = {
-    .name = "arnab_replay",
+static QemuOptsList qemu_arnab_clock_record_replay_opts = {
+    .name = "arnab_clock_replay",
     .implied_opt_name = "mode",
-    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_record_replay_opts.head),
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_clock_record_replay_opts.head),
     .desc = {
         {
 	    .name = "mode",
@@ -500,6 +500,38 @@ static QemuOptsList qemu_arnab_record_replay_opts = {
 	    .type = QEMU_OPT_STRING,
 	},
         { /* end of list */}
+    },
+};
+
+static QemuOptsList qemu_arnab_network_record_replay_opts = {
+    .name = "arnab_network_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_network_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	},
+        { /* end of list */}
+    },
+};
+
+static QemuOptsList qemu_arnab_disk_record_replay_opts = {
+    .name = "arnab_disk_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_disk_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	},
+	{ /* end of list */ }
     },
 };
 
@@ -3124,7 +3156,9 @@ int main(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_msg_opts);
     qemu_add_opts(&qemu_name_opts);
     qemu_add_opts(&qemu_numa_opts);
-    qemu_add_opts(&qemu_arnab_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_clock_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_network_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_disk_record_replay_opts);
     qemu_add_opts(&qemu_icount_opts);
     qemu_add_opts(&qemu_semihosting_config_opts);
     qemu_add_opts(&qemu_fw_cfg_opts);
