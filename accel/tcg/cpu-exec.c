@@ -907,6 +907,7 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
     void *pci_device_struct; size_t net_size; /* for network record-replay */
     void *blk; size_t disk_size;
 
+    /*
     if(tnt_array[index_array] == 'V') {
       //replay_checkpoint(CHECKPOINT_VMENTRY);
       while((id = arnab_replay_read_event())) {
@@ -918,11 +919,11 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
 	      break;
 	  }
 	  else if (id == PCI_NETWORK_EVENT) {
-	      /*
+	      
 	      if (!event) {
 	          printf("event is NULL - is your array index wrong?\n");
 		  exit(0);
-	      }*/
+	      }
 	      dma_addr_t addr = arnab_replay_get_qword();
 	      dma_addr_t len = arnab_replay_get_qword();
 	      uint8_t *buf = malloc(len * sizeof(char));
@@ -971,7 +972,7 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
 	  }
       } 
       index_array++;
-    }
+    }*/
 
     if(is_handle_interrupt_in_userspace) {
         /* this indicates that execution has unexpectedly entered the kernel space */

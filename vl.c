@@ -1872,8 +1872,8 @@ void qemu_system_killed(int signal, pid_t pid)
 void qemu_system_shutdown_request(ShutdownCause reason)
 {
     trace_qemu_system_shutdown_request(reason);
-    //replay_shutdown_request(reason);
-    arnab_replay_shutdown_request(reason);  /* no shutdown reason necessary */
+    replay_shutdown_request(reason);
+    //arnab_replay_shutdown_request(reason);  /* no shutdown reason necessary */
     shutdown_requested = reason;
     qemu_notify_event();
 }
@@ -3048,7 +3048,9 @@ int main(int argc, char **argv, char **envp)
     DisplayState *ds;
     QemuOpts *opts, *machine_opts;
     QemuOpts *icount_opts = NULL, *accel_opts = NULL;
-    QemuOpts *arnab_record_replay_opts = NULL;
+    QemuOpts *arnab_clock_record_replay_opts = NULL;
+    QemuOpts *arnab_disk_record_replay_opts = NULL;
+    QemuOpts *arnab_network_record_replay_opts = NULL;
     QemuOptsList *olist;
     int optind;
     const char *optarg;
@@ -3924,15 +3926,25 @@ int main(int argc, char **argv, char **envp)
                     exit(1);
                 }
                 break;
-	    case QEMU_OPTION_rr:
-		printf("parsed qemu options");
-		arnab_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_replay"),
-				                                   optarg, true);
+	    case QEMU_OPTION_CLOCK_rr:
+		arnab_clock_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_clock_replay"), optarg, true);
 		printf("parsed qemu options\n");
-		if (!arnab_record_replay_opts) {
+		if (!arnab_clock_record_replay_opts) {
 		    exit(1);
 		}
                 break;
+	    case QEMU_OPTION_NETWORK_rr:
+		arnab_network_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_network_replay"), optarg, true);
+		if (!arnab_network_record_replay_opts) {
+		    exit(1);
+		}
+		break;
+	    case QEMU_OPTION_DISK_rr:
+		arnab_disk_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_disk_replay"), optarg, true);
+		if (!arnab_disk_record_replay_opts) {
+		    exit(1);
+		}
+		break;
             case QEMU_OPTION_icount:
                 icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                       optarg, true);
@@ -4104,10 +4116,12 @@ int main(int argc, char **argv, char **envp)
     loc_set_none();
     
     if(!icount_opts) {
-        replay_configure(arnab_record_replay_opts, 0);
+        arnab_replay_configure(arnab_clock_record_replay_opts, "clock");
+	arnab_replay_configure(arnab_network_record_replay_opts, "network");
+	arnab_replay_configure(arnab_disk_record_replay_opts, "disk");
     }
     else {
-    	replay_configure(icount_opts, 1);
+    	replay_configure(icount_opts);
     }
 
     machine_class = select_machine();

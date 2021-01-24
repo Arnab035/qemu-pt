@@ -1930,12 +1930,7 @@ int kvm_cpu_exec(CPUState *cpu)
         
 	/* VMENTRY checkpoint */
 
-	if (start_recording) {
-	    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-	        arnab_replay_put_event(VMENTRY_EVENT);
-	    }  
 	  //replay_checkpoint(CHECKPOINT_VMENTRY);
-        }
 
         run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
 

@@ -92,48 +92,50 @@ extern ReplayState replay_state;
 /* File for replay writing */
 extern FILE *replay_file;
 
-/* Arnab's file for replay writing */
-extern FILE *arnab_replay_file;
+/* Arnab's files for replay writing */
+extern FILE *arnab_clock_replay_file;
+extern FILE *arnab_network_replay_file;
+extern FILE *arnab_disk_replay_file;
 
 void replay_put_byte(uint8_t byte);
-void arnab_replay_put_byte(uint8_t byte);
+void arnab_replay_put_byte(uint8_t byte, const char *);
 
 void replay_put_event(uint8_t event);
-void arnab_replay_put_event(uint8_t event);
+void arnab_replay_put_event(uint8_t event, const char *);
 
 void replay_put_word(uint16_t word);
-void arnab_replay_put_word(uint16_t word);
+void arnab_replay_put_word(uint16_t word, const char *);
 
 void replay_put_dword(uint32_t dword);
-void arnab_replay_put_dword(uint32_t dword);
+void arnab_replay_put_dword(uint32_t dword, const char *);
 
 void replay_put_qword(int64_t qword);
-void arnab_replay_put_qword(int64_t qword);
+void arnab_replay_put_qword(int64_t qword, const char *);
 
 void replay_put_array(const uint8_t *buf, size_t size);
-void arnab_replay_put_array(const uint8_t *buf, size_t size);
+void arnab_replay_put_array(const uint8_t *buf, size_t size, const char *);
 
 
 
 uint8_t replay_get_byte(void);
-uint8_t arnab_replay_get_byte(void);
+uint8_t arnab_replay_get_byte(const char *);
 
-uint8_t arnab_replay_read_event(void);
+uint8_t arnab_replay_read_event(const char *);
 
 uint16_t replay_get_word(void);
-uint16_t arnab_replay_get_word(void);
+uint16_t arnab_replay_get_word(const char *);
 
 uint32_t replay_get_dword(void);
-uint32_t arnab_replay_get_dword(void);
+uint32_t arnab_replay_get_dword(const char *);
 
 int64_t replay_get_qword(void);
-int64_t arnab_replay_get_qword(void);
+int64_t arnab_replay_get_qword(const char *);
 
 void replay_get_array(uint8_t *buf, size_t *size);
-void arnab_replay_get_array(uint8_t *buf, size_t *size);
+void arnab_replay_get_array(uint8_t *buf, size_t *size, const char *);
 
 void replay_get_array_alloc(uint8_t **buf, size_t *size);
-void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size);
+void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size, const char *);
 
 /* Mutex functions for protecting replay log file and ensuring
  * synchronisation between vCPU and main-loop threads. */
@@ -143,8 +145,6 @@ bool replay_mutex_locked(void);
 
 /*! Checks error status of the file. */
 void replay_check_error(void);
-
-void arnab_replay_check_error(void);
 
 /*! Finishes processing of the replayed event and fetches
     the next event from the log. */

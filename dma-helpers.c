@@ -271,6 +271,7 @@ BlockAIOCB *dma_blk_write_io_func(int64_t offset, QEMUIOVector *iov,
      * start_recording is set to 1 after the snapshot
      * is taken */
 
+    /*
     if (start_recording) {
     	if(arnab_replay_mode == REPLAY_MODE_RECORD) {
             if(!arnab_replay_file) {
@@ -278,15 +279,14 @@ BlockAIOCB *dma_blk_write_io_func(int64_t offset, QEMUIOVector *iov,
 	        exit(0);
 	    }
 
-	    /* replay_put_event */
             arnab_replay_put_event(PCI_DISK_EVENT);	
             
-	    arnab_replay_put_qword(offset);  /* offset */
-	    arnab_replay_put_qword(iov->size);  /* iov->size */
+	    arnab_replay_put_qword(offset);  
+	    arnab_replay_put_qword(iov->size);  
 
 	    size = iov_size(iov->iov, iov->niov);
 	    void *buf_iov = malloc(size);
-	    qemu_iovec_to_buf(iov, 0, buf_iov, size);   /* store the whole iov */
+	    qemu_iovec_to_buf(iov, 0, buf_iov, size);
 
 	    arnab_replay_put_array(buf_iov, size);
 	    arnab_replay_put_array(opaque, get_block_backend_size(opaque));
@@ -296,7 +296,7 @@ BlockAIOCB *dma_blk_write_io_func(int64_t offset, QEMUIOVector *iov,
 	    arnab_replay_put_array(cb_opaque, sizeof(DMAAIOCB));
        }
 
-    }
+    }*/
     return blk_aio_pwritev(blk, offset, iov, 0, cb, cb_opaque);
 }
 
