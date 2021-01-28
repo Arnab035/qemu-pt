@@ -310,6 +310,8 @@ static void arnab_replay_enable(const char *fname, int mode, const char *event_t
 	    exit(1);
     }
 
+    arnab_replay_mode = mode;
+
     if(strcmp(event_type, "clock") == 0) {
             atexit(arnab_clock_replay_finish);
             arnab_clock_replay_file = fopen(fname, fmode);
