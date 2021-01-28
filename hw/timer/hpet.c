@@ -477,10 +477,10 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: invalid HPET_CFG + 4 hpet_ram_readl\n");
             return 0;
         case HPET_COUNTER:
-	    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-	        cur_tick = (uint64_t)arnab_replay_get_qword("clock");
-		return cur_tick;
-	    }
+            if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+                cur_tick = (uint64_t)arnab_replay_get_qword("clock");
+                return cur_tick;
+            }
             if (hpet_enabled(s)) {
                 cur_tick = hpet_get_ticks(s);
             } else {
@@ -488,11 +488,10 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             }
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
-		printf("Doing clock recording now...");
-	        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-		    arnab_replay_put_qword((int64_t)cur_tick, "clock");
-		}
-	    }
+                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    arnab_replay_put_qword((int64_t)cur_tick, "clock");
+                }
+            }
             return cur_tick;
         case HPET_COUNTER + 4:
             if (hpet_enabled(s)) {
