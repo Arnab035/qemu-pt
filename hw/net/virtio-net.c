@@ -28,6 +28,9 @@
 #include "migration/misc.h"
 #include "standard-headers/linux/ethtool.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+
 #define VIRTIO_NET_VM_VERSION    11
 
 #define MAC_TABLE_ENTRIES    64
@@ -1287,6 +1290,9 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     }
 
     virtqueue_flush(q->rx_vq, i);
+    // write a checkpoint indicating the point when all network packets recorded
+    // till now, must be sent out.
+    arnab_replay_put_event(EVENT_INTERRUPT, "network");
     virtio_notify(vdev, q->rx_vq);
 
     return size;

@@ -38,7 +38,7 @@ static ssize_t filter_replay_receive_iov(NetFilterState *nf,
                                          int iovcnt, NetPacketSent *sent_cb)
 {
     NetFilterReplayState *nfrs = FILTER_REPLAY(nf);
-    switch (replay_mode) {
+    switch (arnab_replay_mode) {
     case REPLAY_MODE_RECORD:
         if (nf->netdev == sndr) {
             replay_net_packet_event(nfrs->rns, flags, iov, iovcnt);

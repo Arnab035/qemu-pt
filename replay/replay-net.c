@@ -18,6 +18,8 @@
 #include "net/filter.h"
 #include "qemu/iov.h"
 
+#include "index_array_header.h"
+
 struct ReplayNetState {
     NetFilterState *nfs;
     int id;
@@ -61,8 +63,17 @@ void replay_net_packet_event(ReplayNetState *rns, unsigned flags,
     event->id = rns->id;
     iov_to_buf(iov, iovcnt, 0, event->data, event->size);
 
-    replay_add_event(REPLAY_ASYNC_EVENT_NET, event, NULL, 0);
+    // replay_add_event(REPLAY_ASYNC_EVENT_NET, event, NULL, 0);
     // write to the file directly instead of adding to queue
+    // TODO: can this be moved out of the fast path?
+    if (start_recording) {
+	if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+	    arnab_replay_put_event(EVENT_ASYNC, "network");
+            arnab_replay_put_dword(event->flags, "network");
+            arnab_replay_put_array(event->data, event->size, "network");
+	}
+    }
+    replay_event_net_run(event);
 }
 
 void replay_event_net_run(void *opaque)
