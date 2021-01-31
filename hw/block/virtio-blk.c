@@ -29,6 +29,10 @@
 #include "hw/virtio/virtio-bus.h"
 #include "hw/virtio/virtio-access.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+#include "index_array_header.h"
+
 static void virtio_blk_init_request(VirtIOBlock *s, VirtQueue *vq,
                                     VirtIOBlockReq *req)
 {
@@ -54,6 +58,15 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
 
     stb_p(&req->in->status, status);
     virtqueue_push(req->vq, &req->elem, req->in_len);
+    // similar checkpoint to network. This checkpoint 
+    // indicates when the guest received an interrupt
+    // so only those requests that have been processed
+    // before this checkpoint, need to be simulated
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            arnab_replay_put_event(EVENT_INTERRUPT, "disk");
+        }
+    }
     if (s->dataplane_started && !s->dataplane_disabled) {
         virtio_blk_data_plane_notify(s->dataplane, req->vq);
     } else {

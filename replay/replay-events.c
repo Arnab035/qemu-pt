@@ -166,8 +166,15 @@ void replay_add_input_sync_event(void)
 
 void replay_block_event(QEMUBH *bh, uint64_t id)
 {
-    if (events_enabled) {
-        replay_add_event(REPLAY_ASYNC_EVENT_BLOCK, bh, NULL, id);
+    printf("block event id: %d\n", id);
+    if (arnab_replay_mode != REPLAY_MODE_NONE) {
+        // write to file here (instead of writing to queue)
+        if (start_recording) {
+            if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                arnab_replay_put_event(EVENT_ASYNC, "disk");
+                arnab_replay_put_qword(id, "disk");
+            }
+        }
     } else {
         qemu_bh_schedule(bh);
     }

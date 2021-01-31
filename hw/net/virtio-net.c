@@ -30,6 +30,7 @@
 
 #include "sysemu/replay.h"
 #include "replay/replay-internal.h"
+#include "index_array_header.h"
 
 #define VIRTIO_NET_VM_VERSION    11
 
@@ -1292,7 +1293,11 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     virtqueue_flush(q->rx_vq, i);
     // write a checkpoint indicating the point when all network packets recorded
     // till now, must be sent out.
-    arnab_replay_put_event(EVENT_INTERRUPT, "network");
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) { 
+            arnab_replay_put_event(EVENT_INTERRUPT, "network");
+	}
+    }
     virtio_notify(vdev, q->rx_vq);
 
     return size;
