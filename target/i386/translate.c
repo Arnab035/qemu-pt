@@ -5050,25 +5050,20 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             break;
         case 2: /* call Ev */
             /* XXX: optimize if memory (no 'and' is necessary) */
-	    printf("about to take call Ev\n");
-	    while(tnt_array[index_array] == 'K') {
-	      index_array++;
-	      index_cr3_value++;
-	    }
 	    if(tnt_array[index_array] == 'P') {
-	      index_array++;
-              index_array_incremented = 1;	      // consume the TIP bit if you can
-	      while(tip_addresses[index_tip_address].is_useful == 0) {
-	        index_tip_address++;
-	      }
-	      if(cpl > 0) {
-	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-		  is_handle_interrupt_in_userspace = 1;
-		}
-	      }
-	      /* remember to check for code running into kernel space at the end of each block during translation */
-	      index_tip_address++;     // consume the TIP address
-	      index_tip_address_incremented=1;
+	        index_array++;
+                index_array_incremented = 1;
+	        while(tip_addresses[index_tip_address].is_useful == 0) {
+	            index_tip_address++;
+	        }
+	        if(cpl > 0) {
+	            if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+		        is_handle_interrupt_in_userspace = 1;
+		    }
+	        }
+	       /* remember to check for code running into kernel space at the end of each block during translation */
+	        index_tip_address++;     // consume the TIP address
+	        index_tip_address_incremented=1;
 	    }
 	    if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(cpu_T0, cpu_T0);
@@ -5101,25 +5096,20 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             break;
         case 4: /* jmp Ev */
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
-	    printf("about to take jump Ev\n");
-	    while(tnt_array[index_array] == 'K') {
-	      index_array++;
-	      index_cr3_value++;
-	    }
 	    if(tnt_array[index_array] == 'P') {
-	      index_array++;
-	      index_array_incremented=1;
-              while(tip_addresses[index_tip_address].is_useful == 0) {
+	        index_array++;
+	        index_array_incremented=1;
+                while(tip_addresses[index_tip_address].is_useful == 0) {
+	            index_tip_address++;
+	        }
+                if(cpl > 0) {
+	            if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+		        is_handle_interrupt_in_userspace=1;
+		    }
+	        }
+	        // consume the TIP address
 	        index_tip_address++;
-	      }
-              if(cpl > 0) {
-	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-		  is_handle_interrupt_in_userspace=1;
-		}
-	      }
-	      // consume the TIP address
-	      index_tip_address++;
-	      index_tip_address_incremented=1;
+	        index_tip_address_incremented=1;
 	    }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(cpu_T0, cpu_T0);
@@ -6521,32 +6511,28 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_jr(s, cpu_T0);
         break;
     case 0xc3: /* ret */
-	while(tnt_array[index_array] == 'K') {
-	  index_array++;
-	  index_cr3_value++;
-	}
 	if(stopped_execution_of_tb_chain == 1) {
-	  index_array = index_array - 1;
+	    index_array = index_array - 1;
 	}
 	if(tnt_array[index_array] != 'P') {
-	  printf("Intel-PT trace uses a TNT (taken) bit for return\n");
-	  index_array++;
-	  index_array_incremented = 1;  
+	    printf("Intel-PT trace uses a TNT (taken) bit for return\n");
+	    index_array++;
+	    index_array_incremented = 1;  
 	}
         else {
-	  printf("Intel-PT trace uses a TIP bit for return\n");
-	  index_array++;
-	  index_array_incremented=1;
-	  while(tip_addresses[index_tip_address].is_useful == 0) {
-	    index_tip_address++;
-	  }
-	  if(cpl > 0) {
-	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {   // kernel address in userspace
-	      is_handle_interrupt_in_userspace=1;
+	    printf("Intel-PT trace uses a TIP bit for return\n");
+	    index_array++;
+	    index_array_incremented=1;
+	    while(tip_addresses[index_tip_address].is_useful == 0) {
+	        index_tip_address++;
 	    }
-	  }
-	  index_tip_address++;     // consume the TIP bit
-	  index_tip_address_incremented=1;
+	    if(cpl > 0) {
+	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {   // kernel address in userspace
+	            is_handle_interrupt_in_userspace=1;
+	        }
+	    }
+	    index_tip_address++;     // consume the TIP bit
+	    index_tip_address_incremented=1;
 	}	
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
@@ -6584,21 +6570,17 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         goto do_lret;
     case 0xcf: /* iret */
         printf("found iretq\n");
-	while(tnt_array[index_array] == 'K') {
-	  index_array++;
-	  index_cr3_value++;
-	}
         if(tnt_array[index_array] == 'P') {
-	  index_array++;
-	  index_array_incremented=1;
-	  while(tip_addresses[index_tip_address].is_useful==0) {
-	    index_tip_address++;
-	  }
+	    index_array++;
+	    index_array_incremented=1;
+	    while(tip_addresses[index_tip_address].is_useful==0) {
+	        index_tip_address++;
+	    }
 	 
 	  // could iretq return back to the kernel again ?
 	 
-	  index_tip_address++;
-	  index_tip_address_incremented = 1;
+	    index_tip_address++;
+	    index_tip_address_incremented = 1;
 	}	
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_IRET);
         if (!s->pe) {
@@ -6701,56 +6683,52 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         }
     do_jcc:
         next_eip = s->pc - s->cs_base;
-	while(tnt_array[index_array] == 'K') {
-	  index_array++;
-          index_cr3_value++;
-	}
 	/* expected to see a TNT bit - but could be an indication of things going into the kernel */
 	if(tnt_array[index_array]=='P') {
-	  printf("TIP is not expected here - but continue execution nonetheless\n");
-	  if(cpl > 0) {
-	    while(tip_addresses[index_tip_address].is_useful == 0) {
-	      index_tip_address++;
+	    printf("TIP is not expected here - but continue execution nonetheless\n");
+	    if(cpl > 0) {
+	        while(tip_addresses[index_tip_address].is_useful == 0) {
+	            index_tip_address++;
+	        }
+	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+	            is_handle_interrupt_in_userspace = 1;
+	        }
+	        index_tip_address++;  // consume TIP bits
+	        index_tip_address_incremented=1;
+	        //index_array++;
 	    }
-	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-	      is_handle_interrupt_in_userspace = 1;
-	    }
-	    index_tip_address++;  // consume TIP bits
-	    index_tip_address_incremented=1;
-	    //index_array++;
-	  }
-	  else {
+	    else {
 	    /* interrupts can also happen in kernel space */
-	    while(tip_addresses[index_tip_address].is_useful == 0) {
-	      index_tip_address++;
+	        while(tip_addresses[index_tip_address].is_useful == 0) {
+	            index_tip_address++;
+	        }
+	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
+	            is_handle_interrupt_in_userspace = 1;
+	        }
+	        index_tip_address++;   // consume TIP bits
+	        index_tip_address_incremented=1;
 	    }
-	    if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-	      is_handle_interrupt_in_userspace = 1;
-	    }
-	    index_tip_address++;   // consume TIP bits
-	    index_tip_address_incremented=1;
-	  }
 	}
 	if(stopped_execution_of_tb_chain == 1) {
-	  index_array = index_array-1;
+	    index_array = index_array-1;
 	}
 	printf("inside gen_jcc now : next_eip is 0x%lx and tval is 0x%lx\n", next_eip, tval+next_eip);
 	printf("tnt_array[%llu] is %c\n", index_array, tnt_array[index_array]);
 
 	if(tnt_array[index_array] == 'T') {
-	  is_branch_taken=1;
+	    is_branch_taken=1;
 	}
 	else {
-	  is_branch_taken=0;
+	    is_branch_taken=0;
 	}
 	/* change here : original code was tval += next_eip */
         // tval += next_eip;
 	if(is_branch_taken == 1) {
-	  tval += next_eip;
-	  next_eip=tval;
+	    tval += next_eip;
+	    next_eip=tval;
 	}
 	else {
-	  tval = next_eip;
+	    tval = next_eip;
 	}
 	index_array++;
 	index_array_incremented=1;
@@ -7344,20 +7322,15 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 #ifdef TARGET_X86_64
     case 0x105: /* syscall */
         /* XXX: is it usable in real mode ? */
-	printf("about to take a syscall\n");
-	while(tnt_array[index_array] == 'K') {
-	  index_array++;
-	  index_cr3_value++;
-	}
 	// consume TIP address if possible here as well
 	if(tnt_array[index_array] == 'P') {
-	  index_array++;
-	  index_array_incremented=1;
-	  while(tip_addresses[index_tip_address].is_useful==0) {
+	    index_array++;
+	    index_array_incremented=1;
+	    while(tip_addresses[index_tip_address].is_useful==0) {
+	        index_tip_address++;
+	    }
 	    index_tip_address++;
-	  }
-	  index_tip_address++;
-	  index_tip_address_incremented=1;
+	    index_tip_address_incremented=1;
 	}
         gen_update_cc_op(s);
         gen_jmp_im(pc_start - s->cs_base);
@@ -7368,20 +7341,15 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_eob_worker(s, false, true);
         break;
     case 0x107: /* sysret */
-	printf("about to take sysret\n");
-	while(tnt_array[index_array] == 'K') {
-	  index_array++;
-	  index_cr3_value++;
-	}
 	// consume TIP address here as well
 	if(tnt_array[index_array] == 'P') {
-	  index_array++;
-	  index_array_incremented=1;
-	  while(tip_addresses[index_tip_address].is_useful==0) {
+	    index_array++;
+	    index_array_incremented=1;
+	    while(tip_addresses[index_tip_address].is_useful==0) {
+	        index_tip_address++;
+	    }
 	    index_tip_address++;
-	  }
-	  index_tip_address++;
-	  index_tip_address_incremented=1;
+	    index_tip_address_incremented=1;
 	}
         if (!s->pe) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
