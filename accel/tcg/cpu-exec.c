@@ -99,11 +99,6 @@ int stopped_execution_of_tb_chain = 0;
 
 struct hash_buckets *interrupt_hash_table = NULL;
 
-/* definition of replay network events */
-
-struct replay_network_event *network_event_params = NULL;
-uint64_t network_event_params_index = 0;
-
 /* -icount align implementation. */
 
 typedef struct SyncClocks {
@@ -124,7 +119,8 @@ typedef struct SyncClocks {
 
 #define LENGTH  0x1000
 
-struct tip_address_info *tip_addresses = NULL;    // definition here
+struct tip_address_info *tip_addresses = NULL;
+struct fup_address_info *fup_addresses = NULL;
 //char **pip_cr3_values = NULL;
 
 static void align_clocks(SyncClocks *sc, const CPUState *cpu)
@@ -208,13 +204,12 @@ static void init_delay_params(SyncClocks *sc, const CPUState *cpu)
 }
 #endif /* CONFIG USER ONLY */
 
-
 /* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
 static void preprocess_tip_array(int size) {
   int i,j;
-  int chars_to_copy;
-  int short_length;
+  int chars_to_copy=0;
+  int short_length=0;
   for(i=1;i<=size;i++) {
     if(tip_addresses[i].ip_bytes==4) {   // some other value
       //chars_to_copy=12-strlen(tip_addresses[i].address);
@@ -317,8 +312,9 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
 /* get_array_of_tnt_bits()
  *  parameters : none
  *  returns : the array containing the TNT bits
+ *  also maintains 2 arrays - one having the TIP addresses with some metadata
+ *  the other being the FUP addresses with metadata
  *  use the gzlib standard library
- *  formation of tip_addresses as a global array of structs
  */
 
 char *get_array_of_tnt_bits(void) { 
@@ -332,8 +328,8 @@ char *get_array_of_tnt_bits(void) {
   unsigned long long k, prev_count;
   unsigned long long j;
 
-  const char *filename = "/var/services/homes/akalita/linux-4.14.3/tools/perf/log_feb25.txt.gz";  // targz filename
-
+  //TODO: make this commandline
+  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/log_04feb21.txt.gz";
   char *tnt_array = malloc(1);
 
   //tnt_array[0] = 'P';
@@ -343,9 +339,10 @@ char *get_array_of_tnt_bits(void) {
   int remainder = 0;
 
   unsigned long long count_tip = 0;
-  //unsigned int count_pip=0;
+  unsigned long long count_fup = 0;
 
-  tip_addresses = malloc(1 * sizeof(struct tip_address_info));   // tip_addresses is global
+  tip_addresses = malloc(1 * sizeof(struct tip_address_info));
+  fup_addresses = malloc(1 * sizeof(struct fup_address_info));
 
   if(!file) {
     fprintf(stderr, "gzopen of %s failed.\n", filename);
@@ -390,6 +387,8 @@ char *get_array_of_tnt_bits(void) {
 	    // only stray PIP (NR=1) packets should be considered and stored
 	    // these stray PIP packets indicate context switch events 
 	    is_ignore_pip = 1;
+            // the FUP preceding this PIP will represent the source address for a VMEXIT
+            fup_addresses[count_fup-1].type = 'V';
 	  }
           
 	  /* VMENTRY */
@@ -428,18 +427,31 @@ char *get_array_of_tnt_bits(void) {
 	      is_ignore_tip=0;
 	    }
 	  }
-      
+	  else if(strncmp(copy, "FUP", 3) == 0) {
+            tnt_array = realloc(tnt_array, count+1);
+            tnt_array[count] = 'F';
+            count++;
+            fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+            fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+            strncpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+            fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
+            fup_addresses[count_fup].type = 'I';
+            count_fup++;
+          }
         }
-	//printf("count: %llu\n", count);
+	if (count >= 80000) break;
         start += pos+1;
       }
     }
+    if (count >= 80000) break;   // start with 80k events.
    
     if(bytes_read<LENGTH-1) {
       tnt_array[count]='\0';
       tip_addresses[count_tip].address='\0';
       tip_addresses[count_tip].is_useful=0;
       tip_addresses[count_tip].ip_bytes=-1;
+      fup_addresses[count_fup].address='\0';
+      fup_addresses[count_fup].type='U'; // unknown FUP type
       if(gzeof(file)) break;
       else {
         const char *error_string;
@@ -452,10 +464,8 @@ char *get_array_of_tnt_bits(void) {
     }
   }
  
-
  // preprocess the tip addresses //
   preprocess_tip_array(count_tip);
-
   printf("final count : %llu\n", count);
   
   gzclose(file);
@@ -466,7 +476,7 @@ char *get_array_of_tnt_bits(void) {
 static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 {
 
-    	CPUArchState *env = cpu->env_ptr;
+    CPUArchState *env = cpu->env_ptr;
     uintptr_t ret;
     TranslationBlock *last_tb;
     int tb_exit;

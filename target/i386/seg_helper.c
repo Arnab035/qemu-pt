@@ -1442,6 +1442,8 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     CPUX86State *env = &cpu->env;
     bool ret = false;
 
+    printf("Exec interrupt\n");
+
 #if !defined(CONFIG_USER_ONLY)
     if (interrupt_request & CPU_INTERRUPT_POLL) {
         cs->interrupt_request &= ~CPU_INTERRUPT_POLL;
@@ -1484,11 +1486,10 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             intno = cpu_get_pic_interrupt(env);
             qemu_log_mask(CPU_LOG_TB_IN_ASM,
                           "Servicing hardware INT=0x%02x\n", intno);
-	    printf("hardirqs disabled in QEMU\n");
             //do_interrupt_x86_hardirq(env, intno, 1);
             /* ensure that no TB jump will be modified as
                the program flow was changed */
-            ret = /*true*/false;
+            ret = true;
 #if !defined(CONFIG_USER_ONLY)
         } else if ((interrupt_request & CPU_INTERRUPT_VIRQ) &&
                    (env->eflags & IF_MASK) &&

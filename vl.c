@@ -3213,7 +3213,6 @@ int main(int argc, char **argv, char **envp)
     /* second pass of option parsing */
     optind = 1;
     for(;;) {
-	printf("About to start parsing\n");
         if (optind >= argc)
             break;
         if (argv[optind][0] != '-') {

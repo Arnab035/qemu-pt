@@ -1,4 +1,4 @@
-/* header file that contains the declaration of index_array global variable - being used in multiple files */
+/* globals that are mostly involved in parsing the Intel PT packets */
 
 #ifndef INDEX_ARRAY_H
 #define INDEX_ARRAY_H
@@ -9,13 +9,19 @@ struct tip_address_info {
   int  ip_bytes;
 };
 
+struct fup_address_info {
+  char *address;
+  char type;  // a single byte to indicate whether this is a FUP associated interrupt or VMEXIT
+};
+
 struct hash_buckets {
   int interrupt_number;   // is the value
   char *interrupt_handler_address;  // this is the key
   struct hash_buckets *pointer;
 };
 
-// hash table where the key is the interrupt handler function pointer and interrupt number is the value
+// hash table where the key is the interrupt handler 
+// function pointer and interrupt number is the value
 extern struct hash_buckets *interrupt_hash_table;  
 
 extern unsigned long *tb_insn_array;
@@ -27,6 +33,7 @@ extern bool start_recording;
 
 extern char *tnt_array;
 extern struct tip_address_info *tip_addresses;
+extern struct fup_address_info *fup_addresses;
 extern unsigned long long index_array;
 //extern char **pip_cr3_values;
 
