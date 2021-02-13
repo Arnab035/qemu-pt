@@ -896,77 +896,7 @@ unsigned long do_strtoul(char *address) {
 }
 
 
-/* modified 64-bit interrupt handler */
-static void do_interrupt64(CPUX86State *env, int intno, int is_int,
-		             int error_code, target_ulong next_eip, int is_hw)
-{
-  target_ulong old_eip;
-  target_ulong address;
-  printf("intno is %d\n", intno);
-  int index;
-  if(is_int) {
-    old_eip=next_eip;
-  } else {
-    printf("env->eip(inside do_interrupt64) is 0x%lx\n", env->eip);
-    old_eip=env->eip;
-  }
-
-  /* if there is a page fault in the kernel, 
-   * get the next instruction following the page fault
-   * (do not run page fault handler) */
-
-  if(tb_insn_array==NULL) {
-    printf("cannot access tb_insn_array: not well formed\n");
-  }
-  else {
-    index=return_index_of_instruction(old_eip);
-    if(index==-1) {
-      printf("Panic:index should not be negative\n");
-    }
-    else {
-      env->eip=tb_insn_array[index+1];
-      printf("next env->eip to be executed is : 0x%lx\n", env->eip);
-      if((intno == 14 || intno == 13 || intno == 0) && ((index+1) < size_of_tb_insn_array))   // end of block check 
-      // if it is a page fault, do not modify the env->eip other than executing the next instruction available
-      {
-	is_within_block = 1;    // global var to indicate execution within original block
-        goto end;
-      }
-    }
-  }
-  /*
-  if(index_array_incremented) {  
-    index_array=index_array-1;
-  }*/
-  /* convert string(tip_address_info.address) to unsigned long long int */
-  /* index into tip address array : index_tip_address */
-  if(intno != 7) { 
-    address = do_strtoul(tip_addresses[index_tip_address].address);   /* needs changes */
-    if(address != env->eip) {
-      env->eip = address;
-    }
-  }
-  else {
-    do_userspace_interrupt(env, intno, 0, 0, do_strtoul(tip_addresses[index_tip_address + 1].address), 0);
-    // consume tip address and the tip bits
-    index_tip_address++;
-    index_array++;
-  }
-  /* otherwise continue with env->eip */
-  return;
-end:
-  if(index_array_incremented) {
-    index_array=index_array-1;
-  }
-  if(index_tip_address_incremented) {
-    index_tip_address=index_tip_address-1;
-  }
-  return;
-}
-
-/* 64 bit interrupt -- name (do_userspace_interrupt <- do_interrupt64) changed into a non-static function */
-
-void do_userspace_interrupt(CPUX86State *env, int intno, int is_int,
+void do_interrupt64(CPUX86State *env, int intno, int is_int,
                            int error_code, target_ulong next_eip, int is_hw)
 {
     SegmentCache *dt;
@@ -978,7 +908,6 @@ void do_userspace_interrupt(CPUX86State *env, int intno, int is_int,
 
     has_error_code = 0;
 
-    printf("error/interrupt in the userspace\n");
 
     if (!is_int && !is_hw) {
         has_error_code = exception_has_error_code(intno);
@@ -1442,7 +1371,28 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     CPUX86State *env = &cpu->env;
     bool ret = false;
 
-    printf("Exec interrupt\n");
+    if (tnt_array[index_array] == 'F' && 
+	do_strtoul(fup_addresses[index_fup_address].address) == env->eip &&
+	fup_addresses[index_fup_address].type == 'I') {
+        // source address of interrupt
+	// consume FUP, next TIP and increment all the pointers
+	// jump to the interrupt corresponding to the TIP, that follows FUP
+        index_array+=2;
+	index_fup_address++;
+	while(!tip_addresses[index_tip_address].is_useful)
+            index_tip_address++;
+        int intno;
+	printf("address: %s\n", tip_addresses[index_tip_address].address);
+	// TODO: figure out a way to get interrupt number.
+        intno = 239;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
+        if(intno > -1) {
+            index_tip_address++;
+            do_interrupt_x86_hardirq(env, intno, 1);
+	} else {
+            printf("Invalid interrupt number. We cannot proceed...");
+            exit(1);
+        }
+    }
 
 #if !defined(CONFIG_USER_ONLY)
     if (interrupt_request & CPU_INTERRUPT_POLL) {

@@ -39,6 +39,7 @@ extern unsigned long long index_array;
 
 extern int stopped_execution_of_tb_chain;
 extern int index_tip_address;
+extern int index_fup_address;
 extern int index_cr3_value;
 
 extern int index_array_incremented;
@@ -48,5 +49,6 @@ extern int is_io_instruction;
 extern int is_handle_interrupt_in_userspace;
 
 unsigned long do_strtoul(char *address);   // function declared
+int get_interrupt_number_from_hashtable(char *);
 
 #endif

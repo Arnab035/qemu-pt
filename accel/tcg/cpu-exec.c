@@ -52,12 +52,9 @@
 #include <errno.h>
 
 // use below includes for replay functions
-#include "sysemu/dma.h"
-#include "hw/pci/pci.h"
 #include "replay/replay-internal.h"
 #include "events.h"
 #include "qemu/iov.h"
-#include "sysemu/block-backend.h"
 
 #ifdef CONFIG_USER_ONLY
 #define MEMSUFFIX _kernel
@@ -726,7 +723,7 @@ static inline void tb_add_jump(TranslationBlock *tb, int n,
  * parameters : integer index of the hash table
  */
 
-static int is_hash_table_conflict(int index) {
+int is_hash_table_conflict(int index) {
   if(interrupt_hash_table[index].interrupt_handler_address != NULL) { 
     //printf("there are conflicts\n");
     return 1;
@@ -737,7 +734,7 @@ static int is_hash_table_conflict(int index) {
   }
 }
 
-static int compute_hash(char *interrupt_handler_pointer) {
+int compute_hash(char *interrupt_handler_pointer) {
   if(strlen(interrupt_handler_pointer) < 12) {
     printf("handler address may be wrong\n");
     return -1;
@@ -760,21 +757,27 @@ static int compute_hash(char *interrupt_handler_pointer) {
  * returns : void
  */
 
-static void fill_interrupt_hash_table(CPUX86State *env) {
+void fill_interrupt_hash_table(CPUX86State *env) {
   /* 256 interrupt handlers in linux */
   uint32_t e1, e2, e3;
+  printf("filling hash table\n");
   SegmentCache *dt;
   target_ulong ptr;
   target_ulong offset;
   interrupt_hash_table = malloc(256 * sizeof(struct hash_buckets));
+  if(!interrupt_hash_table) {
+      printf("Malloc unsuccesful\n");
+      exit(1);
+  }
   memset(interrupt_hash_table, 0, 256 * sizeof(struct hash_buckets));
   int index, is_conflict;
 
   char *buffer = malloc(16 * sizeof(char));
   int intno;
+  printf("hi");
   dt = &env->idt;
+  printf("hello");
   for(intno=0; intno < 256; intno++) {
-    printf("intno : %d\n", intno);
     ptr = dt->base + intno*16;
     e1 = cpu_ldl_kernel(env, ptr);
     e2 = cpu_ldl_kernel(env, ptr+4);
@@ -782,7 +785,7 @@ static void fill_interrupt_hash_table(CPUX86State *env) {
     offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
     sprintf(buffer, "%lx", offset);   // convert into string
     
-    //printf("buffer : %s\n", buffer);
+    printf("buffer : %s\n", buffer);
     index = compute_hash(buffer);
     // determine if there is a conflict
     is_conflict = is_hash_table_conflict(index);
@@ -823,7 +826,7 @@ static void fill_interrupt_hash_table(CPUX86State *env) {
  * parameters : interrupt_handler_pointer in string format
  */
 
-static int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
+int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
     int hash_index = compute_hash(interrupt_handler_pointer);
     int diff;
     char *address;
@@ -879,25 +882,8 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
                                         int tb_exit, uint32_t cf_mask)
 {
 
-    /* if you are about to access kernel space from user space please get ready */
     X86CPU *x86_cpu = X86_CPU(cpu);
     CPUX86State *env = &x86_cpu->env;
-    uint8_t id;
-    void (*callback_func)(void *, int );
-
-    if(is_handle_interrupt_in_userspace) {
-        /* this indicates that execution has unexpectedly entered the kernel space */
-      printf("interrupt handler address reported by TIP : 0x%s\n", 
-		      tip_addresses[index_tip_address-1].address);
-      if(interrupt_hash_table == NULL) {
-          fill_interrupt_hash_table(env);
-      }
-      int intno;
-      intno = get_interrupt_number_from_hashtable(tip_addresses[index_tip_address-1].address);
-      printf("intno : %d\n", intno);
-      do_userspace_interrupt(env, intno, 0, 0, 
-		      do_strtoul(tip_addresses[index_tip_address-2].address), 1);	      
-    }
 
     TranslationBlock *tb;
     target_ulong cs_base, pc;
@@ -919,14 +905,11 @@ static inline TranslationBlock *tb_find(CPUState *cpu,
          */
 	/* disable code cache usage here */
         //tb = tb_htable_lookup(cpu, pc, cs_base, flags, cf_mask);
-        if (likely(tb == NULL)) {
-            /* if no translated code available, then translate it now */
-            tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);
-        }
+        tb = tb_gen_code(cpu, pc, cs_base, flags, cf_mask);
 
         mmap_unlock();
         /* We add the TB in the virtual pc hash table for the fast lookup */
-        atomic_set(&cpu->tb_jmp_cache[tb_jmp_cache_hash_func(pc)], tb);
+        // atomic_set(&cpu->tb_jmp_cache[tb_jmp_cache_hash_func(pc)], tb);
     }
 #ifndef CONFIG_USER_ONLY
     /* We don't take care of direct jumps when address mapping changes in
@@ -1248,7 +1231,13 @@ int cpu_exec(CPUState *cpu)
         }
     }
     if(tnt_array == NULL) {
-      printf("tnt_array is empty\n");
+        printf("tnt_array is empty\n");
+	exit(1);
+    }
+
+    if(interrupt_hash_table == NULL) {
+        //X86CPU *x86cpu = X86_CPU(cpu);
+        //fill_interrupt_hash_table(&x86cpu->env);
     }
 
     /* if an exception is pending, we execute it here */

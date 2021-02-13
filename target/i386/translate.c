@@ -236,6 +236,7 @@ static const uint8_t cc_op_live[CC_OP_NB] = {
 };
 
 int index_tip_address = 0;
+int index_fup_address= 0;
 
 static void set_cc_op(DisasContext *s, CCOp op)
 {
@@ -4505,7 +4506,17 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
-
+    if (do_strtoul(fup_addresses[index_fup_address].address) == pc_start &&
+           fup_addresses[index_fup_address].type == 'V' &&
+	   tnt_array[index_array] == 'F') {
+        printf("VMENTRY here");
+        index_array++;
+        index_fup_address++;
+        gen_jmp_im(do_strtoul(tip_addresses[index_tip_address].address));
+        gen_eob(s);
+        return do_strtoul(tip_addresses[index_tip_address++].address);
+    }
+    
     prefixes = 0;
     rex_w = -1;
     rex_r = 0;
