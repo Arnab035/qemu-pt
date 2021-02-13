@@ -4508,8 +4508,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
     }
     if (do_strtoul(fup_addresses[index_fup_address].address) == pc_start &&
            fup_addresses[index_fup_address].type == 'V' &&
-	   tnt_array[index_array] == 'F') {
-        printf("VMENTRY here");
+           tnt_array[index_array] == 'F') {
         index_array++;
         index_fup_address++;
         gen_jmp_im(do_strtoul(tip_addresses[index_tip_address].address));

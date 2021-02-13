@@ -1372,23 +1372,22 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     bool ret = false;
 
     if (tnt_array[index_array] == 'F' && 
-	do_strtoul(fup_addresses[index_fup_address].address) == env->eip &&
-	fup_addresses[index_fup_address].type == 'I') {
+        do_strtoul(fup_addresses[index_fup_address].address) == env->eip &&
+        fup_addresses[index_fup_address].type == 'I') {
         // source address of interrupt
-	// consume FUP, next TIP and increment all the pointers
-	// jump to the interrupt corresponding to the TIP, that follows FUP
+        // consume FUP, next TIP and increment all the pointers
+        // jump to the interrupt corresponding to the TIP, that follows FUP
         index_array+=2;
-	index_fup_address++;
-	while(!tip_addresses[index_tip_address].is_useful)
+        index_fup_address++;
+        while(!tip_addresses[index_tip_address].is_useful)
             index_tip_address++;
         int intno;
-	printf("address: %s\n", tip_addresses[index_tip_address].address);
-	// TODO: figure out a way to get interrupt number.
+        // TODO: figure out a way to get interrupt number.
         intno = 239;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
         if(intno > -1) {
             index_tip_address++;
             do_interrupt_x86_hardirq(env, intno, 1);
-	} else {
+        } else {
             printf("Invalid interrupt number. We cannot proceed...");
             exit(1);
         }

@@ -760,7 +760,6 @@ int compute_hash(char *interrupt_handler_pointer) {
 void fill_interrupt_hash_table(CPUX86State *env) {
   /* 256 interrupt handlers in linux */
   uint32_t e1, e2, e3;
-  printf("filling hash table\n");
   SegmentCache *dt;
   target_ulong ptr;
   target_ulong offset;
@@ -774,9 +773,7 @@ void fill_interrupt_hash_table(CPUX86State *env) {
 
   char *buffer = malloc(16 * sizeof(char));
   int intno;
-  printf("hi");
   dt = &env->idt;
-  printf("hello");
   for(intno=0; intno < 256; intno++) {
     ptr = dt->base + intno*16;
     e1 = cpu_ldl_kernel(env, ptr);
@@ -785,7 +782,6 @@ void fill_interrupt_hash_table(CPUX86State *env) {
     offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
     sprintf(buffer, "%lx", offset);   // convert into string
     
-    printf("buffer : %s\n", buffer);
     index = compute_hash(buffer);
     // determine if there is a conflict
     is_conflict = is_hash_table_conflict(index);
@@ -1232,7 +1228,7 @@ int cpu_exec(CPUState *cpu)
     }
     if(tnt_array == NULL) {
         printf("tnt_array is empty\n");
-	exit(1);
+        exit(1);
     }
 
     if(interrupt_hash_table == NULL) {
