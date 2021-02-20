@@ -399,7 +399,7 @@ void arnab_replay_configure(QemuOpts *opts, const char *event_type)
     const char *fname;
     const char *rmode;
 
-    const char *timer_fname, *host_clock_fname;
+    const char *host_clock_fname;
     ReplayMode mode = REPLAY_MODE_NONE;
     Location loc;
 
@@ -428,13 +428,12 @@ void arnab_replay_configure(QemuOpts *opts, const char *event_type)
     if (strcmp(event_type, "network") == 0 || strcmp(event_type, "disk") == 0) {
         arnab_replay_enable(fname, mode, event_type);
     } else if (strcmp(event_type, "clock") == 0) {
-        timer_fname = strtok((char *)fname, ",");
-        host_clock_fname = strtok(NULL, ",");
-        if (timer_fname[0] == '\0' || host_clock_fname[0] == '\0') {
-            error_report("One of the 2 filenames to be specified to maintain clock values has not been provided");
+        arnab_replay_enable(fname, mode, "clock");
+        host_clock_fname = qemu_opt_get(opts, "host-clock-file");
+        if (!host_clock_fname) {
+            error_report("File name not specified for storing host clock values");
             exit(1);
-        } 
-        arnab_replay_enable(timer_fname, mode, "clock");
+        }
         arnab_replay_enable(host_clock_fname, mode, "host-clock");
     } else {
         error_report("Invalid event type");

@@ -3,6 +3,7 @@
 #include "sysemu/sysemu.h"
 
 ReplayMode replay_mode;
+ReplayMode arnab_replay_mode;
 
 int64_t replay_save_clock(unsigned int kind, int64_t clock)
 {
@@ -10,7 +11,7 @@ int64_t replay_save_clock(unsigned int kind, int64_t clock)
     return 0;
 }
 
-int64_t replay_read_clock(unsigned int kind)
+int64_t replay_read_clock(unsigned int kind, int64_t clock)
 {
     abort();
     return 0;

@@ -3554,13 +3554,14 @@ This option records and replays network packets. Network packets are written to 
 ETEXI
 
 DEF("arnab_clock_replay", HAS_ARG, QEMU_OPTION_CLOCK_rr, \
-    "-arnab_clock_replay [mode=record|replay,file=<filename>]\n"
-    "                    option to record and replay hpet clock values\n", QEMU_ARCH_ALL)
+    "-arnab_clock_replay [mode=record|replay,file=<filename>,host-clock-file=<filename>]\n"
+    "                    option to record and replay hpet clock values and host clock values\n", QEMU_ARCH_ALL)
 
 STEXI
-@item -arnab_clock_replay [mode=record|replay][,rrfile=@var{filename}]
+@item -arnab_clock_replay [mode=record|replay][,rrfile=@var{filename},host-clock-file=@var{filename}]
 @findex -arnab_clock_replay
-This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix the guest to use the hpet clock, we'll only record and replay hpet clock values.
+This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix the guest to use the hpet clock, we'll record and replay hpet clock values.
+We also need to record the host clock values when they are accessed, host clocks being non-deterministic in nature.
 ETEXI
 
 DEF("arnab_disk_replay", HAS_ARG, QEMU_OPTION_DISK_rr, \

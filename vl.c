@@ -498,7 +498,10 @@ static QemuOptsList qemu_arnab_clock_record_replay_opts = {
 	}, {
 	    .name = "file",
 	    .type = QEMU_OPT_STRING,
-	},
+	}, {
+            .name = "host-clock-file",
+            .type = QEMU_OPT_STRING,
+        },
         { /* end of list */}
     },
 };

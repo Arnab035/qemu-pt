@@ -10,6 +10,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "index_array_header.h"
 #include "qemu-common.h"
 #include "sysemu/replay.h"
 #include "replay-internal.h"
@@ -18,14 +19,19 @@
 int64_t replay_save_clock(ReplayClockKind kind, int64_t clock)
 {
 
+    /*
     if (replay_file) {
         //g_assert(replay_mutex_locked());
 
         replay_save_instructions();
         replay_put_event(EVENT_CLOCK + kind);
         replay_put_qword(clock);
+    }*/
+    if (kind == REPLAY_CLOCK_HOST && arnab_host_clock_replay_file) {
+        if (start_recording) {
+            arnab_replay_put_qword(clock, "host-clock");
+        }
     }
-
     return clock;
 }
 
@@ -44,12 +50,12 @@ void replay_read_next_clock(ReplayClockKind kind)
 }
 
 /*! Reads next clock event from the input. */
-int64_t replay_read_clock(ReplayClockKind kind)
+int64_t replay_read_clock(ReplayClockKind kind, int64_t clock)
 {
     //g_assert(replay_file && replay_mutex_locked());
 
     //replay_account_executed_instructions();
-
+    /*
     if (replay_file) {
         int64_t ret;
         if (replay_next_event_is(EVENT_CLOCK + kind)) {
@@ -58,33 +64,18 @@ int64_t replay_read_clock(ReplayClockKind kind)
         ret = replay_state.cached_clock[kind];
 
         return ret;
-    }
-
-    error_report("REPLAY INTERNAL ERROR %d", __LINE__);
-    exit(1);
-}
-
-int64_t arnab_replay_save_host_clock(ReplayClockKind kind, int64_t clock)
-{
-    if (kind == REPLAY_CLOCK_HOST) {
-        if (arnab_host_clock_replay_file) {
-            arnab_replay_put_qword(clock, "host-clock");
-        }
-    }
-    return clock;
-}
-
-int64_t arnab_replay_read_host_clock(ReplayClockKind kind, int64_t clock)
-{
-    if (kind == REPLAY_CLOCK_HOST) {
-        if (arnab_host_clock_replay_file) {
+    }*/
+    if (kind == REPLAY_CLOCK_HOST) 
+    {
+        if (arnab_host_clock_replay_file) 
+        {
             int64_t ret;
             ret = arnab_replay_get_qword("host-clock");
             return ret;
-        }
-
+        } 
         error_report("REPLAY INTERNAL ERROR %d", __LINE__);
         exit(1);
     }
     return clock;
 }
+

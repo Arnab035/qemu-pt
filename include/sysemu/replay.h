@@ -116,19 +116,13 @@ bool replay_has_interrupt(void);
 /*! Save the specified clock */
 int64_t replay_save_clock(ReplayClockKind kind, int64_t clock);
 /*! Read the specified clock from the log or return cached data */
-int64_t replay_read_clock(ReplayClockKind kind);
+int64_t replay_read_clock(ReplayClockKind kind, int64_t clock);
 /*! Saves or reads the clock depending on the current replay mode. */
 
-/* save host clock */
-int64_t arnab_replay_save_host_clock(ReplayClockKind kind, int64_t clock);
-
-/* Read host clock from file */
-int64_t arnab_replay_read_host_clock(ReplayClockKind kind, int64_t clock);
-
-#define REPLAY_CLOCK(clock, value)                                                          \
-    (arnab_replay_mode == REPLAY_MODE_PLAY ? arnab_replay_read_host_clock((clock), (value)) \
-        : arnab_replay_mode == REPLAY_MODE_RECORD                                           \
-            ? arnab_replay_save_host_clock((clock), (value))                                \
+#define REPLAY_CLOCK(clock, value)                                                     \
+    (arnab_replay_mode == REPLAY_MODE_PLAY ? replay_read_clock((clock), (value))       \
+        : arnab_replay_mode == REPLAY_MODE_RECORD                                      \
+            ? replay_save_clock((clock), (value))                                      \
         : (value))
 
 /* Events */
