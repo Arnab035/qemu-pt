@@ -119,10 +119,16 @@ int64_t replay_save_clock(ReplayClockKind kind, int64_t clock);
 int64_t replay_read_clock(ReplayClockKind kind);
 /*! Saves or reads the clock depending on the current replay mode. */
 
-#define REPLAY_CLOCK(clock, value)                                      \
-    (replay_mode == REPLAY_MODE_PLAY ? (value)                          \
-        : replay_mode == REPLAY_MODE_RECORD                             \
-            ? (value)                                                   \
+/* save host clock */
+int64_t arnab_replay_save_host_clock(ReplayClockKind kind, int64_t clock);
+
+/* Read host clock from file */
+int64_t arnab_replay_read_host_clock(ReplayClockKind kind, int64_t clock);
+
+#define REPLAY_CLOCK(clock, value)                                                          \
+    (arnab_replay_mode == REPLAY_MODE_PLAY ? arnab_replay_read_host_clock((clock), (value)) \
+        : arnab_replay_mode == REPLAY_MODE_RECORD                                           \
+            ? arnab_replay_save_host_clock((clock), (value))                                \
         : (value))
 
 /* Events */

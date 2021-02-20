@@ -63,3 +63,28 @@ int64_t replay_read_clock(ReplayClockKind kind)
     error_report("REPLAY INTERNAL ERROR %d", __LINE__);
     exit(1);
 }
+
+int64_t arnab_replay_save_host_clock(ReplayClockKind kind, int64_t clock)
+{
+    if (kind == REPLAY_CLOCK_HOST) {
+        if (arnab_host_clock_replay_file) {
+            arnab_replay_put_qword(clock, "host-clock");
+        }
+    }
+    return clock;
+}
+
+int64_t arnab_replay_read_host_clock(ReplayClockKind kind, int64_t clock)
+{
+    if (kind == REPLAY_CLOCK_HOST) {
+        if (arnab_host_clock_replay_file) {
+            int64_t ret;
+            ret = arnab_replay_get_qword("host-clock");
+            return ret;
+        }
+
+        error_report("REPLAY INTERNAL ERROR %d", __LINE__);
+        exit(1);
+    }
+    return clock;
+}

@@ -31,6 +31,7 @@ FILE *replay_file;
 FILE *arnab_clock_replay_file; 
 FILE *arnab_network_replay_file;
 FILE *arnab_disk_replay_file;
+FILE *arnab_host_clock_replay_file;
 
 static void replay_write_error(void)
 {
@@ -78,6 +79,16 @@ void arnab_replay_put_byte(uint8_t byte, const char *event_type)
     else if (strcmp(event_type, "disk") == 0) {
 	if (arnab_disk_replay_file) {
 	    if (putc(byte, arnab_disk_replay_file) == EOF) {
+	        replay_write_error();
+	    }
+	}
+    }
+    // we'll only write host clock values, other clock types do not lead to non-determinism.
+    // since we do not use icount here, so even the 'virtual instruction' clock won't lead to 
+    // non-determinism
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+	    if (putc(byte, arnab_host_clock_replay_file) == EOF) {
 	        replay_write_error();
 	    }
 	}
@@ -172,6 +183,14 @@ void arnab_replay_put_array(const uint8_t *buf, size_t size, const char *event_t
 	    }
 	}
     }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            arnab_replay_put_dword(size, event_type);
+            if (fwrite(buf, 1, size, arnab_host_clock_replay_file) != size) {
+                replay_write_error();
+            }
+        }
+    }
     else {
         error_report("Invalid event type");
     } 
@@ -202,6 +221,11 @@ uint8_t arnab_replay_get_byte(const char *event_type)
     else if (strcmp(event_type, "disk") == 0) {
         if (arnab_disk_replay_file) {
 	    byte = getc(arnab_disk_replay_file);
+	}
+    }
+    else if (strcmp(event_type, "host_clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+	    byte = getc(arnab_host_clock_replay_file);
 	}
     }
     else {
@@ -247,6 +271,12 @@ uint16_t arnab_replay_get_word(const char *event_type)
 	    word = (word << 8) + arnab_replay_get_byte(event_type);
 	}
     }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            word = arnab_replay_get_byte(event_type);
+            word = (word << 8) + arnab_replay_get_byte(event_type);
+        }
+    }
     else {
         error_report("Invalid event type");
     }
@@ -285,6 +315,12 @@ uint32_t arnab_replay_get_dword(const char *event_type)
 	    dword = (dword << 16) + arnab_replay_get_word(event_type);
 	}
     }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            dword = arnab_replay_get_word(event_type);
+            dword = (dword << 16) + arnab_replay_get_dword(event_type);
+        }
+    }
     else {
         error_report("Invalid event type");
     }
@@ -322,6 +358,12 @@ int64_t arnab_replay_get_qword(const char *event_type)
 	    qword = arnab_replay_get_dword(event_type);
 	    qword = (qword << 32) + arnab_replay_get_dword(event_type);
 	}
+    }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            qword = arnab_replay_get_dword(event_type);
+            qword = (qword << 32) + arnab_replay_get_dword(event_type);
+        }
     }
     else {
         error_report("Invalid event type");
@@ -364,6 +406,14 @@ void arnab_replay_get_array(uint8_t *buf, size_t *size, const char *event_type)
 	        error_report("replay read error");
 	    }
 	}
+    }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            *size = arnab_replay_get_dword(event_type);
+            if (fread(buf, 1, *size, arnab_host_clock_replay_file) != *size) {
+                error_report("replay read error");
+            }
+        }
     }
     else {
         error_report("replay read error");
@@ -409,6 +459,15 @@ void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size, const char *event
 	        error_report("replay read error");
 	    }
 	}
+    }
+    else if (strcmp(event_type, "host-clock") == 0) {
+        if (arnab_host_clock_replay_file) {
+            *size = arnab_replay_get_dword(event_type);
+            *buf = g_malloc(*size);
+            if (fread(*buf, 1, *size, arnab_host_clock_replay_file) != *size) {
+                error_report("replay read error");
+            }
+        }
     }
     else {
         error_report("Wrong event type");

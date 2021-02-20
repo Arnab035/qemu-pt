@@ -96,6 +96,7 @@ extern FILE *replay_file;
 extern FILE *arnab_clock_replay_file;
 extern FILE *arnab_network_replay_file;
 extern FILE *arnab_disk_replay_file;
+extern FILE *arnab_host_clock_replay_file;
 
 void replay_put_byte(uint8_t byte);
 void arnab_replay_put_byte(uint8_t byte, const char *);
