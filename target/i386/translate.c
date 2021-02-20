@@ -103,6 +103,7 @@ int index_array_incremented=1;
 int index_tip_address_incremented=1;
 
 unsigned long long index_array = 0;
+unsigned long long prev_insn = 0;
 
 typedef struct DisasContext {
     DisasContextBase base;
@@ -4506,15 +4507,25 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
-    if (do_strtoul(fup_addresses[index_fup_address].address) == pc_start &&
+    if (do_strtoul(fup_addresses[index_fup_address].address) == prev_insn &&
            fup_addresses[index_fup_address].type == 'V' &&
            tnt_array[index_array] == 'F') {
-        index_array++;
-        index_fup_address++;
-        gen_jmp_im(do_strtoul(tip_addresses[index_tip_address].address));
-        gen_eob(s);
-        return do_strtoul(tip_addresses[index_tip_address++].address);
+        if (do_strtoul(fup_addresses[index_fup_address].address) !=
+	     do_strtoul(tip_addresses[index_tip_address].address)) {
+            printf("VMEXIT here\n");
+            index_array++;
+            index_fup_address++;
+            gen_jmp_im(do_strtoul(tip_addresses[index_tip_address].address));
+            gen_eob(s);
+            return do_strtoul(tip_addresses[index_tip_address++].address);
+        } else {
+            index_array++;
+            index_fup_address++;
+            index_tip_address++;
+        }
     }
+
+    prev_insn = pc_start;
     
     prefixes = 0;
     rex_w = -1;
