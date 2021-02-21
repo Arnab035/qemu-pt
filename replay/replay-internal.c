@@ -223,7 +223,7 @@ uint8_t arnab_replay_get_byte(const char *event_type)
 	    byte = getc(arnab_disk_replay_file);
 	}
     }
-    else if (strcmp(event_type, "host_clock") == 0) {
+    else if (strcmp(event_type, "host-clock") == 0) {
         if (arnab_host_clock_replay_file) {
 	    byte = getc(arnab_host_clock_replay_file);
 	}
@@ -318,7 +318,7 @@ uint32_t arnab_replay_get_dword(const char *event_type)
     else if (strcmp(event_type, "host-clock") == 0) {
         if (arnab_host_clock_replay_file) {
             dword = arnab_replay_get_word(event_type);
-            dword = (dword << 16) + arnab_replay_get_dword(event_type);
+            dword = (dword << 16) + arnab_replay_get_word(event_type);
         }
     }
     else {

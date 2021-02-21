@@ -371,7 +371,7 @@ static void arnab_replay_enable(const char *fname, int mode, const char *event_t
                 fseek(arnab_disk_replay_file, HEADER_SIZE, SEEK_SET);
             }
     } else if (strcmp(event_type, "host-clock") == 0) {
-            atexit(arnab_clock_replay_finish);
+            atexit(arnab_host_clock_replay_finish);
             arnab_host_clock_replay_file = fopen(fname, fmode);
             if (arnab_host_clock_replay_file == NULL) {
                 fprintf(stderr, "Replay: open %s: %s\n", fname, strerror(errno));
@@ -411,7 +411,6 @@ void arnab_replay_configure(QemuOpts *opts, const char *event_type)
     qemu_opts_loc_restore(opts);
     fname = qemu_opt_get(opts, "file");
     if (!fname) {
-        printf("File name");
 	error_report("File name not specified for replay");
 	exit(1);
     }
@@ -559,12 +558,19 @@ void arnab_clock_replay_finish(void)
        g_free(arnab_clock_replay_filename);
        arnab_clock_replay_filename = NULL;
     }
+}
+
+void arnab_host_clock_replay_finish(void)
+{
+    if (arnab_replay_mode == REPLAY_MODE_NONE) {
+        return;
+    }
     if (arnab_host_clock_replay_file) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
             arnab_replay_put_event(EVENT_END, "host-clock");
             fseek(arnab_host_clock_replay_file, 0, SEEK_SET);
             arnab_replay_put_dword(REPLAY_VERSION, "host-clock");
-	}
+        }
         fclose(arnab_host_clock_replay_file);
         arnab_host_clock_replay_file = NULL;
     }
@@ -572,7 +578,7 @@ void arnab_clock_replay_finish(void)
         g_free(arnab_host_clock_replay_filename);
         arnab_host_clock_replay_filename = NULL;
     }
-}
+}	
 
 void arnab_network_replay_finish(void)
 {

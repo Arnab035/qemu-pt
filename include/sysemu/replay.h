@@ -81,6 +81,8 @@ void arnab_clock_replay_finish(void);
 void arnab_network_replay_finish(void);
 
 void arnab_disk_replay_finish(void);
+
+void arnab_host_clock_replay_finish(void);
 /*! Adds replay blocker with the specified error description */
 void replay_add_blocker(Error *reason);
 
