@@ -38,6 +38,8 @@ typedef struct Event {
 static QTAILQ_HEAD(, Event) events_list = QTAILQ_HEAD_INITIALIZER(events_list);
 static bool events_enabled;
 
+static void *disk_opaque = NULL;
+
 /* Functions */
 
 /* network and disk events have been enabled only */
@@ -166,17 +168,21 @@ void replay_add_input_sync_event(void)
 
 void replay_block_event(QEMUBH *bh, uint64_t id)
 {
-    printf("block event id: %d\n", id);
-    if (arnab_replay_mode != REPLAY_MODE_NONE) {
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
         // write to file here (instead of writing to queue)
         if (start_recording) {
-            if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                arnab_replay_put_event(EVENT_ASYNC, "disk");
-                arnab_replay_put_qword(id, "disk");
+            if (disk_opaque == NULL) {
+                disk_opaque = bh;
+            }
+            if (arnab_disk_replay_file) {
+                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    arnab_replay_put_qword(id, "disk");
+                }
             }
         }
-    } else {
-        qemu_bh_schedule(bh);
+    }
+    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+        qemu_bh_schedule(bh);  // during replay we'll schedule the disk events appropriately
     }
 }
 
