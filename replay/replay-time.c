@@ -18,7 +18,6 @@
 
 int64_t replay_save_clock(ReplayClockKind kind, int64_t clock)
 {
-
     /*
     if (replay_file) {
         //g_assert(replay_mutex_locked());
@@ -27,8 +26,9 @@ int64_t replay_save_clock(ReplayClockKind kind, int64_t clock)
         replay_put_event(EVENT_CLOCK + kind);
         replay_put_qword(clock);
     }*/
-    if (kind == REPLAY_CLOCK_HOST && arnab_host_clock_replay_file) {
+    if (arnab_host_clock_replay_file) {
         if (start_recording) {
+            arnab_replay_put_event(EVENT_CLOCK + kind, "host-clock");    
             arnab_replay_put_qword(clock, "host-clock");
         }
     }
@@ -65,14 +65,21 @@ int64_t replay_read_clock(ReplayClockKind kind, int64_t clock)
 
         return ret;
     }*/
-    if (kind == REPLAY_CLOCK_HOST) 
+    if (arnab_host_clock_replay_file) 
     {
-        if (arnab_host_clock_replay_file) 
-        {
-            int64_t ret;
+        int64_t ret;
+        uint8_t event;
+        event = arnab_replay_get_byte("host-clock");
+        if (event == EVENT_CLOCK + kind) {
             ret = arnab_replay_get_qword("host-clock");
+            printf("Reading host clock. Value: %ld\n", ret);
             return ret;
-        } 
+        }
+        else {
+            printf("Incorrect clock event read. The incorrect clock type is %d\n", event);
+        }
+    }
+    else {
         error_report("REPLAY INTERNAL ERROR %d", __LINE__);
         exit(1);
     }

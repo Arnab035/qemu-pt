@@ -502,21 +502,21 @@ bool timerlist_run_timers(QEMUTimerList *timer_list)
         break;
     default:
     case QEMU_CLOCK_VIRTUAL:
-        if (!replay_checkpoint(CHECKPOINT_CLOCK_VIRTUAL)) {
-            goto out;
-        }
+        //if (!replay_checkpoint(CHECKPOINT_CLOCK_VIRTUAL)) {
+        //    goto out;
+        //}
         break;
     case QEMU_CLOCK_HOST:
 	
-        if (!replay_checkpoint(CHECKPOINT_CLOCK_HOST)) {
-            goto out;
-        }
+        //if (!replay_checkpoint(CHECKPOINT_CLOCK_HOST)) {
+        //    goto out;
+        //}
         break;
     case QEMU_CLOCK_VIRTUAL_RT:
 	
-        if (!replay_checkpoint(CHECKPOINT_CLOCK_VIRTUAL_RT)) {
-            goto out;
-        }
+        //if (!replay_checkpoint(CHECKPOINT_CLOCK_VIRTUAL_RT)) {
+        //    goto out;
+        //}
         break;
     }
 
