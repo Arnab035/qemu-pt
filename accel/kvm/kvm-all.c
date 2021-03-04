@@ -1928,10 +1928,6 @@ int kvm_cpu_exec(CPUState *cpu)
          */
         smp_rmb();
         
-	/* VMENTRY checkpoint */
-
-	  //replay_checkpoint(CHECKPOINT_VMENTRY);
-
         run_ret = kvm_vcpu_ioctl(cpu, KVM_RUN, 0);
 
         attrs = kvm_arch_post_run(cpu, run);

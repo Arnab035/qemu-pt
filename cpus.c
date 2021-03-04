@@ -543,9 +543,10 @@ void qemu_start_warp_timer(void)
     }
 
     /* warp clock deterministically in record/replay mode */
+    /*
     if (!replay_checkpoint(CHECKPOINT_CLOCK_WARP_START)) {
         return;
-    }
+    }*/
 
     if (!all_cpu_threads_idle()) {
         return;
@@ -627,9 +628,10 @@ static void qemu_account_warp_timer(void)
     /* expect these checkpoints to return FALSE anyway, so this would escape */
 
     /* warp clock deterministically in record/replay mode */
+    /*
     if (!replay_checkpoint(CHECKPOINT_CLOCK_WARP_ACCOUNT)) {
         return;
-    }
+    }*/
 
     timer_del(timers_state.icount_warp_timer);
     icount_warp_rt();

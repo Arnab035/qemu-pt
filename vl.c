@@ -1732,7 +1732,7 @@ static ShutdownCause qemu_reset_requested(void)
 {
     ShutdownCause r = reset_requested;
 
-    if (r && replay_checkpoint(CHECKPOINT_RESET_REQUESTED)) {
+    if (r) {//&& replay_checkpoint(CHECKPOINT_RESET_REQUESTED)) {
         reset_requested = SHUTDOWN_CAUSE_NONE;
         return r;
     }
@@ -1742,7 +1742,7 @@ static ShutdownCause qemu_reset_requested(void)
 static int qemu_suspend_requested(void)
 {
     int r = suspend_requested;
-    if (r && replay_checkpoint(CHECKPOINT_SUSPEND_REQUESTED)) {
+    if (r) { //&& replay_checkpoint(CHECKPOINT_SUSPEND_REQUESTED)) {
         suspend_requested = 0;
         return r;
     }
@@ -4676,7 +4676,7 @@ int main(int argc, char **argv, char **envp)
     /* This checkpoint is required by replay to separate prior clock
        reading from the other reads, because timer polling functions query
        clock values from the log. */
-    replay_checkpoint(CHECKPOINT_INIT); 
+    // replay_checkpoint(CHECKPOINT_INIT); 
     qdev_machine_init();
 
     current_machine->ram_size = ram_size;
@@ -4792,7 +4792,7 @@ int main(int argc, char **argv, char **envp)
        reading from the other reads, because timer polling functions query
        clock values from the log. */
 
-    replay_checkpoint(CHECKPOINT_RESET); 
+    //replay_checkpoint(CHECKPOINT_RESET); 
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
     register_global_state();
     if (replay_mode != REPLAY_MODE_NONE) {
