@@ -68,7 +68,7 @@ void replay_net_packet_event(ReplayNetState *rns, unsigned flags,
     // TODO: can this be moved out of the fast path?
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            arnab_replay_put_event(EVENT_ASYNC, "network");
+            arnab_replay_put_byte(event->id, "network");
             arnab_replay_put_dword(event->flags, "network");
             arnab_replay_put_array(event->data, event->size, "network");
 	}
@@ -113,6 +113,16 @@ void *replay_event_net_load(void)
     event->id = replay_get_byte();
     event->flags = replay_get_dword();
     replay_get_array_alloc(&event->data, &event->size);
+
+    return event;
+}
+
+void *arnab_replay_event_net_load(void)
+{
+    NetEvent *event = g_new(NetEvent, 1);
+    event->id = arnab_replay_get_byte("network");
+    event->flags = arnab_replay_get_dword("network");
+    arnab_replay_get_array_alloc(&event->data, &event->size, "network");
 
     return event;
 }

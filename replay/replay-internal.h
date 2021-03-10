@@ -215,6 +215,8 @@ void replay_event_net_save(void *opaque);
 /*! Reads network from the file. */
 void *replay_event_net_load(void);
 
+void *arnab_replay_event_net_load(void);
+
 /* VMState-related functions */
 
 /* Registers replay VMState.

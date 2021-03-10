@@ -18,6 +18,7 @@
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
 
+
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "qemu/log.h"
@@ -25,7 +26,10 @@
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
 #include "exec/log.h"
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
 #include "index_array_header.h"
+
 
 //#define DEBUG_PCALL
 
@@ -69,6 +73,12 @@
 #undef CPU_MMU_INDEX
 #undef MEMSUFFIX
 #endif
+
+typedef struct ReplayIOEvent {
+    ReplayAsyncEventKind event_kind;
+    void *opaque;
+    uint64_t id;
+} ReplayIOEvent;
 
 int is_within_block = 0;   // definition
 
@@ -1350,6 +1360,7 @@ void x86_cpu_do_interrupt(CPUState *cs)
         assert(env->old_exception == -1);
         do_vmexit(env, cs->exception_index - EXCP_VMEXIT, env->error_code);
     } else {
+        //printf("x86 cpu do interrupt\n");
         do_interrupt_all(cpu, cs->exception_index,
                          env->exception_is_int,
                          env->error_code,
@@ -1383,9 +1394,20 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             index_tip_address++;
         int intno;
         // TODO: figure out a way to get interrupt number.
-        intno = 239;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
+        intno = 113;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
+
+	/* replay network and disk I/O before the interrupt is 'emulated' */
         if(intno > -1) {
             index_tip_address++;
+	    // 113 corresponds to n/w interrupt
+            if (intno == 113) {
+                ReplayIOEvent *event;
+		event = g_malloc0(sizeof(ReplayIOEvent));
+                event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                event->opaque = arnab_replay_event_net_load();
+                replay_event_net_run(event->opaque);
+                g_free(event);
+            }
             do_interrupt_x86_hardirq(env, intno, 1);
         } else {
             printf("Invalid interrupt number. We cannot proceed...");

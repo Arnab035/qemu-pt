@@ -14,8 +14,6 @@
 #include "qemu/thread.h"
 #include "qemu/main-loop.h"
 #include "events.h"
-#include "sysemu/replay.h"
-#include "replay/replay-internal.h"
 #include "index_array_header.h"
 
 /* #define DEBUG_IOMMU */
@@ -264,39 +262,6 @@ BlockAIOCB *dma_blk_write_io_func(int64_t offset, QEMUIOVector *iov,
      *  (malloc to be replaced by g_malloc)
      */
     BlockBackend *blk = opaque;
-    size_t size;
-    printf("dma_blk_write_io_func\n");
-
-    /* only if start_recording is set to 1, start recording
-     * start_recording is set to 1 after the snapshot
-     * is taken */
-
-    /*
-    if (start_recording) {
-    	if(arnab_replay_mode == REPLAY_MODE_RECORD) {
-            if(!arnab_replay_file) {
-	        printf("No replay file available\n");
-	        exit(0);
-	    }
-
-            arnab_replay_put_event(PCI_DISK_EVENT);	
-            
-	    arnab_replay_put_qword(offset);  
-	    arnab_replay_put_qword(iov->size);  
-
-	    size = iov_size(iov->iov, iov->niov);
-	    void *buf_iov = malloc(size);
-	    qemu_iovec_to_buf(iov, 0, buf_iov, size);
-
-	    arnab_replay_put_array(buf_iov, size);
-	    arnab_replay_put_array(opaque, get_block_backend_size(opaque));
-
-	    //arnab_replay_put_array(cb, sizeof(*cb));
-
-	    arnab_replay_put_array(cb_opaque, sizeof(DMAAIOCB));
-       }
-
-    }*/
     return blk_aio_pwritev(blk, offset, iov, 0, cb, cb_opaque);
 }
 
@@ -304,7 +269,6 @@ BlockAIOCB *dma_blk_write(BlockBackend *blk,
                           QEMUSGList *sg, uint64_t offset, uint32_t align,
                           void (*cb)(void *opaque, int ret), void *opaque)
 {
-    printf("dma_blk_write\n");
     return dma_blk_io(blk_get_aio_context(blk), sg, offset, align,
                       dma_blk_write_io_func, blk, cb, opaque,
                       DMA_DIRECTION_TO_DEVICE);
