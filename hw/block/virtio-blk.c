@@ -64,7 +64,7 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
     // before this checkpoint, need to be simulated
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            arnab_replay_put_event(EVENT_INTERRUPT, "disk");
+            arnab_replay_put_event(EVENT_IO_INTERRUPT, "disk");
         }
     }
     if (s->dataplane_started && !s->dataplane_disabled) {
