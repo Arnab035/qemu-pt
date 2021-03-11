@@ -32,6 +32,8 @@ typedef struct NetEvent {
     size_t size;
 } NetEvent;
 
+static int network_device_id = -1;
+
 static NetFilterState **network_filters;
 static int network_filters_count;
 
@@ -121,6 +123,15 @@ void *arnab_replay_event_net_load(void)
 {
     NetEvent *event = g_new(NetEvent, 1);
     event->id = arnab_replay_get_byte("network");
+    if (network_device_id == -1) 
+    {
+        network_device_id = event->id;
+    }
+    if (event->id != network_device_id) {
+        // this basically means you read a byte that indicates that interrupt was taken here
+        g_free(event);
+        return NULL;
+    }
     event->flags = arnab_replay_get_dword("network");
     arnab_replay_get_array_alloc(&event->data, &event->size, "network");
 

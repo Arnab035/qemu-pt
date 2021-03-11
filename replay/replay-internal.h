@@ -44,6 +44,7 @@ enum ReplayEvents {
     EVENT_CHECKPOINT_LAST = EVENT_CHECKPOINT + CHECKPOINT_COUNT - 1,
     /* end of log event */
     EVENT_END,
+    EVENT_IO_INTERRUPT,
     EVENT_COUNT
 };
 

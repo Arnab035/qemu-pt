@@ -1295,7 +1295,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     // till now, must be sent out.
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) { 
-            arnab_replay_put_event(EVENT_INTERRUPT, "network");
+            arnab_replay_put_event(EVENT_IO_INTERRUPT, "network");
         }
     }
     virtio_notify(vdev, q->rx_vq);
