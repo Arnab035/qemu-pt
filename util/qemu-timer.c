@@ -606,31 +606,15 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
 
     switch (type) {
     case QEMU_CLOCK_REALTIME:
-        return get_clock();
+        return REPLAY_CLOCK(REPLAY_CLOCK_REALTIME, get_clock());
     default:
     case QEMU_CLOCK_VIRTUAL:
         if (use_icount) {
-            return cpu_get_icount();
+            return REPLAY_CLOCK(REPLAY_CLOCK_VIRTUAL, cpu_get_icount());
         } else {
-            return cpu_get_clock();
+            return REPLAY_CLOCK(REPLAY_CLOCK_VIRTUAL, cpu_get_clock());
         }
     case QEMU_CLOCK_HOST:
-	/*
-        if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-            if (arnab_host_clock_replay_file) {
-                now = arnab_replay_get_qword("host-clock");
-            }
-        } 
-        else {
-            now = get_clock_realtime();
-            if (start_recording) {
-                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    if (arnab_host_clock_replay_file) {
-                        arnab_replay_put_qword(now, "host-clock");
-                    }
-                }
-            }
-        }*/
         now = REPLAY_CLOCK(REPLAY_CLOCK_HOST, get_clock_realtime());
         last = clock->last;
         clock->last = now;
