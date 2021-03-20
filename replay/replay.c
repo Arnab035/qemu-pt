@@ -127,10 +127,7 @@ bool replay_exception(void)
             replay_finish_event();
         }
         return res;
-    } else if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        return false;
     }
-
     return true;
 }
 

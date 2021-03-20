@@ -583,7 +583,7 @@ int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg)
 {
     int64_t deadline = -1;
     QEMUClockType type;
-    bool play = 0/*replay_mode == REPLAY_MODE_PLAY*/;
+    bool play = replay_mode == REPLAY_MODE_PLAY;
     for (type = 0; type < QEMU_CLOCK_MAX; type++) {
         if (qemu_clock_use_for_deadline(type)) {
             if (!play || type == QEMU_CLOCK_REALTIME) {
@@ -606,13 +606,13 @@ int64_t qemu_clock_get_ns(QEMUClockType type)
 
     switch (type) {
     case QEMU_CLOCK_REALTIME:
-        return REPLAY_CLOCK(REPLAY_CLOCK_REALTIME, get_clock());
+        return get_clock();
     default:
     case QEMU_CLOCK_VIRTUAL:
         if (use_icount) {
-            return REPLAY_CLOCK(REPLAY_CLOCK_VIRTUAL, cpu_get_icount());
+            return cpu_get_icount();
         } else {
-            return REPLAY_CLOCK(REPLAY_CLOCK_VIRTUAL, cpu_get_clock());
+            return cpu_get_clock();
         }
     case QEMU_CLOCK_HOST:
         now = REPLAY_CLOCK(REPLAY_CLOCK_HOST, get_clock_realtime());

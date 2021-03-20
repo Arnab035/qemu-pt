@@ -1394,7 +1394,7 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
             index_tip_address++;
         int intno;
         // TODO: figure out a way to get interrupt number.
-        intno = 113;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
+        intno = 239;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
 
         /* replay network and disk I/O before the interrupt is 'emulated' */
         if(intno > -1) {
@@ -1418,7 +1418,9 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
                     }
                 }
             }
+            cs->interrupt_request &= ~(CPU_INTERRUPT_HARD | CPU_INTERRUPT_VIRQ);
             do_interrupt_x86_hardirq(env, intno, 1);
+            return true;
         } else {
             printf("Invalid interrupt number. We cannot proceed...");
             exit(1);

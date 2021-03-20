@@ -4795,7 +4795,7 @@ int main(int argc, char **argv, char **envp)
     //replay_checkpoint(CHECKPOINT_RESET); 
     qemu_system_reset(SHUTDOWN_CAUSE_NONE);
     register_global_state();
-    if (replay_mode != REPLAY_MODE_NONE) {
+    if (replay_mode != REPLAY_MODE_NONE) { // this is only required for snapshots
         replay_vmstate_init();
     } else if (loadvm) {
         Error *local_err = NULL;
