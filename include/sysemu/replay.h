@@ -125,9 +125,10 @@ int64_t replay_save_clock(ReplayClockKind kind, int64_t clock);
 int64_t replay_read_clock(ReplayClockKind kind, int64_t clock);
 /*! Saves or reads the clock depending on the current replay mode. */
 
+/* Change 'replay_mode' to 'arnab_replay_mode', if host clock needs to be replayed.  */
 #define REPLAY_CLOCK(clock, value)                                                     \
-    (arnab_replay_mode == REPLAY_MODE_PLAY ? replay_read_clock((clock), (value))       \
-        : arnab_replay_mode == REPLAY_MODE_RECORD                                      \
+    (replay_mode == REPLAY_MODE_PLAY ? replay_read_clock((clock), (value))             \
+        : replay_mode == REPLAY_MODE_RECORD                                            \
             ? replay_save_clock((clock), (value))                                      \
         : (value))
 
