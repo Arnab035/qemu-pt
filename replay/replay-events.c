@@ -186,8 +186,6 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
     }
 }
 
-/* only save network and disk events */
-
 static void replay_save_event(Event *event, int checkpoint)
 {
     if (replay_mode != REPLAY_MODE_PLAY) {

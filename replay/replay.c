@@ -428,9 +428,10 @@ void arnab_replay_configure(QemuOpts *opts, const char *event_type)
         host_clock_fname = qemu_opt_get(opts, "host-clock-file");
         if (!host_clock_fname) {
             error_report("File name not specified for storing host clock values");
-            exit(1);
         }
-        arnab_replay_enable(host_clock_fname, mode, "host-clock");
+        else {
+            arnab_replay_enable(host_clock_fname, mode, "host-clock");
+        }
     } else {
         error_report("Invalid event type");
         exit(1);
