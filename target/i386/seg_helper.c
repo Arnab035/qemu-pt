@@ -1023,7 +1023,7 @@ void do_interrupt64(CPUX86State *env, int intno, int is_int,
                    get_seg_base(e1, e2),
                    get_seg_limit(e1, e2),
                    e2);
-    printf("offset is 0x%lx\n", offset);
+    printf("offset is 0x%lx, interrupt number is %d\n", offset, intno);
     env->eip = offset;
 }
 #endif

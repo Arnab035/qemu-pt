@@ -1663,39 +1663,36 @@ static inline void cpu_get_tb_cpu_state(CPUX86State *env, target_ulong *pc,
 {
     *cs_base = env->segs[R_CS].base;
     printf("is_within_block : %d\n", is_within_block);
-    if(index_array_incremented && !is_io_instruction && !is_within_block) {
+    printf("env->eip is 0x%lx\n", env->eip);
 
-      // if execution continues inside the same block - the result would be a loop 
-      // across the same block if you enforce the 
-      // below condition (this is when page faults or general protection faults occur)
-
-      if(index_array != 0 && index_array != 1 && tnt_array[index_array-1] == 'P') {
-
-        printf("env->eip is 0x%lx\n", env->eip); 
-        printf("address is 0x%lx\n", do_strtoul(tip_addresses[index_tip_address-1].address));
-
-        if(env->eip != do_strtoul(tip_addresses[index_tip_address-1].address)) {
-          env->eip = do_strtoul(tip_addresses[index_tip_address-1].address);	
-        }    
-      }
+    if (stopped_execution_of_tb_chain) {
+        if (index_array_incremented) {
+            index_array--;
+        }
+        if (index_tip_address_incremented) {
+            index_tip_address--;
+        }
     }
+    printf("tnt_array[%llu] = %c\n", index_array, tnt_array[index_array]);
+    printf("index_tip_address: %d\n", index_tip_address);
+
+    if (index_array <= 1 && index_tip_address == 0) {
+        assert(env->eip == do_strtoul(tip_addresses[index_tip_address].address));
+    }
+    else {
+        // only add assertion if the previous block consumed either TNT/TIP
+        if (index_array_incremented && tnt_array[index_array-1] == 'P' ) {
+            assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
+        }
+    }
+
     if(is_within_block) {
-      is_within_block = 0;
+        is_within_block = 0;
     }
-    /*
-    if(is_io_instruction && index_array_incremented) {
-      printf("is_io_instruction true\n");
-      index_array--;
-      index_tip_address--;
-      is_io_instruction = 0;
-    }*/
     *pc = *cs_base + env->eip;
     *flags = env->hflags |
         (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK));
 
-    if(index_array > 1 && stopped_execution_of_tb_chain == 1) {
-      stopped_execution_of_tb_chain = 0;
-    }
 }
 
 void do_cpu_init(X86CPU *cpu);

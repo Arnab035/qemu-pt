@@ -6532,13 +6532,13 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_jr(s, cpu_T0);
         break;
     case 0xc3: /* ret */
-	if(stopped_execution_of_tb_chain == 1) {
-	    index_array = index_array - 1;
-	}
 	if(tnt_array[index_array] != 'P') {
 	    printf("Intel-PT trace uses a TNT (taken) bit for return\n");
 	    index_array++;
-	    index_array_incremented = 1;  
+	    index_array_incremented = 1;
+            if (stopped_execution_of_tb_chain) {
+                index_array = index_array - 1;
+            } 
 	}
         else {
 	    printf("Intel-PT trace uses a TIP bit for return\n");
@@ -6730,11 +6730,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 	        index_tip_address_incremented=1;
 	    }
 	}
-	if(stopped_execution_of_tb_chain == 1) {
-	    index_array = index_array-1;
-	}
 	printf("inside gen_jcc now : next_eip is 0x%lx and tval is 0x%lx\n", next_eip, tval+next_eip);
-	printf("tnt_array[%llu] is %c\n", index_array, tnt_array[index_array]);
 
 	if(tnt_array[index_array] == 'T') {
 	    is_branch_taken=1;

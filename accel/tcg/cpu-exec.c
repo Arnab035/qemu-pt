@@ -326,7 +326,7 @@ char *get_array_of_tnt_bits(void) {
   unsigned long long j;
 
   //TODO: make this commandline
-  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/log_04feb21.txt.gz";
+  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/log_28mar21.txt.gz";
   char *tnt_array = malloc(1);
 
   //tnt_array[0] = 'P';
@@ -505,6 +505,10 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     last_tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
     tb_exit = ret & TB_EXIT_MASK;
     trace_exec_tb_exit(last_tb, tb_exit);
+
+    if (stopped_execution_of_tb_chain) {
+        stopped_execution_of_tb_chain = 0;
+    }
 
     if (tb_exit > TB_EXIT_IDX1) {
         /* We didn't start executing this TB (eg because the instruction
@@ -1018,7 +1022,6 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
         cpu->exception_index = -1;
         return true;
 #else
-	
         if (replay_exception()) {
             CPUClass *cc = CPU_GET_CLASS(cpu);
             qemu_mutex_lock_iothread();
@@ -1026,10 +1029,7 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
             qemu_mutex_unlock_iothread();
             cpu->exception_index = -1;
 
-        }
-        	
-	else if (!replay_has_interrupt()) {
-            
+        } else if (!replay_has_interrupt()) {
             *ret = EXCP_INTERRUPT;
             return true;
         }
@@ -1068,7 +1068,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
         if (replay_mode == REPLAY_MODE_PLAY  && !replay_has_interrupt() ) {
             /* Do nothing */
         } else if (interrupt_request & CPU_INTERRUPT_HALT) {
-            replay_interrupt();
+            //replay_interrupt();
             cpu->interrupt_request &= ~CPU_INTERRUPT_HALT;
             cpu->halted = 1;
             cpu->exception_index = EXCP_HLT;
@@ -1079,7 +1079,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
         else if (interrupt_request & CPU_INTERRUPT_INIT) {
             X86CPU *x86_cpu = X86_CPU(cpu);
             CPUArchState *env = &x86_cpu->env;
-            replay_interrupt();
+            //replay_interrupt();
             cpu_svm_check_intercept_param(env, SVM_EXIT_INIT, 0, 0);
             do_cpu_init(x86_cpu);
             cpu->exception_index = EXCP_HALTED;
@@ -1088,7 +1088,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
         }
 #else
         else if (interrupt_request & CPU_INTERRUPT_RESET) {
-            replay_interrupt();
+            //replay_interrupt();
             cpu_reset(cpu);
             qemu_mutex_unlock_iothread();
             return true;
@@ -1100,7 +1100,7 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
            and via longjmp via cpu_loop_exit.  */
         else {
             if (cc->cpu_exec_interrupt(cpu, interrupt_request)) {
-                replay_interrupt();
+                //replay_interrupt();
                 cpu->exception_index = -1;
                 *last_tb = NULL;
             }
@@ -1128,7 +1128,6 @@ static inline bool cpu_handle_interrupt(CPUState *cpu,
         }
         return true;
     }
-
     return false;
 }
 
@@ -1240,7 +1239,6 @@ int cpu_exec(CPUState *cpu)
     while (!cpu_handle_exception(cpu, &ret)) {
         TranslationBlock *last_tb = NULL;
         int tb_exit = 0;
-
         while (!cpu_handle_interrupt(cpu, &last_tb)) {
             uint32_t cflags = cpu->cflags_next_tb;
             TranslationBlock *tb;
@@ -1261,7 +1259,6 @@ int cpu_exec(CPUState *cpu)
 	      free(tb_insn_array);
 	      size_of_tb_insn_array=0;
 	    }
-
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
             /* Try to align the host and virtual clocks
