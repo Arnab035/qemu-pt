@@ -357,6 +357,8 @@ typedef enum X86Seg {
 #define MSR_IA32_SPEC_CTRL              0x48
 #define MSR_IA32_TSCDEADLINE            0x6e0
 
+#define MSR_IA32_ARCH_CAPABILITIES      0x10a
+
 #define FEATURE_CONTROL_LOCKED                    (1<<0)
 #define FEATURE_CONTROL_VMXON_ENABLED_OUTSIDE_SMX (1<<2)
 #define FEATURE_CONTROL_LMCE                      (1<<20)
@@ -501,18 +503,8 @@ typedef enum FeatureWord {
     FEAT_6_EAX,         /* CPUID[6].EAX */
     FEAT_XSAVE_COMP_LO, /* CPUID[EAX=0xd,ECX=0].EAX */
     FEAT_XSAVE_COMP_HI, /* CPUID[EAX=0xd,ECX=0].EDX */
-    FEATURE_WORDS,
     FEAT_ARCH_CAPABILITIES,
-    FEAT_CORE_CAPABILITY,
-    FEAT_VMX_PROCBASED_CTLS,
-    FEAT_VMX_SECONDARY_CTLS,
-    FEAT_VMX_PINBASED_CTLS,
-    FEAT_VMX_EXIT_CTLS,
-    FEAT_VMX_ENTRY_CTLS,
-    FEAT_VMX_MISC,
-    FEAT_VMX_EPT_VPID_CAPS,
-    FEAT_VMX_BASIC,
-    FEAT_VMX_VMFUNC,
+    FEATURE_WORDS,
 } FeatureWord;
 
 typedef uint32_t FeatureWordArray[FEATURE_WORDS];
