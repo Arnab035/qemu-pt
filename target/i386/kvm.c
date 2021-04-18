@@ -1114,7 +1114,7 @@ int kvm_arch_init_vcpu(CPUState *cs)
                 goto fail;
             }
             /* for savevm */
-            vmstate_x86_cpu.unmigratable = 1;
+            //vmstate_x86_cpu.unmigratable = 1;
         }
     }
 
