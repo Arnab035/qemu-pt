@@ -93,6 +93,7 @@ static bool has_msr_hv_frequencies;
 static bool has_msr_xss;
 static bool has_msr_spec_ctrl;
 static bool has_msr_smi_count;
+static bool has_msr_arch_capabs;
 
 static uint32_t has_architectural_pmu_version;
 static uint32_t num_architectural_pmu_gp_counters;
@@ -1265,6 +1266,9 @@ static int kvm_get_supported_msrs(KVMState *s)
                 case MSR_IA32_SPEC_CTRL:
                     has_msr_spec_ctrl = true;
                     break;
+                case MSR_IA32_ARCH_CAPABILITIES:
+                    has_msr_arch_capabs = true;
+                    break;
                 }
             }
         }
@@ -1765,14 +1769,9 @@ static int kvm_put_msrs(X86CPU *cpu, int level)
 #endif
 
        /* If host supports feature MSR, write down. */
-    if (kvm_feature_msrs) {
-        int i;
-        for (i = 0; i < kvm_feature_msrs->nmsrs; i++)
-            if (kvm_feature_msrs->indices[i] == MSR_IA32_ARCH_CAPABILITIES) {
-                kvm_msr_entry_add(cpu, MSR_IA32_ARCH_CAPABILITIES,
-                              env->features[FEAT_ARCH_CAPABILITIES]);
-                break;
-            }
+    if (has_msr_arch_capabs) {
+        kvm_msr_entry_add(cpu, MSR_IA32_ARCH_CAPABILITIES, 
+                  env->features[FEAT_ARCH_CAPABILITIES]);
     }
 
     /*
