@@ -18,20 +18,20 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
+#include "qemu/cutils.h"
 #include "qemu/error-report.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/block/flash.h"
-#include "hw/devices.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
-#include "sysemu/block-backend.h"
 #include "elf.h"
 #include "lm32_hwsetup.h"
 #include "lm32.h"
 #include "exec/address-spaces.h"
+#include "sysemu/reset.h"
 #include "sysemu/sysemu.h"
 
 typedef struct {
@@ -76,22 +76,28 @@ static void main_cpu_reset(void *opaque)
 
 static void lm32_evr_init(MachineState *machine)
 {
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
     const char *kernel_filename = machine->kernel_filename;
     LM32CPU *cpu;
     CPULM32State *env;
     DriveInfo *dinfo;
     MemoryRegion *address_space_mem =  get_system_memory();
-    MemoryRegion *phys_ram = g_new(MemoryRegion, 1);
     qemu_irq irq[32];
     ResetInfo *reset_info;
     int i;
 
+    if (machine->ram_size != mc->default_ram_size) {
+        char *sz = size_to_str(mc->default_ram_size);
+        error_report("Invalid RAM size, should be %s", sz);
+        g_free(sz);
+        exit(EXIT_FAILURE);
+    }
+
     /* memory map */
     hwaddr flash_base  = 0x04000000;
-    size_t flash_sector_size       = 256 * 1024;
-    size_t flash_size              = 32 * 1024 * 1024;
+    size_t flash_sector_size       = 256 * KiB;
+    size_t flash_size              = 32 * MiB;
     hwaddr ram_base    = 0x08000000;
-    size_t ram_size                = 64 * 1024 * 1024;
     hwaddr timer0_base = 0x80002000;
     hwaddr uart0_base  = 0x80006000;
     hwaddr timer1_base = 0x8000a000;
@@ -108,15 +114,13 @@ static void lm32_evr_init(MachineState *machine)
 
     reset_info->flash_base = flash_base;
 
-    memory_region_allocate_system_memory(phys_ram, NULL, "lm32_evr.sdram",
-                                         ram_size);
-    memory_region_add_subregion(address_space_mem, ram_base, phys_ram);
+    memory_region_add_subregion(address_space_mem, ram_base, machine->ram);
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
     /* Spansion S29NS128P */
-    pflash_cfi02_register(flash_base, NULL, "lm32_evr.flash", flash_size,
+    pflash_cfi02_register(flash_base, "lm32_evr.flash", flash_size,
                           dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                          flash_sector_size, flash_size / flash_sector_size,
+                          flash_sector_size,
                           1, 2, 0x01, 0x7e, 0x43, 0x00, 0x555, 0x2aa, 1);
 
     /* create irq lines */
@@ -125,12 +129,12 @@ static void lm32_evr_init(MachineState *machine)
         irq[i] = qdev_get_gpio_in(env->pic_state, i);
     }
 
-    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hds[0]);
+    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hd(0));
     sysbus_create_simple("lm32-timer", timer0_base, irq[timer0_irq]);
     sysbus_create_simple("lm32-timer", timer1_base, irq[timer1_irq]);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init(serial_hds[1]);
+    env->juart_state = lm32_juart_init(serial_hd(1));
 
     reset_info->bootstrap_pc = flash_base;
 
@@ -138,13 +142,14 @@ static void lm32_evr_init(MachineState *machine)
         uint64_t entry;
         int kernel_size;
 
-        kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
+        kernel_size = load_elf(kernel_filename, NULL, NULL, NULL,
+                               &entry, NULL, NULL, NULL,
                                1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {
             kernel_size = load_image_targphys(kernel_filename, ram_base,
-                                              ram_size);
+                                              machine->ram_size);
             reset_info->bootstrap_pc = ram_base;
         }
 
@@ -159,6 +164,7 @@ static void lm32_evr_init(MachineState *machine)
 
 static void lm32_uclinux_init(MachineState *machine)
 {
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
     const char *kernel_filename = machine->kernel_filename;
     const char *kernel_cmdline = machine->kernel_cmdline;
     const char *initrd_filename = machine->initrd_filename;
@@ -166,18 +172,23 @@ static void lm32_uclinux_init(MachineState *machine)
     CPULM32State *env;
     DriveInfo *dinfo;
     MemoryRegion *address_space_mem =  get_system_memory();
-    MemoryRegion *phys_ram = g_new(MemoryRegion, 1);
     qemu_irq irq[32];
     HWSetup *hw;
     ResetInfo *reset_info;
     int i;
 
+    if (machine->ram_size != mc->default_ram_size) {
+        char *sz = size_to_str(mc->default_ram_size);
+        error_report("Invalid RAM size, should be %s", sz);
+        g_free(sz);
+        exit(EXIT_FAILURE);
+    }
+
     /* memory map */
     hwaddr flash_base   = 0x04000000;
-    size_t flash_sector_size        = 256 * 1024;
-    size_t flash_size               = 32 * 1024 * 1024;
+    size_t flash_sector_size        = 256 * KiB;
+    size_t flash_size               = 32 * MiB;
     hwaddr ram_base     = 0x08000000;
-    size_t ram_size                 = 64 * 1024 * 1024;
     hwaddr uart0_base   = 0x80000000;
     hwaddr timer0_base  = 0x80002000;
     hwaddr timer1_base  = 0x80010000;
@@ -200,15 +211,13 @@ static void lm32_uclinux_init(MachineState *machine)
 
     reset_info->flash_base = flash_base;
 
-    memory_region_allocate_system_memory(phys_ram, NULL,
-                                         "lm32_uclinux.sdram", ram_size);
-    memory_region_add_subregion(address_space_mem, ram_base, phys_ram);
+    memory_region_add_subregion(address_space_mem, ram_base, machine->ram);
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
     /* Spansion S29NS128P */
-    pflash_cfi02_register(flash_base, NULL, "lm32_uclinux.flash", flash_size,
+    pflash_cfi02_register(flash_base, "lm32_uclinux.flash", flash_size,
                           dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                          flash_sector_size, flash_size / flash_sector_size,
+                          flash_sector_size,
                           1, 2, 0x01, 0x7e, 0x43, 0x00, 0x555, 0x2aa, 1);
 
     /* create irq lines */
@@ -217,13 +226,13 @@ static void lm32_uclinux_init(MachineState *machine)
         irq[i] = qdev_get_gpio_in(env->pic_state, i);
     }
 
-    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hds[0]);
+    lm32_uart_create(uart0_base, irq[uart0_irq], serial_hd(0));
     sysbus_create_simple("lm32-timer", timer0_base, irq[timer0_irq]);
     sysbus_create_simple("lm32-timer", timer1_base, irq[timer1_irq]);
     sysbus_create_simple("lm32-timer", timer2_base, irq[timer2_irq]);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init(serial_hds[1]);
+    env->juart_state = lm32_juart_init(serial_hd(1));
 
     reset_info->bootstrap_pc = flash_base;
 
@@ -231,13 +240,14 @@ static void lm32_uclinux_init(MachineState *machine)
         uint64_t entry;
         int kernel_size;
 
-        kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
+        kernel_size = load_elf(kernel_filename, NULL, NULL, NULL,
+                               &entry, NULL, NULL, NULL,
                                1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {
             kernel_size = load_image_targphys(kernel_filename, ram_base,
-                                              ram_size);
+                                              machine->ram_size);
             reset_info->bootstrap_pc = ram_base;
         }
 
@@ -251,7 +261,7 @@ static void lm32_uclinux_init(MachineState *machine)
     hw = hwsetup_init();
     hwsetup_add_cpu(hw, "LM32", 75000000);
     hwsetup_add_flash(hw, "flash", flash_base, flash_size);
-    hwsetup_add_ddr_sdram(hw, "ddr_sdram", ram_base, ram_size);
+    hwsetup_add_ddr_sdram(hw, "ddr_sdram", ram_base, machine->ram_size);
     hwsetup_add_timer(hw, "timer0", timer0_base, timer0_irq);
     hwsetup_add_timer(hw, "timer1_dev_only", timer1_base, timer1_irq);
     hwsetup_add_timer(hw, "timer2_dev_only", timer2_base, timer2_irq);
@@ -285,8 +295,10 @@ static void lm32_evr_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "LatticeMico32 EVR32 eval system";
     mc->init = lm32_evr_init;
-    mc->is_default = 1;
+    mc->is_default = true;
     mc->default_cpu_type = LM32_CPU_TYPE_NAME("lm32-full");
+    mc->default_ram_size = 64 * MiB;
+    mc->default_ram_id = "lm32_evr.sdram";
 }
 
 static const TypeInfo lm32_evr_type = {
@@ -301,8 +313,9 @@ static void lm32_uclinux_class_init(ObjectClass *oc, void *data)
 
     mc->desc = "lm32 platform for uClinux and u-boot by Theobroma Systems";
     mc->init = lm32_uclinux_init;
-    mc->is_default = 0;
     mc->default_cpu_type = LM32_CPU_TYPE_NAME("lm32-full");
+    mc->default_ram_size = 64 * MiB;
+    mc->default_ram_id = "lm32_uclinux.sdram";
 }
 
 static const TypeInfo lm32_uclinux_type = {

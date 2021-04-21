@@ -27,26 +27,27 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
-#include "hw/hw.h"
 #include "qapi/visitor.h"
 #include "qemu/range.h"
 #include "hw/isa/isa.h"
 #include "hw/sysbus.h"
-#include "hw/i386/pc.h"
+#include "migration/vmstate.h"
+#include "hw/irq.h"
 #include "hw/isa/apm.h"
-#include "hw/i386/ioapic.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/i386/ich9.h"
 #include "hw/acpi/acpi.h"
 #include "hw/acpi/ich9.h"
 #include "hw/pci/pci_bus.h"
+#include "hw/qdev-properties.h"
 #include "exec/address-spaces.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 #include "hw/nvram/fw_cfg.h"
 #include "qemu/cutils.h"
 
@@ -412,7 +413,7 @@ void ich9_lpc_pm_init(PCIDevice *lpc_pci, bool smm_enabled)
                                  true);
     }
 
-    ich9_lpc_reset(&lpc->d.qdev);
+    ich9_lpc_reset(DEVICE(lpc));
 }
 
 /* APM */
@@ -624,47 +625,21 @@ static const MemoryRegionOps ich9_rst_cnt_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN
 };
 
-Object *ich9_lpc_find(void)
-{
-    bool ambig;
-    Object *o = object_resolve_path_type("", TYPE_ICH9_LPC_DEVICE, &ambig);
-
-    if (ambig) {
-        return NULL;
-    }
-    return o;
-}
-
-static void ich9_lpc_get_sci_int(Object *obj, Visitor *v, const char *name,
-                                 void *opaque, Error **errp)
-{
-    ICH9LPCState *lpc = ICH9_LPC_DEVICE(obj);
-    uint32_t value = lpc->sci_gsi;
-
-    visit_type_uint32(v, name, &value, errp);
-}
-
-static void ich9_lpc_add_properties(ICH9LPCState *lpc)
-{
-    static const uint8_t acpi_enable_cmd = ICH9_APM_ACPI_ENABLE;
-    static const uint8_t acpi_disable_cmd = ICH9_APM_ACPI_DISABLE;
-
-    object_property_add(OBJECT(lpc), ACPI_PM_PROP_SCI_INT, "uint32",
-                        ich9_lpc_get_sci_int,
-                        NULL, NULL, NULL, NULL);
-    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_ENABLE_CMD,
-                                  &acpi_enable_cmd, NULL);
-    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_DISABLE_CMD,
-                                  &acpi_disable_cmd, NULL);
-
-    ich9_pm_add_properties(OBJECT(lpc), &lpc->pm, NULL);
-}
-
 static void ich9_lpc_initfn(Object *obj)
 {
     ICH9LPCState *lpc = ICH9_LPC_DEVICE(obj);
 
-    ich9_lpc_add_properties(lpc);
+    static const uint8_t acpi_enable_cmd = ICH9_APM_ACPI_ENABLE;
+    static const uint8_t acpi_disable_cmd = ICH9_APM_ACPI_DISABLE;
+
+    object_property_add_uint8_ptr(obj, ACPI_PM_PROP_SCI_INT,
+                                  &lpc->sci_gsi, OBJ_PROP_FLAG_READ, NULL);
+    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_ENABLE_CMD,
+                                  &acpi_enable_cmd, OBJ_PROP_FLAG_READ, NULL);
+    object_property_add_uint8_ptr(OBJECT(lpc), ACPI_PM_PROP_ACPI_DISABLE_CMD,
+                                  &acpi_disable_cmd, OBJ_PROP_FLAG_READ, NULL);
+
+    ich9_pm_add_properties(obj, &lpc->pm, NULL);
 }
 
 static void ich9_lpc_realize(PCIDevice *d, Error **errp)
@@ -793,7 +768,7 @@ static void ich9_lpc_class_init(ObjectClass *klass, void *data)
     dc->reset = ich9_lpc_reset;
     k->realize = ich9_lpc_realize;
     dc->vmsd = &vmstate_ich9_lpc;
-    dc->props = ich9_lpc_properties;
+    device_class_set_props(dc, ich9_lpc_properties);
     k->config_write = ich9_lpc_config_write;
     dc->desc = "ICH9 LPC bridge";
     k->vendor_id = PCI_VENDOR_ID_INTEL;
@@ -805,6 +780,7 @@ static void ich9_lpc_class_init(ObjectClass *klass, void *data)
      * pc_q35_init()
      */
     dc->user_creatable = false;
+    hc->pre_plug = ich9_pm_device_pre_plug_cb;
     hc->plug = ich9_pm_device_plug_cb;
     hc->unplug_request = ich9_pm_device_unplug_request_cb;
     hc->unplug = ich9_pm_device_unplug_cb;

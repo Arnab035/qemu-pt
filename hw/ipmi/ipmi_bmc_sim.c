@@ -27,7 +27,10 @@
 #include "qemu/timer.h"
 #include "hw/ipmi/ipmi.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "hw/loader.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 
 #define IPMI_NETFN_CHASSIS            0x00
 
@@ -164,22 +167,7 @@ typedef struct IPMISensor {
 #define MAX_SENSORS 20
 #define IPMI_WATCHDOG_SENSOR 0
 
-typedef struct IPMIBmcSim IPMIBmcSim;
-typedef struct RspBuffer RspBuffer;
-
 #define MAX_NETFNS 64
-
-typedef struct IPMICmdHandler {
-    void (*cmd_handler)(IPMIBmcSim *s,
-                        uint8_t *cmd, unsigned int cmd_len,
-                        RspBuffer *rsp);
-    unsigned int cmd_len_min;
-} IPMICmdHandler;
-
-typedef struct IPMINetfn {
-    unsigned int cmd_nums;
-    const IPMICmdHandler *cmd_handlers;
-} IPMINetfn;
 
 typedef struct IPMIRcvBufEntry {
     QTAILQ_ENTRY(IPMIRcvBufEntry) entry;
@@ -187,9 +175,6 @@ typedef struct IPMIRcvBufEntry {
     uint8_t buf[MAX_IPMI_MSG_SIZE];
 } IPMIRcvBufEntry;
 
-#define TYPE_IPMI_BMC_SIMULATOR "ipmi-bmc-sim"
-#define IPMI_BMC_SIMULATOR(obj) OBJECT_CHECK(IPMIBmcSim, (obj), \
-                                        TYPE_IPMI_BMC_SIMULATOR)
 struct IPMIBmcSim {
     IPMIBmc parent;
 
@@ -220,7 +205,7 @@ struct IPMIBmcSim {
     uint8_t restart_cause;
 
     uint8_t acpi_power_state[2];
-    uint8_t uuid[16];
+    QemuUUID uuid;
 
     IPMISel sel;
     IPMISdr sdr;
@@ -276,27 +261,7 @@ struct IPMIBmcSim {
 #define IPMI_BMC_WATCHDOG_ACTION_POWER_DOWN      2
 #define IPMI_BMC_WATCHDOG_ACTION_POWER_CYCLE     3
 
-struct RspBuffer {
-    uint8_t buffer[MAX_IPMI_MSG_SIZE];
-    unsigned int len;
-};
-
 #define RSP_BUFFER_INITIALIZER { }
-
-static inline void rsp_buffer_set_error(RspBuffer *rsp, uint8_t byte)
-{
-    rsp->buffer[2] = byte;
-}
-
-/* Add a byte to the response. */
-static inline void rsp_buffer_push(RspBuffer *rsp, uint8_t byte)
-{
-    if (rsp->len >= sizeof(rsp->buffer)) {
-        rsp_buffer_set_error(rsp, IPMI_CC_REQUEST_DATA_TRUNCATED);
-        return;
-    }
-    rsp->buffer[rsp->len++] = byte;
-}
 
 static inline void rsp_buffer_pushmore(RspBuffer *rsp, uint8_t *bytes,
                                        unsigned int n)
@@ -474,7 +439,9 @@ static int attn_set(IPMIBmcSim *ibs)
 
 static int attn_irq_enabled(IPMIBmcSim *ibs)
 {
-    return (IPMI_BMC_MSG_INTS_ON(ibs) && IPMI_BMC_MSG_FLAG_RCV_MSG_QUEUE_SET(ibs))
+    return (IPMI_BMC_MSG_INTS_ON(ibs) &&
+            (IPMI_BMC_MSG_FLAG_RCV_MSG_QUEUE_SET(ibs) ||
+             IPMI_BMC_MSG_FLAG_WATCHDOG_TIMEOUT_MASK_SET(ibs)))
         || (IPMI_BMC_EVBUF_FULL_INT_ENABLED(ibs) &&
             IPMI_BMC_MSG_FLAG_EVT_BUF_FULL_SET(ibs));
 }
@@ -625,8 +592,8 @@ static void ipmi_init_sensors_from_sdrs(IPMIBmcSim *s)
     }
 }
 
-static int ipmi_register_netfn(IPMIBmcSim *s, unsigned int netfn,
-                               const IPMINetfn *netfnd)
+int ipmi_sim_register_netfn(IPMIBmcSim *s, unsigned int netfn,
+                        const IPMINetfn *netfnd)
 {
     if ((netfn & 1) || (netfn >= MAX_NETFNS) || (s->netfns[netfn / 2])) {
         return -1;
@@ -936,8 +903,19 @@ static void get_device_guid(IPMIBmcSim *ibs,
 {
     unsigned int i;
 
+    /* An uninitialized uuid is all zeros, use that to know if it is set. */
     for (i = 0; i < 16; i++) {
-        rsp_buffer_push(rsp, ibs->uuid[i]);
+        if (ibs->uuid.data[i]) {
+            goto uuid_set;
+        }
+    }
+    /* No uuid is set, return an error. */
+    rsp_buffer_set_error(rsp, IPMI_CC_INVALID_CMD);
+    return;
+
+ uuid_set:
+    for (i = 0; i < 16; i++) {
+        rsp_buffer_push(rsp, ibs->uuid.data[i]);
     }
 }
 
@@ -1191,7 +1169,7 @@ static void set_watchdog_timer(IPMIBmcSim *ibs,
         break;
 
     case IPMI_BMC_WATCHDOG_PRE_NMI:
-        if (!k->do_hw_op(s, IPMI_SEND_NMI, 1)) {
+        if (k->do_hw_op(s, IPMI_SEND_NMI, 1)) {
             /* NMI not supported. */
             rsp_buffer_set_error(rsp, IPMI_CC_INVALID_DATA_FIELD);
             return;
@@ -1225,6 +1203,8 @@ static void get_watchdog_timer(IPMIBmcSim *ibs,
     rsp_buffer_push(rsp, ibs->watchdog_action);
     rsp_buffer_push(rsp, ibs->watchdog_pretimeout);
     rsp_buffer_push(rsp, ibs->watchdog_expired);
+    rsp_buffer_push(rsp, ibs->watchdog_timeout & 0xff);
+    rsp_buffer_push(rsp, (ibs->watchdog_timeout >> 8) & 0xff);
     if (ibs->watchdog_running) {
         long timeout;
         timeout = ((ibs->watchdog_expiry - ipmi_getmonotime() + 50000000)
@@ -1842,10 +1822,10 @@ static const IPMINetfn storage_netfn = {
 
 static void register_cmds(IPMIBmcSim *s)
 {
-    ipmi_register_netfn(s, IPMI_NETFN_CHASSIS, &chassis_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_SENSOR_EVENT, &sensor_event_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_APP, &app_netfn);
-    ipmi_register_netfn(s, IPMI_NETFN_STORAGE, &storage_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_CHASSIS, &chassis_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_SENSOR_EVENT, &sensor_event_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_APP, &app_netfn);
+    ipmi_sim_register_netfn(s, IPMI_NETFN_STORAGE, &storage_netfn);
 }
 
 static uint8_t init_sdrs[] = {
@@ -1979,12 +1959,6 @@ static void ipmi_sim_realize(DeviceState *dev, Error **errp)
     ibs->acpi_power_state[0] = 0;
     ibs->acpi_power_state[1] = 0;
 
-    if (qemu_uuid_set) {
-        memcpy(&ibs->uuid, &qemu_uuid, 16);
-    } else {
-        memset(&ibs->uuid, 0, 16);
-    }
-
     ipmi_init_sensors_from_sdrs(ibs);
     register_cmds(ibs);
 
@@ -2004,6 +1978,7 @@ static Property ipmi_sim_properties[] = {
     DEFINE_PROP_UINT8("fwrev2", IPMIBmcSim, fwrev2, 0),
     DEFINE_PROP_UINT32("mfg_id", IPMIBmcSim, mfg_id, 0),
     DEFINE_PROP_UINT16("product_id", IPMIBmcSim, product_id, 0),
+    DEFINE_PROP_UUID_NODEFAULT("guid", IPMIBmcSim, uuid),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -2014,7 +1989,7 @@ static void ipmi_sim_class_init(ObjectClass *oc, void *data)
 
     dc->hotpluggable = false;
     dc->realize = ipmi_sim_realize;
-    dc->props = ipmi_sim_properties;
+    device_class_set_props(dc, ipmi_sim_properties);
     bk->handle_command = ipmi_sim_handle_command;
 }
 

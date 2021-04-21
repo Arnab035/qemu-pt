@@ -12,14 +12,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/arm/pxa.h"
 #include "hw/sd/sd.h"
-#include "hw/qdev.h"
 #include "hw/qdev-properties.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 #define TYPE_PXA2XX_MMCI "pxa2xx-mmci"
@@ -496,12 +497,12 @@ PXA2xxMMCIState *pxa2xx_mmci_init(MemoryRegion *sysmem,
     carddev = qdev_create(qdev_get_child_bus(dev, "sd-bus"), TYPE_SD_CARD);
     qdev_prop_set_drive(carddev, "drive", blk, &err);
     if (err) {
-        error_report("failed to init SD card: %s", error_get_pretty(err));
+        error_reportf_err(err, "failed to init SD card: ");
         return NULL;
     }
     object_property_set_bool(OBJECT(carddev), true, "realized", &err);
     if (err) {
-        error_report("failed to init SD card: %s", error_get_pretty(err));
+        error_reportf_err(err, "failed to init SD card: ");
         return NULL;
     }
 

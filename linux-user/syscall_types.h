@@ -14,12 +14,6 @@ STRUCT(serial_icounter_struct,
 STRUCT(sockaddr,
        TYPE_SHORT, MK_ARRAY(TYPE_CHAR, 14))
 
-STRUCT(timeval,
-       MK_ARRAY(TYPE_LONG, 2))
-
-STRUCT(timespec,
-       MK_ARRAY(TYPE_LONG, 2))
-
 STRUCT(rtentry,
        TYPE_ULONG, MK_STRUCT(STRUCT_sockaddr), MK_STRUCT(STRUCT_sockaddr), MK_STRUCT(STRUCT_sockaddr),
        TYPE_SHORT, TYPE_SHORT, TYPE_ULONG, TYPE_PTRVOID, TYPE_SHORT, TYPE_PTRVOID,
@@ -88,6 +82,72 @@ STRUCT(buffmem_desc,
 
 STRUCT(mixer_info,
        MK_ARRAY(TYPE_CHAR, 16), MK_ARRAY(TYPE_CHAR, 32), TYPE_INT, MK_ARRAY(TYPE_INT, 10))
+
+STRUCT(snd_timer_id,
+       TYPE_INT, /* dev_class */
+       TYPE_INT, /* dev_sclass */
+       TYPE_INT, /* card */
+       TYPE_INT, /* device */
+       TYPE_INT) /* subdevice */
+
+STRUCT(snd_timer_ginfo,
+       MK_STRUCT(STRUCT_snd_timer_id), /* tid */
+       TYPE_INT, /* flags */
+       TYPE_INT, /* card */
+       MK_ARRAY(TYPE_CHAR, 64), /* id */
+       MK_ARRAY(TYPE_CHAR, 80), /* name */
+       TYPE_ULONG, /* reserved0 */
+       TYPE_ULONG, /* resolution */
+       TYPE_ULONG, /* resolution_min */
+       TYPE_ULONG, /* resolution_max */
+       TYPE_INT, /* clients */
+       MK_ARRAY(TYPE_CHAR, 32)) /* reserved */
+
+STRUCT(snd_timer_gparams,
+       MK_STRUCT(STRUCT_snd_timer_id), /* tid */
+       TYPE_ULONG, /* period_num */
+       TYPE_ULONG, /* period_den */
+       MK_ARRAY(TYPE_CHAR, 32)) /* reserved */
+
+STRUCT(snd_timer_gstatus,
+       MK_STRUCT(STRUCT_snd_timer_id), /* tid */
+       TYPE_ULONG, /* resolution */
+       TYPE_ULONG, /* resolution_num */
+       TYPE_ULONG, /* resolution_den */
+       MK_ARRAY(TYPE_CHAR, 32)) /* reserved */
+
+STRUCT(snd_timer_select,
+       MK_STRUCT(STRUCT_snd_timer_id), /* id */
+       MK_ARRAY(TYPE_CHAR, 32)) /* reserved */
+
+STRUCT(snd_timer_info,
+       TYPE_INT, /* flags */
+       TYPE_INT, /* card */
+       MK_ARRAY(TYPE_CHAR, 64), /* id */
+       MK_ARRAY(TYPE_CHAR, 80), /* name */
+       TYPE_ULONG, /* reserved0 */
+       TYPE_ULONG, /* resolution */
+       MK_ARRAY(TYPE_CHAR, 64)) /* reserved */
+
+STRUCT(snd_timer_params,
+       TYPE_INT, /* flags */
+       TYPE_INT, /* ticks */
+       TYPE_INT, /* queue_size */
+       TYPE_INT, /* reserved0 */
+       TYPE_INT, /* filter */
+       MK_ARRAY(TYPE_CHAR, 60)) /* reserved */
+
+STRUCT(timespec,
+       TYPE_LONG, /* tv_sec */
+       TYPE_LONG) /* tv_nsec */
+
+STRUCT(snd_timer_status,
+       MK_STRUCT(STRUCT_timespec), /* tstamp */
+       TYPE_INT, /* resolution */
+       TYPE_INT, /* lost */
+       TYPE_INT, /* overrun */
+       TYPE_INT, /* queue */
+       MK_ARRAY(TYPE_CHAR, 64)) /* reserved */
 
 /* loop device ioctls */
 STRUCT(loop_info,
@@ -261,8 +321,113 @@ STRUCT(blkpg_partition,
        MK_ARRAY(TYPE_CHAR, BLKPG_DEVNAMELTH), /* devname */
        MK_ARRAY(TYPE_CHAR, BLKPG_VOLNAMELTH)) /* volname */
 
+STRUCT(rtc_time,
+       TYPE_INT, /* tm_sec */
+       TYPE_INT, /* tm_min */
+       TYPE_INT, /* tm_hour */
+       TYPE_INT, /* tm_mday */
+       TYPE_INT, /* tm_mon */
+       TYPE_INT, /* tm_year */
+       TYPE_INT, /* tm_wday */
+       TYPE_INT, /* tm_yday */
+       TYPE_INT) /* tm_isdst */
+
+STRUCT(rtc_wkalrm,
+       TYPE_CHAR, /* enabled */
+       TYPE_CHAR, /* pending */
+       MK_STRUCT(STRUCT_rtc_time)) /* time */
+
+STRUCT(rtc_pll_info,
+       TYPE_INT, /* pll_ctrl */
+       TYPE_INT, /* pll_value */
+       TYPE_INT, /* pll_max */
+       TYPE_INT, /* pll_min */
+       TYPE_INT, /* pll_posmult */
+       TYPE_INT, /* pll_negmult */
+       TYPE_LONG) /* pll_clock */
+
 STRUCT(blkpg_ioctl_arg,
        TYPE_INT, /* op */
        TYPE_INT, /* flags */
        TYPE_INT, /* datalen */
        TYPE_PTRVOID) /* data */
+
+STRUCT(format_descr,
+       TYPE_INT,     /* device */
+       TYPE_INT,     /* head */
+       TYPE_INT)     /* track */
+
+STRUCT(floppy_max_errors,
+       TYPE_INT, /* abort */
+       TYPE_INT, /* read_track */
+       TYPE_INT, /* reset */
+       TYPE_INT, /* recal */
+       TYPE_INT) /* reporting */
+
+#if defined(CONFIG_USBFS)
+/* usb device ioctls */
+STRUCT(usbdevfs_ctrltransfer,
+        TYPE_CHAR, /* bRequestType */
+        TYPE_CHAR, /* bRequest */
+        TYPE_SHORT, /* wValue */
+        TYPE_SHORT, /* wIndex */
+        TYPE_SHORT, /* wLength */
+        TYPE_INT, /* timeout */
+        TYPE_PTRVOID) /* data */
+
+STRUCT(usbdevfs_bulktransfer,
+        TYPE_INT, /* ep */
+        TYPE_INT, /* len */
+        TYPE_INT, /* timeout */
+        TYPE_PTRVOID) /* data */
+
+STRUCT(usbdevfs_setinterface,
+        TYPE_INT, /* interface */
+        TYPE_INT) /* altsetting */
+
+STRUCT(usbdevfs_disconnectsignal,
+        TYPE_INT, /* signr */
+        TYPE_PTRVOID) /* context */
+
+STRUCT(usbdevfs_getdriver,
+        TYPE_INT, /* interface */
+        MK_ARRAY(TYPE_CHAR, USBDEVFS_MAXDRIVERNAME + 1)) /* driver */
+
+STRUCT(usbdevfs_connectinfo,
+        TYPE_INT, /* devnum */
+        TYPE_CHAR) /* slow */
+
+STRUCT(usbdevfs_iso_packet_desc,
+        TYPE_INT, /* length */
+        TYPE_INT, /* actual_length */
+        TYPE_INT) /* status */
+
+STRUCT(usbdevfs_urb,
+        TYPE_CHAR, /* type */
+        TYPE_CHAR, /* endpoint */
+        TYPE_INT, /* status */
+        TYPE_INT, /* flags */
+        TYPE_PTRVOID, /* buffer */
+        TYPE_INT, /* buffer_length */
+        TYPE_INT, /* actual_length */
+        TYPE_INT, /* start_frame */
+        TYPE_INT, /* union number_of_packets stream_id */
+        TYPE_INT, /* error_count */
+        TYPE_INT, /* signr */
+        TYPE_PTRVOID, /* usercontext */
+        MK_ARRAY(MK_STRUCT(STRUCT_usbdevfs_iso_packet_desc), 0)) /* desc */
+
+STRUCT(usbdevfs_ioctl,
+        TYPE_INT, /* ifno */
+        TYPE_INT, /* ioctl_code */
+        TYPE_PTRVOID) /* data */
+
+STRUCT(usbdevfs_hub_portinfo,
+        TYPE_CHAR, /* nports */
+        MK_ARRAY(TYPE_CHAR, 127)) /* port */
+
+STRUCT(usbdevfs_disconnect_claim,
+        TYPE_INT, /* interface */
+        TYPE_INT, /* flags */
+        MK_ARRAY(TYPE_CHAR, USBDEVFS_MAXDRIVERNAME + 1)) /* driver */
+#endif /* CONFIG_USBFS */

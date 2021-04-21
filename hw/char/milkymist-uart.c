@@ -22,11 +22,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "trace.h"
 #include "chardev/char-fe.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 
 enum {
     R_RXTX = 0,
@@ -177,7 +180,7 @@ static int uart_can_rx(void *opaque)
     return !(s->regs[R_STAT] & STAT_RX_EVT);
 }
 
-static void uart_event(void *opaque, int event)
+static void uart_event(void *opaque, QEMUChrEvent event)
 {
 }
 
@@ -236,7 +239,7 @@ static void milkymist_uart_class_init(ObjectClass *klass, void *data)
     dc->realize = milkymist_uart_realize;
     dc->reset = milkymist_uart_reset;
     dc->vmsd = &vmstate_milkymist_uart;
-    dc->props = milkymist_uart_properties;
+    device_class_set_props(dc, milkymist_uart_properties);
 }
 
 static const TypeInfo milkymist_uart_info = {

@@ -20,7 +20,7 @@
 #ifndef QEMU_CRIS_CPU_QOM_H
 #define QEMU_CRIS_CPU_QOM_H
 
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_CRIS_CPU "cris-cpu"
 
@@ -45,7 +45,7 @@ typedef struct CRISCPUClass {
     /*< public >*/
 
     DeviceRealize parent_realize;
-    void (*parent_reset)(CPUState *cpu);
+    DeviceReset parent_reset;
 
     uint32_t vr;
 } CRISCPUClass;

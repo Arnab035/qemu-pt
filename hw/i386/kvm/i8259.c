@@ -9,9 +9,13 @@
  * This work is licensed under the terms of the GNU GPL version 2.
  * See the COPYING file in the top-level directory.
  */
+
 #include "qemu/osdep.h"
 #include "hw/isa/i8259_internal.h"
+#include "hw/intc/i8259.h"
+#include "qemu/module.h"
 #include "hw/i386/apic_internal.h"
+#include "hw/irq.h"
 #include "sysemu/kvm.h"
 
 #define TYPE_KVM_I8259 "kvm-i8259"
@@ -121,8 +125,8 @@ static void kvm_pic_realize(DeviceState *dev, Error **errp)
     PICCommonState *s = PIC_COMMON(dev);
     KVMPICClass *kpc = KVM_PIC_GET_CLASS(dev);
 
-    memory_region_init_reservation(&s->base_io, NULL, "kvm-pic", 2);
-    memory_region_init_reservation(&s->elcr_io, NULL, "kvm-elcr", 1);
+    memory_region_init_io(&s->base_io, OBJECT(dev), NULL, NULL, "kvm-pic", 2);
+    memory_region_init_io(&s->elcr_io, OBJECT(dev), NULL, NULL, "kvm-elcr", 1);
 
     kpc->parent_realize(dev, errp);
 }

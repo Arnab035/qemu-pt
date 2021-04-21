@@ -1,7 +1,6 @@
 #ifndef XEN_PT_H
 #define XEN_PT_H
 
-#include "qemu-common.h"
 #include "hw/xen/xen_common.h"
 #include "hw/pci/pci.h"
 #include "xen-host-pci-device.h"
@@ -204,7 +203,7 @@ typedef struct XenPTMSIX {
     uint64_t mmio_base_addr;
     MemoryRegion mmio;
     void *phys_iomem_base;
-    XenPTMSIXEntry msix_entry[0];
+    XenPTMSIXEntry msix_entry[];
 } XenPTMSIX;
 
 struct XenPCIPassthroughState {
@@ -319,7 +318,7 @@ static inline bool xen_pt_has_msix_mapping(XenPCIPassthroughState *s, int bar)
 }
 
 extern void *pci_assign_dev_load_option_rom(PCIDevice *dev,
-                                            struct Object *owner, int *size,
+                                            int *size,
                                             unsigned int domain,
                                             unsigned int bus, unsigned int slot,
                                             unsigned int function);

@@ -11,12 +11,12 @@
 
 #include "qemu/osdep.h"
 #include "index_array_header.h"
-#include "qemu-common.h"
 #include "sysemu/replay.h"
 #include "replay-internal.h"
 #include "qemu/error-report.h"
 
-int64_t replay_save_clock(ReplayClockKind kind, int64_t clock)
+int64_t replay_save_clock(ReplayClockKind kind, int64_t clock,
+                          int64_t raw_icount)
 {
     /*
     if (replay_file) {

@@ -26,9 +26,12 @@
 #include "hw/sysbus.h"
 #include "qapi/error.h"
 #include "qemu/timer.h"
+#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/ptimer.h"
+#include "hw/qdev-properties.h"
 #include "qemu/log.h"
-#include "qemu/main-loop.h"
+#include "qemu/module.h"
 
 #include "hw/stream.h"
 
@@ -100,7 +103,6 @@ enum {
 };
 
 struct Stream {
-    QEMUBH *bh;
     ptimer_state *ptimer;
     qemu_irq irq;
 
@@ -238,6 +240,7 @@ static void stream_complete(struct Stream *s)
     unsigned int comp_delay;
 
     /* Start the delayed timer.  */
+    ptimer_transaction_begin(s->ptimer);
     comp_delay = s->regs[R_DMACR] >> 24;
     if (comp_delay) {
         ptimer_stop(s->ptimer);
@@ -251,6 +254,7 @@ static void stream_complete(struct Stream *s)
         s->regs[R_DMASR] |= DMASR_IOC_IRQ;
         stream_reload_complete_cnt(s);
     }
+    ptimer_transaction_commit(s->ptimer);
 }
 
 static void stream_process_mem2s(struct Stream *s, StreamSlave *tx_data_dev,
@@ -525,12 +529,12 @@ static void xilinx_axidma_realize(DeviceState *dev, Error **errp)
     object_property_add_link(OBJECT(ds), "dma", TYPE_XILINX_AXI_DMA,
                              (Object **)&ds->dma,
                              object_property_allow_set_link,
-                             OBJ_PROP_LINK_UNREF_ON_RELEASE,
+                             OBJ_PROP_LINK_STRONG,
                              &local_err);
     object_property_add_link(OBJECT(cs), "dma", TYPE_XILINX_AXI_DMA,
                              (Object **)&cs->dma,
                              object_property_allow_set_link,
-                             OBJ_PROP_LINK_UNREF_ON_RELEASE,
+                             OBJ_PROP_LINK_STRONG,
                              &local_err);
     if (local_err) {
         goto xilinx_axidma_realize_fail;
@@ -547,9 +551,10 @@ static void xilinx_axidma_realize(DeviceState *dev, Error **errp)
         struct Stream *st = &s->streams[i];
 
         st->nr = i;
-        st->bh = qemu_bh_new(timer_hit, st);
-        st->ptimer = ptimer_init(st->bh, PTIMER_POLICY_DEFAULT);
+        st->ptimer = ptimer_init(timer_hit, st, PTIMER_POLICY_DEFAULT);
+        ptimer_transaction_begin(st->ptimer);
         ptimer_set_freq(st->ptimer, s->freqhz);
+        ptimer_transaction_commit(st->ptimer);
     }
     return;
 
@@ -562,14 +567,14 @@ static void xilinx_axidma_init(Object *obj)
     XilinxAXIDMA *s = XILINX_AXI_DMA(obj);
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
 
-    object_initialize(&s->rx_data_dev, sizeof(s->rx_data_dev),
-                      TYPE_XILINX_AXI_DMA_DATA_STREAM);
-    object_initialize(&s->rx_control_dev, sizeof(s->rx_control_dev),
-                      TYPE_XILINX_AXI_DMA_CONTROL_STREAM);
-    object_property_add_child(OBJECT(s), "axistream-connected-target",
-                              (Object *)&s->rx_data_dev, &error_abort);
-    object_property_add_child(OBJECT(s), "axistream-control-connected-target",
-                              (Object *)&s->rx_control_dev, &error_abort);
+    object_initialize_child(OBJECT(s), "axistream-connected-target",
+                            &s->rx_data_dev, sizeof(s->rx_data_dev),
+                            TYPE_XILINX_AXI_DMA_DATA_STREAM, &error_abort,
+                            NULL);
+    object_initialize_child(OBJECT(s), "axistream-control-connected-target",
+                            &s->rx_control_dev, sizeof(s->rx_control_dev),
+                            TYPE_XILINX_AXI_DMA_CONTROL_STREAM, &error_abort,
+                            NULL);
 
     sysbus_init_irq(sbd, &s->streams[0].irq);
     sysbus_init_irq(sbd, &s->streams[1].irq);
@@ -594,7 +599,7 @@ static void axidma_class_init(ObjectClass *klass, void *data)
 
     dc->realize = xilinx_axidma_realize,
     dc->reset = xilinx_axidma_reset;
-    dc->props = axidma_properties;
+    device_class_set_props(dc, axidma_properties);
 }
 
 static StreamSlaveClass xilinx_axidma_data_stream_class = {

@@ -24,12 +24,11 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "cpu.h"
 
 #include "hw/sysbus.h"
-#include "hw/hw.h"
 #include "hw/char/serial.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "exec/memory.h"
@@ -92,7 +91,7 @@ static void nios2_10m50_ghrd_init(MachineState *machine)
 
     /* Register: Altera 16550 UART */
     serial_mm_init(address_space_mem, 0xf8001600, 2, irq[1], 115200,
-                   serial_hds[0], DEVICE_NATIVE_ENDIAN);
+                   serial_hd(0), DEVICE_NATIVE_ENDIAN);
 
     /* Register: Timer sys_clk_timer  */
     dev = qdev_create(NULL, "ALTR.timer");
@@ -121,7 +120,7 @@ static void nios2_10m50_ghrd_machine_init(struct MachineClass *mc)
 {
     mc->desc = "Altera 10M50 GHRD Nios II design";
     mc->init = nios2_10m50_ghrd_init;
-    mc->is_default = 1;
+    mc->is_default = true;
 }
 
 DEFINE_MACHINE("10m50-ghrd", nios2_10m50_ghrd_machine_init);

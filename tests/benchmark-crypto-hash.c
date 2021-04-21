@@ -11,6 +11,7 @@
  * top-level directory.
  */
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "crypto/init.h"
 #include "crypto/hash.h"
 
@@ -19,7 +20,8 @@ static void test_hash_speed(const void *opaque)
     size_t chunk_size = (size_t)opaque;
     uint8_t *in = NULL, *out = NULL;
     size_t out_len = 0;
-    double total = 0.0;
+    const size_t total = 2 * GiB;
+    size_t remain;
     struct iovec iov;
     int ret;
 
@@ -30,20 +32,20 @@ static void test_hash_speed(const void *opaque)
     iov.iov_len = chunk_size;
 
     g_test_timer_start();
-    do {
+    remain = total;
+    while (remain) {
         ret = qcrypto_hash_bytesv(QCRYPTO_HASH_ALG_SHA256,
                                   &iov, 1, &out, &out_len,
                                   NULL);
         g_assert(ret == 0);
 
-        total += chunk_size;
-    } while (g_test_timer_elapsed() < 5.0);
+        remain -= chunk_size;
+    }
+    g_test_timer_elapsed();
 
-    total /= 1024 * 1024; /* to MB */
     g_print("sha256: ");
-    g_print("Testing chunk_size %zu bytes ", chunk_size);
-    g_print("done: %.2f MB in %.2f secs: ", total, g_test_timer_last());
-    g_print("%.2f MB/sec\n", total / g_test_timer_last());
+    g_print("Hash %zu GB chunk size %zu bytes ", total / GiB, chunk_size);
+    g_print("%.2f MB/sec ", (double)total / MiB / g_test_timer_last());
 
     g_free(out);
     g_free(in);
@@ -57,7 +59,7 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     g_assert(qcrypto_init(NULL) == 0);
 
-    for (i = 512; i <= (64 * 1204); i *= 2) {
+    for (i = 512; i <= 64 * KiB; i *= 2) {
         memset(name, 0 , sizeof(name));
         snprintf(name, sizeof(name), "/crypto/hash/speed-%zu", i);
         g_test_add_data_func(name, (void *)i, test_hash_speed);

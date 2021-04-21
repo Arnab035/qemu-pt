@@ -88,6 +88,13 @@
 #define smp_read_barrier_depends()   barrier()
 #endif
 
+/*
+ * A signal barrier forces all pending local memory ops to be observed before
+ * a SIGSEGV is delivered to the *same* thread.  In practice this is exactly
+ * the same as barrier(), but since we have the correct builtin, use it.
+ */
+#define signal_barrier()    __atomic_signal_fence(__ATOMIC_SEQ_CST)
+
 /* Sanity check that the size of an atomic operation isn't "overly large".
  * Despite the fact that e.g. i686 has 64-bit atomic operations, we do not
  * want to use them because we ought not need them, and this lets us do a
@@ -98,10 +105,11 @@
  * We'd prefer not want to pull in everything else TCG related, so handle
  * those few cases by hand.
  *
- * Note that x32 is fully detected with __x64_64__ + _ILP32, and that for
- * Sparc we always force the use of sparcv9 in configure.
+ * Note that x32 is fully detected with __x86_64__ + _ILP32, and that for
+ * Sparc we always force the use of sparcv9 in configure. MIPS n32 (ILP32) &
+ * n64 (LP64) ABIs are both detected using __mips64.
  */
-#if defined(__x86_64__) || defined(__sparc__)
+#if defined(__x86_64__) || defined(__sparc__) || defined(__mips64)
 # define ATOMIC_REG_SIZE  8
 #else
 # define ATOMIC_REG_SIZE  sizeof(void *)
@@ -187,7 +195,7 @@
 /* Returns the eventual value, failed or not */
 #define atomic_cmpxchg__nocheck(ptr, old, new)    ({                    \
     typeof_strip_qual(*ptr) _old = (old);                               \
-    __atomic_compare_exchange_n(ptr, &_old, new, false,                 \
+    (void)__atomic_compare_exchange_n(ptr, &_old, new, false,           \
                               __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);      \
     _old;                                                               \
 })
@@ -200,11 +208,14 @@
 /* Provide shorter names for GCC atomic builtins, return old value */
 #define atomic_fetch_inc(ptr)  __atomic_fetch_add(ptr, 1, __ATOMIC_SEQ_CST)
 #define atomic_fetch_dec(ptr)  __atomic_fetch_sub(ptr, 1, __ATOMIC_SEQ_CST)
+
+#ifndef atomic_fetch_add
 #define atomic_fetch_add(ptr, n) __atomic_fetch_add(ptr, n, __ATOMIC_SEQ_CST)
 #define atomic_fetch_sub(ptr, n) __atomic_fetch_sub(ptr, n, __ATOMIC_SEQ_CST)
 #define atomic_fetch_and(ptr, n) __atomic_fetch_and(ptr, n, __ATOMIC_SEQ_CST)
 #define atomic_fetch_or(ptr, n)  __atomic_fetch_or(ptr, n, __ATOMIC_SEQ_CST)
 #define atomic_fetch_xor(ptr, n) __atomic_fetch_xor(ptr, n, __ATOMIC_SEQ_CST)
+#endif
 
 #define atomic_inc_fetch(ptr)    __atomic_add_fetch(ptr, 1, __ATOMIC_SEQ_CST)
 #define atomic_dec_fetch(ptr)    __atomic_sub_fetch(ptr, 1, __ATOMIC_SEQ_CST)
@@ -307,6 +318,10 @@
 #define smp_read_barrier_depends()   barrier()
 #endif
 
+#ifndef signal_barrier
+#define signal_barrier()    barrier()
+#endif
+
 /* These will only be atomic if the processor does the fetch or store
  * in a single issue memory operation
  */
@@ -380,11 +395,14 @@
 /* Provide shorter names for GCC atomic builtins.  */
 #define atomic_fetch_inc(ptr)  __sync_fetch_and_add(ptr, 1)
 #define atomic_fetch_dec(ptr)  __sync_fetch_and_add(ptr, -1)
+
+#ifndef atomic_fetch_add
 #define atomic_fetch_add(ptr, n) __sync_fetch_and_add(ptr, n)
 #define atomic_fetch_sub(ptr, n) __sync_fetch_and_sub(ptr, n)
 #define atomic_fetch_and(ptr, n) __sync_fetch_and_and(ptr, n)
 #define atomic_fetch_or(ptr, n) __sync_fetch_and_or(ptr, n)
 #define atomic_fetch_xor(ptr, n) __sync_fetch_and_xor(ptr, n)
+#endif
 
 #define atomic_inc_fetch(ptr)  __sync_add_and_fetch(ptr, 1)
 #define atomic_dec_fetch(ptr)  __sync_add_and_fetch(ptr, -1)
@@ -449,5 +467,39 @@
     }                                                                   \
     _oldn;                                                              \
 })
+
+/* Abstractions to access atomically (i.e. "once") i64/u64 variables */
+#ifdef CONFIG_ATOMIC64
+static inline int64_t atomic_read_i64(const int64_t *ptr)
+{
+    /* use __nocheck because sizeof(void *) might be < sizeof(u64) */
+    return atomic_read__nocheck(ptr);
+}
+
+static inline uint64_t atomic_read_u64(const uint64_t *ptr)
+{
+    return atomic_read__nocheck(ptr);
+}
+
+static inline void atomic_set_i64(int64_t *ptr, int64_t val)
+{
+    atomic_set__nocheck(ptr, val);
+}
+
+static inline void atomic_set_u64(uint64_t *ptr, uint64_t val)
+{
+    atomic_set__nocheck(ptr, val);
+}
+
+static inline void atomic64_init(void)
+{
+}
+#else /* !CONFIG_ATOMIC64 */
+int64_t  atomic_read_i64(const int64_t *ptr);
+uint64_t atomic_read_u64(const uint64_t *ptr);
+void atomic_set_i64(int64_t *ptr, int64_t val);
+void atomic_set_u64(uint64_t *ptr, uint64_t val);
+void atomic64_init(void);
+#endif /* !CONFIG_ATOMIC64 */
 
 #endif /* QEMU_ATOMIC_H */

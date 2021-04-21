@@ -26,16 +26,15 @@
 #include "qemu-common.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "hw/arm/primecell.h"
-#include "hw/devices.h"
+#include "hw/net/lan9118.h"
 #include "hw/i2c/i2c.h"
 #include "net/net.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "exec/address-spaces.h"
-#include "sysemu/block-backend.h"
 #include "hw/block/flash.h"
 #include "sysemu/device_tree.h"
 #include "qemu/error-report.h"
@@ -173,6 +172,7 @@ typedef struct {
 typedef struct {
     MachineState parent;
     bool secure;
+    bool virt;
 } VexpressMachineState;
 
 #define TYPE_VEXPRESS_MACHINE   "vexpress"
@@ -203,12 +203,14 @@ struct VEDBoardInfo {
     DBoardInitFn *init;
 };
 
-static void init_cpus(const char *cpu_type, const char *privdev,
-                      hwaddr periphbase, qemu_irq *pic, bool secure)
+static void init_cpus(MachineState *ms, const char *cpu_type,
+                      const char *privdev, hwaddr periphbase,
+                      qemu_irq *pic, bool secure, bool virt)
 {
     DeviceState *dev;
     SysBusDevice *busdev;
     int n;
+    unsigned int smp_cpus = ms->smp.cpus;
 
     /* Create the actual CPUs */
     for (n = 0; n < smp_cpus; n++) {
@@ -216,6 +218,11 @@ static void init_cpus(const char *cpu_type, const char *privdev,
 
         if (!secure) {
             object_property_set_bool(cpuobj, false, "has_el3", NULL);
+        }
+        if (!virt) {
+            if (object_property_find(cpuobj, "has_el2", NULL)) {
+                object_property_set_bool(cpuobj, false, "has_el2", NULL);
+            }
         }
 
         if (object_property_find(cpuobj, "reset-cbar", NULL)) {
@@ -252,6 +259,10 @@ static void init_cpus(const char *cpu_type, const char *privdev,
         sysbus_connect_irq(busdev, n, qdev_get_gpio_in(cpudev, ARM_CPU_IRQ));
         sysbus_connect_irq(busdev, n + smp_cpus,
                            qdev_get_gpio_in(cpudev, ARM_CPU_FIQ));
+        sysbus_connect_irq(busdev, n + 2 * smp_cpus,
+                           qdev_get_gpio_in(cpudev, ARM_CPU_VIRQ));
+        sysbus_connect_irq(busdev, n + 3 * smp_cpus,
+                           qdev_get_gpio_in(cpudev, ARM_CPU_VFIQ));
     }
 }
 
@@ -260,8 +271,8 @@ static void a9_daughterboard_init(const VexpressMachineState *vms,
                                   const char *cpu_type,
                                   qemu_irq *pic)
 {
+    MachineState *machine = MACHINE(vms);
     MemoryRegion *sysmem = get_system_memory();
-    MemoryRegion *ram = g_new(MemoryRegion, 1);
     MemoryRegion *lowram = g_new(MemoryRegion, 1);
     ram_addr_t low_ram_size;
 
@@ -271,8 +282,6 @@ static void a9_daughterboard_init(const VexpressMachineState *vms,
         exit(1);
     }
 
-    memory_region_allocate_system_memory(ram, NULL, "vexpress.highmem",
-                                         ram_size);
     low_ram_size = ram_size;
     if (low_ram_size > 0x4000000) {
         low_ram_size = 0x4000000;
@@ -281,12 +290,14 @@ static void a9_daughterboard_init(const VexpressMachineState *vms,
      * address space should in theory be remappable to various
      * things including ROM or RAM; we always map the RAM there.
      */
-    memory_region_init_alias(lowram, NULL, "vexpress.lowmem", ram, 0, low_ram_size);
+    memory_region_init_alias(lowram, NULL, "vexpress.lowmem", machine->ram,
+                             0, low_ram_size);
     memory_region_add_subregion(sysmem, 0x0, lowram);
-    memory_region_add_subregion(sysmem, 0x60000000, ram);
+    memory_region_add_subregion(sysmem, 0x60000000, machine->ram);
 
     /* 0x1e000000 A9MPCore (SCU) private memory region */
-    init_cpus(cpu_type, TYPE_A9MPCORE_PRIV, 0x1e000000, pic, vms->secure);
+    init_cpus(machine, cpu_type, TYPE_A9MPCORE_PRIV, 0x1e000000, pic,
+              vms->secure, vms->virt);
 
     /* Daughterboard peripherals : 0x10020000 .. 0x20000000 */
 
@@ -345,8 +356,8 @@ static void a15_daughterboard_init(const VexpressMachineState *vms,
                                    const char *cpu_type,
                                    qemu_irq *pic)
 {
+    MachineState *machine = MACHINE(vms);
     MemoryRegion *sysmem = get_system_memory();
-    MemoryRegion *ram = g_new(MemoryRegion, 1);
     MemoryRegion *sram = g_new(MemoryRegion, 1);
 
     {
@@ -361,13 +372,12 @@ static void a15_daughterboard_init(const VexpressMachineState *vms,
         }
     }
 
-    memory_region_allocate_system_memory(ram, NULL, "vexpress.highmem",
-                                         ram_size);
     /* RAM is from 0x80000000 upwards; there is no low-memory alias for it. */
-    memory_region_add_subregion(sysmem, 0x80000000, ram);
+    memory_region_add_subregion(sysmem, 0x80000000, machine->ram);
 
     /* 0x2c000000 A15MPCore private memory region (GIC) */
-    init_cpus(cpu_type, TYPE_A15MPCORE_PRIV, 0x2c000000, pic, vms->secure);
+    init_cpus(machine, cpu_type, TYPE_A15MPCORE_PRIV,
+              0x2c000000, pic, vms->secure, vms->virt);
 
     /* A15 daughterboard peripherals: */
 
@@ -501,10 +511,10 @@ static void vexpress_modify_dtb(const struct arm_boot_info *info, void *fdt)
 /* Open code a private version of pflash registration since we
  * need to set non-default device width for VExpress platform.
  */
-static pflash_t *ve_pflash_cfi01_register(hwaddr base, const char *name,
-                                          DriveInfo *di)
+static PFlashCFI01 *ve_pflash_cfi01_register(hwaddr base, const char *name,
+                                             DriveInfo *di)
 {
-    DeviceState *dev = qdev_create(NULL, "cfi.pflash01");
+    DeviceState *dev = qdev_create(NULL, TYPE_PFLASH_CFI01);
 
     if (di) {
         qdev_prop_set_drive(dev, "drive", blk_by_legacy_dinfo(di),
@@ -525,7 +535,7 @@ static pflash_t *ve_pflash_cfi01_register(hwaddr base, const char *name,
     qdev_init_nofail(dev);
 
     sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0, base);
-    return OBJECT_CHECK(pflash_t, (dev), "cfi.pflash01");
+    return PFLASH_CFI01(dev);
 }
 
 static void vexpress_common_init(MachineState *machine)
@@ -537,7 +547,7 @@ static void vexpress_common_init(MachineState *machine)
     qemu_irq pic[64];
     uint32_t sys_id;
     DriveInfo *dinfo;
-    pflash_t *pflash0;
+    PFlashCFI01 *pflash0;
     I2CBus *i2c;
     ram_addr_t vram_size, sram_size;
     MemoryRegion *sysmem = get_system_memory();
@@ -622,10 +632,10 @@ static void vexpress_common_init(MachineState *machine)
     sysbus_create_simple("pl050_keyboard", map[VE_KMI0], pic[12]);
     sysbus_create_simple("pl050_mouse", map[VE_KMI1], pic[13]);
 
-    pl011_create(map[VE_UART0], pic[5], serial_hds[0]);
-    pl011_create(map[VE_UART1], pic[6], serial_hds[1]);
-    pl011_create(map[VE_UART2], pic[7], serial_hds[2]);
-    pl011_create(map[VE_UART3], pic[8], serial_hds[3]);
+    pl011_create(map[VE_UART0], pic[5], serial_hd(0));
+    pl011_create(map[VE_UART1], pic[6], serial_hd(1));
+    pl011_create(map[VE_UART2], pic[7], serial_hd(2));
+    pl011_create(map[VE_UART3], pic[8], serial_hd(3));
 
     sysbus_create_simple("sp804", map[VE_TIMER01], pic[2]);
     sysbus_create_simple("sp804", map[VE_TIMER23], pic[3]);
@@ -692,19 +702,16 @@ static void vexpress_common_init(MachineState *machine)
     }
 
     daughterboard->bootinfo.ram_size = machine->ram_size;
-    daughterboard->bootinfo.kernel_filename = machine->kernel_filename;
-    daughterboard->bootinfo.kernel_cmdline = machine->kernel_cmdline;
-    daughterboard->bootinfo.initrd_filename = machine->initrd_filename;
-    daughterboard->bootinfo.nb_cpus = smp_cpus;
+    daughterboard->bootinfo.nb_cpus = machine->smp.cpus;
     daughterboard->bootinfo.board_id = VEXPRESS_BOARD_ID;
     daughterboard->bootinfo.loader_start = daughterboard->loader_start;
     daughterboard->bootinfo.smp_loader_start = map[VE_SRAM];
     daughterboard->bootinfo.smp_bootreg_addr = map[VE_SYSREGS] + 0x30;
     daughterboard->bootinfo.gic_cpu_if_addr = daughterboard->gic_cpu_if_addr;
     daughterboard->bootinfo.modify_dtb = vexpress_modify_dtb;
-    /* Indicate that when booting Linux we should be in secure state */
-    daughterboard->bootinfo.secure_boot = true;
-    arm_load_kernel(ARM_CPU(first_cpu), &daughterboard->bootinfo);
+    /* When booting Linux we should be in secure state if the CPU has one. */
+    daughterboard->bootinfo.secure_boot = vms->secure;
+    arm_load_kernel(ARM_CPU(first_cpu), machine, &daughterboard->bootinfo);
 }
 
 static bool vexpress_get_secure(Object *obj, Error **errp)
@@ -721,6 +728,20 @@ static void vexpress_set_secure(Object *obj, bool value, Error **errp)
     vms->secure = value;
 }
 
+static bool vexpress_get_virt(Object *obj, Error **errp)
+{
+    VexpressMachineState *vms = VEXPRESS_MACHINE(obj);
+
+    return vms->virt;
+}
+
+static void vexpress_set_virt(Object *obj, bool value, Error **errp)
+{
+    VexpressMachineState *vms = VEXPRESS_MACHINE(obj);
+
+    vms->virt = value;
+}
+
 static void vexpress_instance_init(Object *obj)
 {
     VexpressMachineState *vms = VEXPRESS_MACHINE(obj);
@@ -735,6 +756,32 @@ static void vexpress_instance_init(Object *obj)
                                     NULL);
 }
 
+static void vexpress_a15_instance_init(Object *obj)
+{
+    VexpressMachineState *vms = VEXPRESS_MACHINE(obj);
+
+    /*
+     * For the vexpress-a15, EL2 is by default enabled if EL3 is,
+     * but can also be specifically set to on or off.
+     */
+    vms->virt = true;
+    object_property_add_bool(obj, "virtualization", vexpress_get_virt,
+                             vexpress_set_virt, NULL);
+    object_property_set_description(obj, "virtualization",
+                                    "Set on/off to enable/disable the ARM "
+                                    "Virtualization Extensions "
+                                    "(defaults to same as 'secure')",
+                                    NULL);
+}
+
+static void vexpress_a9_instance_init(Object *obj)
+{
+    VexpressMachineState *vms = VEXPRESS_MACHINE(obj);
+
+    /* The A9 doesn't have the virt extensions */
+    vms->virt = false;
+}
+
 static void vexpress_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
@@ -743,6 +790,7 @@ static void vexpress_class_init(ObjectClass *oc, void *data)
     mc->init = vexpress_common_init;
     mc->max_cpus = 4;
     mc->ignore_memory_transaction_failures = true;
+    mc->default_ram_id = "vexpress.highmem";
 }
 
 static void vexpress_a9_class_init(ObjectClass *oc, void *data)
@@ -781,12 +829,14 @@ static const TypeInfo vexpress_a9_info = {
     .name = TYPE_VEXPRESS_A9_MACHINE,
     .parent = TYPE_VEXPRESS_MACHINE,
     .class_init = vexpress_a9_class_init,
+    .instance_init = vexpress_a9_instance_init,
 };
 
 static const TypeInfo vexpress_a15_info = {
     .name = TYPE_VEXPRESS_A15_MACHINE,
     .parent = TYPE_VEXPRESS_MACHINE,
     .class_init = vexpress_a15_class_init,
+    .instance_init = vexpress_a15_instance_init,
 };
 
 static void vexpress_machine_init(void)

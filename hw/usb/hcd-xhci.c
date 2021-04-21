@@ -18,12 +18,15 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "qemu/timer.h"
+#include "qemu/module.h"
 #include "qemu/queue.h"
 #include "hw/usb.h"
+#include "migration/vmstate.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
 #include "trace.h"
@@ -1571,6 +1574,11 @@ static void xhci_stall_ep(XHCITransfer *xfer)
     uint32_t err;
     XHCIStreamContext *sctx;
 
+    if (epctx->type == ET_ISO_IN || epctx->type == ET_ISO_OUT) {
+        /* never halt isoch endpoints, 4.10.2 */
+        return;
+    }
+
     if (epctx->nr_pstreams) {
         sctx = xhci_find_stream(epctx, xfer->streamid, &err);
         if (sctx == NULL) {
@@ -1853,6 +1861,13 @@ static void xhci_kick_ep(XHCIState *xhci, unsigned int slotid,
     xhci_kick_epctx(epctx, streamid);
 }
 
+static bool xhci_slot_ok(XHCIState *xhci, int slotid)
+{
+    return (xhci->slots[slotid - 1].uport &&
+            xhci->slots[slotid - 1].uport->dev &&
+            xhci->slots[slotid - 1].uport->dev->attached);
+}
+
 static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
 {
     XHCIState *xhci = epctx->xhci;
@@ -1870,9 +1885,7 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
 
     /* If the device has been detached, but the guest has not noticed this
        yet the 2 above checks will succeed, but we must NOT continue */
-    if (!xhci->slots[epctx->slotid - 1].uport ||
-        !xhci->slots[epctx->slotid - 1].uport->dev ||
-        !xhci->slots[epctx->slotid - 1].uport->dev->attached) {
+    if (!xhci_slot_ok(xhci, epctx->slotid)) {
         return;
     }
 
@@ -1906,6 +1919,7 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
             }
             usb_handle_packet(xfer->packet.ep->dev, &xfer->packet);
             if (xfer->packet.status == USB_RET_NAK) {
+                xhci_xfer_unmap(xfer);
                 return;
             }
             xhci_try_complete_packet(xfer);
@@ -1944,6 +1958,16 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
     while (1) {
         length = xhci_ring_chain_length(xhci, ring);
         if (length <= 0) {
+            if (epctx->type == ET_ISO_OUT || epctx->type == ET_ISO_IN) {
+                /* 4.10.3.1 */
+                XHCIEvent ev = { ER_TRANSFER };
+                ev.ccode  = epctx->type == ET_ISO_IN ?
+                    CC_RING_OVERRUN : CC_RING_UNDERRUN;
+                ev.slotid = epctx->slotid;
+                ev.epid   = epctx->epid;
+                ev.ptr    = epctx->ring.dequeue;
+                xhci_event(xhci, &ev, xhci->slots[epctx->slotid-1].intr);
+            }
             break;
         }
         xfer = xhci_ep_alloc_xfer(epctx, length);
@@ -1954,7 +1978,12 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
         for (i = 0; i < length; i++) {
             TRBType type;
             type = xhci_ring_fetch(xhci, ring, &xfer->trbs[i], NULL);
-            assert(type);
+            if (!type) {
+                xhci_die(xhci);
+                xhci_ep_free_xfer(xfer);
+                epctx->kick_active--;
+                return;
+            }
         }
         xfer->streamid = streamid;
 
@@ -1962,6 +1991,10 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
             xhci_fire_ctl_transfer(xhci, xfer);
         } else {
             xhci_fire_transfer(xhci, xfer, epctx);
+        }
+        if (!xhci_slot_ok(xhci, epctx->slotid)) {
+            /* surprise removal -> stop processing */
+            break;
         }
         if (xfer->complete) {
             /* update ring dequeue ptr */
@@ -1976,6 +2009,7 @@ static void xhci_kick_epctx(XHCIEPContext *epctx, unsigned int streamid)
         if (xfer != NULL && xfer->running_retry) {
             DPRINTF("xhci: xfer nacked, stopping schedule\n");
             epctx->retry = xfer;
+            xhci_xfer_unmap(xfer);
             break;
         }
         if (count++ > TRANSFER_LIMIT) {
@@ -2018,6 +2052,7 @@ static TRBCCode xhci_disable_slot(XHCIState *xhci, unsigned int slotid)
     xhci->slots[slotid-1].enabled = 0;
     xhci->slots[slotid-1].addressed = 0;
     xhci->slots[slotid-1].uport = NULL;
+    xhci->slots[slotid-1].intr = 0;
     return CC_SUCCESS;
 }
 
@@ -2117,6 +2152,7 @@ static TRBCCode xhci_address_slot(XHCIState *xhci, unsigned int slotid,
     slot = &xhci->slots[slotid-1];
     slot->uport = uport;
     slot->ctx = octx;
+    slot->intr = get_field(slot_ctx[2], TRB_INTR);
 
     /* Make sure device is in USB_STATE_DEFAULT state */
     usb_device_reset(dev);
@@ -2136,6 +2172,7 @@ static TRBCCode xhci_address_slot(XHCIState *xhci, unsigned int slotid,
                                   DeviceOutRequest | USB_REQ_SET_ADDRESS,
                                   slotid, 0, 0, NULL);
         assert(p.status != USB_RET_ASYNC);
+        usb_packet_cleanup(&p);
     }
 
     res = xhci_enable_ep(xhci, slotid, 1, octx+32, ep0_ctx);
@@ -2290,8 +2327,9 @@ static TRBCCode xhci_evaluate_slot(XHCIState *xhci, unsigned int slotid,
 
         slot_ctx[1] &= ~0xFFFF; /* max exit latency */
         slot_ctx[1] |= islot_ctx[1] & 0xFFFF;
-        slot_ctx[2] &= ~0xFF00000; /* interrupter target */
-        slot_ctx[2] |= islot_ctx[2] & 0xFF000000;
+        /* update interrupter target field */
+        xhci->slots[slotid-1].intr = get_field(islot_ctx[2], TRB_INTR);
+        set_field(&slot_ctx[2], xhci->slots[slotid-1].intr, TRB_INTR);
 
         DPRINTF("xhci: output slot context: %08x %08x %08x %08x\n",
                 slot_ctx[0], slot_ctx[1], slot_ctx[2], slot_ctx[3]);
@@ -2517,6 +2555,9 @@ static void xhci_process_commands(XHCIState *xhci)
         case CR_GET_PORT_BANDWIDTH:
             event.ccode = xhci_get_port_bandwidth(xhci, trb.parameter);
             break;
+        case CR_NOOP:
+            event.ccode = CC_SUCCESS;
+            break;
         case CR_VENDOR_NEC_FIRMWARE_REVISION:
             if (xhci->nec_quirks) {
                 event.type = 48; /* NEC reply */
@@ -2584,6 +2625,7 @@ static void xhci_port_update(XHCIPort *port, int is_detach)
 {
     uint32_t pls = PLS_RX_DETECT;
 
+    assert(port);
     port->portsc = PORTSC_PP;
     if (!is_detach && xhci_port_have_device(port)) {
         port->portsc |= PORTSC_CCS;
@@ -3113,7 +3155,7 @@ static void xhci_doorbell_write(void *ptr, hwaddr reg,
         streamid = (val >> 16) & 0xffff;
         if (reg > xhci->numslots) {
             DPRINTF("xhci: bad doorbell %d\n", (int)reg);
-        } else if (epid > 31) {
+        } else if (epid == 0 || epid > 31) {
             DPRINTF("xhci: bad doorbell %d write: 0x%x\n",
                     (int)reg, (uint32_t)val);
         } else {
@@ -3142,7 +3184,7 @@ static const MemoryRegionOps xhci_oper_ops = {
     .read = xhci_oper_read,
     .write = xhci_oper_write,
     .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
+    .valid.max_access_size = sizeof(dma_addr_t),
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
@@ -3158,7 +3200,7 @@ static const MemoryRegionOps xhci_runtime_ops = {
     .read = xhci_runtime_read,
     .write = xhci_runtime_write,
     .valid.min_access_size = 4,
-    .valid.max_access_size = 4,
+    .valid.max_access_size = sizeof(dma_addr_t),
     .endianness = DEVICE_LITTLE_ENDIAN,
 };
 
@@ -3192,6 +3234,7 @@ static void xhci_wakeup(USBPort *usbport)
     XHCIState *xhci = usbport->opaque;
     XHCIPort *port = xhci_lookup_port(xhci, usbport);
 
+    assert(port);
     if (get_field(port->portsc, PORTSC_PLS) != PLS_U3) {
         return;
     }
@@ -3251,10 +3294,10 @@ static USBEndpoint *xhci_epid_to_usbep(XHCIEPContext *epctx)
         return NULL;
     }
     uport = epctx->xhci->slots[epctx->slotid - 1].uport;
-    token = (epctx->epid & 1) ? USB_TOKEN_IN : USB_TOKEN_OUT;
-    if (!uport) {
+    if (!uport || !uport->dev) {
         return NULL;
     }
+    token = (epctx->epid & 1) ? USB_TOKEN_IN : USB_TOKEN_OUT;
     return usb_ep_get(uport->dev, token, epctx->epid >> 1);
 }
 
@@ -3281,7 +3324,7 @@ static void usb_xhci_init(XHCIState *xhci)
 {
     DeviceState *dev = DEVICE(xhci);
     XHCIPort *port;
-    int i, usbports, speedmask;
+    unsigned int i, usbports, speedmask;
 
     xhci->usbsts = USBSTS_HCH;
 
@@ -3311,6 +3354,7 @@ static void usb_xhci_init(XHCIState *xhci)
                 USB_SPEED_MASK_LOW  |
                 USB_SPEED_MASK_FULL |
                 USB_SPEED_MASK_HIGH;
+            assert(i < MAXPORTS);
             snprintf(port->name, sizeof(port->name), "usb2 port #%d", i+1);
             speedmask |= port->speedmask;
         }
@@ -3324,6 +3368,7 @@ static void usb_xhci_init(XHCIState *xhci)
             }
             port->uport = &xhci->uports[i];
             port->speedmask = USB_SPEED_MASK_SUPER;
+            assert(i < MAXPORTS);
             snprintf(port->name, sizeof(port->name), "usb3 port #%d", i+1);
             speedmask |= port->speedmask;
         }
@@ -3662,7 +3707,7 @@ static void xhci_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd    = &vmstate_xhci;
-    dc->props   = xhci_properties;
+    device_class_set_props(dc, xhci_properties);
     dc->reset   = xhci_reset;
     set_bit(DEVICE_CATEGORY_USB, dc->categories);
     k->realize      = usb_xhci_realize;

@@ -3,44 +3,14 @@
 #ifndef HW_BOARDS_H
 #define HW_BOARDS_H
 
+#include "exec/memory.h"
+#include "sysemu/hostmem.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/accel.h"
-#include "hw/qdev.h"
+#include "qapi/qapi-types-machine.h"
+#include "qemu/module.h"
 #include "qom/object.h"
-#include "qom/cpu.h"
-
-/**
- * memory_region_allocate_system_memory - Allocate a board's main memory
- * @mr: the #MemoryRegion to be initialized
- * @owner: the object that tracks the region's reference count
- * @name: name of the memory region
- * @ram_size: size of the region in bytes
- *
- * This function allocates the main memory for a board model, and
- * initializes @mr appropriately. It also arranges for the memory
- * to be migrated (by calling vmstate_register_ram_global()).
- *
- * Memory allocated via this function will be backed with the memory
- * backend the user provided using "-mem-path" or "-numa node,memdev=..."
- * if appropriate; this is typically used to cause host huge pages to be
- * used. This function should therefore be called by a board exactly once,
- * for the primary or largest RAM area it implements.
- *
- * For boards where the major RAM is split into two parts in the memory
- * map, you can deal with this by calling memory_region_allocate_system_memory()
- * once to get a MemoryRegion with enough RAM for both parts, and then
- * creating alias MemoryRegions via memory_region_init_alias() which
- * alias into different parts of the RAM MemoryRegion and can be mapped
- * into the memory map in the appropriate places.
- *
- * Smaller pieces of memory (display RAM, static RAMs, etc) don't need
- * to be backed via the -mem-path memory backend and can simply
- * be created via memory_region_allocate_aux_memory() or
- * memory_region_init_ram().
- */
-void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
-                                          const char *name,
-                                          uint64_t ram_size);
+#include "hw/core/cpu.h"
 
 #define TYPE_MACHINE_SUFFIX "-machine"
 
@@ -58,26 +28,25 @@ void memory_region_allocate_system_memory(MemoryRegion *mr, Object *owner,
 #define MACHINE_CLASS(klass) \
     OBJECT_CLASS_CHECK(MachineClass, (klass), TYPE_MACHINE)
 
-MachineClass *find_default_machine(void);
 extern MachineState *current_machine;
 
 void machine_run_board_init(MachineState *machine);
 bool machine_usb(MachineState *machine);
-bool machine_kernel_irqchip_allowed(MachineState *machine);
-bool machine_kernel_irqchip_required(MachineState *machine);
-bool machine_kernel_irqchip_split(MachineState *machine);
-int machine_kvm_shadow_mem(MachineState *machine);
 int machine_phandle_start(MachineState *machine);
 bool machine_dump_guest_core(MachineState *machine);
 bool machine_mem_merge(MachineState *machine);
-void machine_register_compat_props(MachineState *machine);
 HotpluggableCPUList *machine_query_hotpluggable_cpus(MachineState *machine);
 void machine_set_cpu_numa_node(MachineState *machine,
                                const CpuInstanceProperties *props,
                                Error **errp);
 
 void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
-
+/*
+ * Checks that backend isn't used, preps it for exclusive usage and
+ * returns migratable MemoryRegion provided by backend.
+ */
+MemoryRegion *machine_consume_memdev(MachineState *machine,
+                                     HostMemoryBackend *backend);
 
 /**
  * CPUArchId:
@@ -87,7 +56,7 @@ void machine_class_allow_dynamic_sysbus_dev(MachineClass *mc, const char *type);
  * @props - CPU object properties, initialized by board
  * #vcpus_count - number of threads provided by @cpu object
  */
-typedef struct {
+typedef struct CPUArchId {
     uint64_t arch_id;
     int64_t vcpus_count;
     CpuInstanceProperties props;
@@ -102,14 +71,18 @@ typedef struct {
  */
 typedef struct {
     int len;
-    CPUArchId cpus[0];
+    CPUArchId cpus[];
 } CPUArchIdList;
 
 /**
  * MachineClass:
+ * @deprecation_reason: If set, the machine is marked as deprecated. The
+ *    string should provide some clear information about what to use instead.
  * @max_cpus: maximum number of CPUs supported. Default: 1
  * @min_cpus: minimum number of CPUs supported. Default: 1
  * @default_cpus: number of CPUs instantiated if none are specified. Default: 1
+ * @is_default:
+ *    If true QEMU will use this machine by default if no '-M' option is given.
  * @get_hotplug_handler: this function is called during bus-less
  *    device hotplug. If defined it returns pointer to an instance
  *    of HotplugHandler object, which handles hotplug operation
@@ -156,6 +129,35 @@ typedef struct {
  *    should instead use "unimplemented-device" for all memory ranges where
  *    the guest will attempt to probe for a device that QEMU doesn't
  *    implement and a stub device is required.
+ * @kvm_type:
+ *    Return the type of KVM corresponding to the kvm-type string option or
+ *    computed based on other criteria such as the host kernel capabilities.
+ * @numa_mem_supported:
+ *    true if '--numa node.mem' option is supported and false otherwise
+ * @smp_parse:
+ *    The function pointer to hook different machine specific functions for
+ *    parsing "smp-opts" from QemuOpts to MachineState::CpuTopology and more
+ *    machine specific topology fields, such as smp_dies for PCMachine.
+ * @hotplug_allowed:
+ *    If the hook is provided, then it'll be called for each device
+ *    hotplug to check whether the device hotplug is allowed.  Return
+ *    true to grant allowance or false to reject the hotplug.  When
+ *    false is returned, an error must be set to show the reason of
+ *    the rejection.  If the hook is not provided, all hotplug will be
+ *    allowed.
+ * @default_ram_id:
+ *    Specifies inital RAM MemoryRegion name to be used for default backend
+ *    creation if user explicitly hasn't specified backend with "memory-backend"
+ *    property.
+ *    It also will be used as a way to optin into "-m" option support.
+ *    If it's not set by board, '-m' will be ignored and generic code will
+ *    not create default RAM MemoryRegion.
+ * @fixup_ram_size:
+ *    Amends user provided ram size (with -m option) using machine
+ *    specific algorithm. To be used by old machine types for compat
+ *    purposes only.
+ *    Applies only to default memory backend, i.e., explicit memory backend
+ *    wasn't used.
  */
 struct MachineClass {
     /*< private >*/
@@ -166,11 +168,14 @@ struct MachineClass {
     char *name;
     const char *alias;
     const char *desc;
+    const char *deprecation_reason;
 
     void (*init)(MachineState *state);
-    void (*reset)(void);
-    void (*hot_add_cpu)(const int64_t id, Error **errp);
-    int (*kvm_type)(const char *arg);
+    void (*reset)(MachineState *state);
+    void (*wakeup)(MachineState *state);
+    void (*hot_add_cpu)(MachineState *state, const int64_t id, Error **errp);
+    int (*kvm_type)(MachineState *machine, const char *arg);
+    void (*smp_parse)(MachineState *ms, QemuOpts *opts);
 
     BlockInterfaceType block_default_type;
     int units_per_default_bus;
@@ -179,21 +184,20 @@ struct MachineClass {
     int default_cpus;
     unsigned int no_serial:1,
         no_parallel:1,
-        use_virtcon:1,
-        use_sclp:1,
         no_floppy:1,
         no_cdrom:1,
         no_sdcard:1,
         pci_allow_0_address:1,
         legacy_fw_cfg_order:1;
-    int is_default;
+    bool is_default;
     const char *default_machine_opts;
     const char *default_boot_order;
     const char *default_display;
-    GArray *compat_props;
+    GPtrArray *compat_props;
     const char *hw_version;
     ram_addr_t default_ram_size;
     const char *default_cpu_type;
+    bool default_kernel_irqchip_split;
     bool option_rom_has_mr;
     bool rom_file_has_mr;
     int minimum_page_bits;
@@ -205,14 +209,50 @@ struct MachineClass {
     bool auto_enable_numa_with_memhp;
     void (*numa_auto_assign_ram)(MachineClass *mc, NodeInfo *nodes,
                                  int nb_nodes, ram_addr_t size);
+    bool ignore_boot_device_suffixes;
+    bool smbus_no_migration_support;
+    bool nvdimm_supported;
+    bool numa_mem_supported;
+    bool auto_enable_numa;
+    const char *default_ram_id;
 
     HotplugHandler *(*get_hotplug_handler)(MachineState *machine,
                                            DeviceState *dev);
+    bool (*hotplug_allowed)(MachineState *state, DeviceState *dev,
+                            Error **errp);
     CpuInstanceProperties (*cpu_index_to_instance_props)(MachineState *machine,
                                                          unsigned cpu_index);
     const CPUArchIdList *(*possible_cpu_arch_ids)(MachineState *machine);
     int64_t (*get_default_cpu_node_id)(const MachineState *ms, int idx);
+    ram_addr_t (*fixup_ram_size)(ram_addr_t size);
 };
+
+/**
+ * DeviceMemoryState:
+ * @base: address in guest physical address space where the memory
+ * address space for memory devices starts
+ * @mr: address space container for memory devices
+ */
+typedef struct DeviceMemoryState {
+    hwaddr base;
+    MemoryRegion mr;
+} DeviceMemoryState;
+
+/**
+ * CpuTopology:
+ * @cpus: the number of present logical processors on the machine
+ * @cores: the number of cores in one package
+ * @threads: the number of threads in one core
+ * @sockets: the number of sockets on the machine
+ * @max_cpus: the maximum number of logical processors on the machine
+ */
+typedef struct CpuTopology {
+    unsigned int cpus;
+    unsigned int cores;
+    unsigned int threads;
+    unsigned int sockets;
+    unsigned int max_cpus;
+} CpuTopology;
 
 /**
  * MachineState:
@@ -224,11 +264,6 @@ struct MachineState {
 
     /*< public >*/
 
-    char *accel;
-    bool kernel_irqchip_allowed;
-    bool kernel_irqchip_required;
-    bool kernel_irqchip_split;
-    int kvm_shadow_mem;
     char *dtb;
     char *dumpdtb;
     int phandle_start;
@@ -237,13 +272,19 @@ struct MachineState {
     bool mem_merge;
     bool usb;
     bool usb_disabled;
-    bool igd_gfx_passthru;
     char *firmware;
     bool iommu;
     bool suppress_vmdesc;
     bool enforce_config_section;
     bool enable_graphics;
     char *memory_encryption;
+    char *ram_memdev_id;
+    /*
+     * convenience alias to ram_memdev_id backend memory region
+     * or to numa container memory region
+     */
+    MemoryRegion *ram;
+    DeviceMemoryState *device_memory;
 
     ram_addr_t ram_size;
     ram_addr_t maxram_size;
@@ -255,6 +296,9 @@ struct MachineState {
     const char *cpu_type;
     AccelState *accelerator;
     CPUArchIdList *possible_cpus;
+    CpuTopology smp;
+    struct NVDIMMState *nvdimms_state;
+    struct NumaState *numa_state;
 };
 
 #define DEFINE_MACHINE(namestr, machine_initfn) \
@@ -274,20 +318,55 @@ struct MachineState {
     } \
     type_init(machine_initfn##_register_types)
 
-#define SET_MACHINE_COMPAT(m, COMPAT) \
-    do {                              \
-        int i;                        \
-        static GlobalProperty props[] = {       \
-            COMPAT                              \
-            { /* end of list */ }               \
-        };                                      \
-        if (!m->compat_props) { \
-            m->compat_props = g_array_new(false, false, sizeof(void *)); \
-        } \
-        for (i = 0; props[i].driver != NULL; i++) {    \
-            GlobalProperty *prop = &props[i];          \
-            g_array_append_val(m->compat_props, prop); \
-        }                                              \
-    } while (0)
+extern GlobalProperty hw_compat_4_2[];
+extern const size_t hw_compat_4_2_len;
+
+extern GlobalProperty hw_compat_4_1[];
+extern const size_t hw_compat_4_1_len;
+
+extern GlobalProperty hw_compat_4_0[];
+extern const size_t hw_compat_4_0_len;
+
+extern GlobalProperty hw_compat_3_1[];
+extern const size_t hw_compat_3_1_len;
+
+extern GlobalProperty hw_compat_3_0[];
+extern const size_t hw_compat_3_0_len;
+
+extern GlobalProperty hw_compat_2_12[];
+extern const size_t hw_compat_2_12_len;
+
+extern GlobalProperty hw_compat_2_11[];
+extern const size_t hw_compat_2_11_len;
+
+extern GlobalProperty hw_compat_2_10[];
+extern const size_t hw_compat_2_10_len;
+
+extern GlobalProperty hw_compat_2_9[];
+extern const size_t hw_compat_2_9_len;
+
+extern GlobalProperty hw_compat_2_8[];
+extern const size_t hw_compat_2_8_len;
+
+extern GlobalProperty hw_compat_2_7[];
+extern const size_t hw_compat_2_7_len;
+
+extern GlobalProperty hw_compat_2_6[];
+extern const size_t hw_compat_2_6_len;
+
+extern GlobalProperty hw_compat_2_5[];
+extern const size_t hw_compat_2_5_len;
+
+extern GlobalProperty hw_compat_2_4[];
+extern const size_t hw_compat_2_4_len;
+
+extern GlobalProperty hw_compat_2_3[];
+extern const size_t hw_compat_2_3_len;
+
+extern GlobalProperty hw_compat_2_2[];
+extern const size_t hw_compat_2_2_len;
+
+extern GlobalProperty hw_compat_2_1[];
+extern const size_t hw_compat_2_1_len;
 
 #endif

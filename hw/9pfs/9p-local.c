@@ -65,7 +65,7 @@ int local_open_nofollow(FsContext *fs_ctx, const char *path, int flags,
         assert(*path != '/');
 
         head = g_strdup(path);
-        c = strchrnul(path, '/');
+        c = qemu_strchrnul(path, '/');
         if (*c) {
             /* Intermediate path element */
             head[c - path] = 0;
@@ -308,7 +308,7 @@ update_map_file:
     if (credp->fc_gid != -1) {
         gid = credp->fc_gid;
     }
-    if (credp->fc_mode != -1) {
+    if (credp->fc_mode != (mode_t)-1) {
         mode = credp->fc_mode;
     }
     if (credp->fc_rdev != -1) {
@@ -414,7 +414,7 @@ static int local_set_xattrat(int dirfd, const char *path, FsCred *credp)
             return err;
         }
     }
-    if (credp->fc_mode != -1) {
+    if (credp->fc_mode != (mode_t)-1) {
         uint32_t tmp_mode = cpu_to_le32(credp->fc_mode);
         err = fsetxattrat_nofollow(dirfd, path, "user.virtfs.mode", &tmp_mode,
                                    sizeof(mode_t), 0);
@@ -947,7 +947,7 @@ static int local_link(FsContext *ctx, V9fsPath *oldpath,
     if (ctx->export_flags & V9FS_SM_MAPPED_FILE &&
         local_is_mapped_file_metadata(ctx, name)) {
         errno = EINVAL;
-        return -1;
+        goto out;
     }
 
     odirfd = local_opendir_nofollow(ctx, odirpath);
@@ -1076,7 +1076,7 @@ out:
 static int local_unlinkat_common(FsContext *ctx, int dirfd, const char *name,
                                  int flags)
 {
-    int ret = -1;
+    int ret;
 
     if (ctx->export_flags & V9FS_SM_MAPPED_FILE) {
         int map_dirfd;
@@ -1094,12 +1094,12 @@ static int local_unlinkat_common(FsContext *ctx, int dirfd, const char *name,
 
             fd = openat_dir(dirfd, name);
             if (fd == -1) {
-                goto err_out;
+                return -1;
             }
             ret = unlinkat(fd, VIRTFS_META_DIR, AT_REMOVEDIR);
             close_preserve_errno(fd);
             if (ret < 0 && errno != ENOENT) {
-                goto err_out;
+                return -1;
             }
         }
         map_dirfd = openat_dir(dirfd, VIRTFS_META_DIR);
@@ -1107,16 +1107,14 @@ static int local_unlinkat_common(FsContext *ctx, int dirfd, const char *name,
             ret = unlinkat(map_dirfd, name, 0);
             close_preserve_errno(map_dirfd);
             if (ret < 0 && errno != ENOENT) {
-                goto err_out;
+                return -1;
             }
         } else if (errno != ENOENT) {
-            goto err_out;
+            return -1;
         }
     }
 
-    ret = unlinkat(dirfd, name, flags);
-err_out:
-    return ret;
+    return unlinkat(dirfd, name, flags);
 }
 
 static int local_remove(FsContext *ctx, const char *path)
@@ -1373,10 +1371,10 @@ static int local_unlinkat(FsContext *ctx, V9fsPath *dir,
     return ret;
 }
 
+#ifdef FS_IOC_GETVERSION
 static int local_ioc_getversion(FsContext *ctx, V9fsPath *path,
                                 mode_t st_mode, uint64_t *st_gen)
 {
-#ifdef FS_IOC_GETVERSION
     int err;
     V9fsFidOpenState fid_open;
 
@@ -1395,30 +1393,21 @@ static int local_ioc_getversion(FsContext *ctx, V9fsPath *path,
     err = ioctl(fid_open.fd, FS_IOC_GETVERSION, st_gen);
     local_close(ctx, &fid_open);
     return err;
-#else
-    errno = ENOTTY;
-    return -1;
-#endif
 }
+#endif
 
-static int local_init(FsContext *ctx, Error **errp)
+static int local_ioc_getversion_init(FsContext *ctx, LocalData *data, Error **errp)
 {
-    struct statfs stbuf;
-    LocalData *data = g_malloc(sizeof(*data));
-
-    data->mountfd = open(ctx->fs_root, O_DIRECTORY | O_RDONLY);
-    if (data->mountfd == -1) {
-        error_setg_errno(errp, errno, "failed to open '%s'", ctx->fs_root);
-        goto err;
-    }
-
 #ifdef FS_IOC_GETVERSION
+    struct statfs stbuf;
+
     /*
      * use ioc_getversion only if the ioctl is definied
      */
     if (fstatfs(data->mountfd, &stbuf) < 0) {
-        close_preserve_errno(data->mountfd);
-        goto err;
+        error_setg_errno(errp, errno,
+                         "failed to stat file system at '%s'", ctx->fs_root);
+        return -1;
     }
     switch (stbuf.f_type) {
     case EXT2_SUPER_MAGIC:
@@ -1429,6 +1418,23 @@ static int local_init(FsContext *ctx, Error **errp)
         break;
     }
 #endif
+    return 0;
+}
+
+static int local_init(FsContext *ctx, Error **errp)
+{
+    LocalData *data = g_malloc(sizeof(*data));
+
+    data->mountfd = open(ctx->fs_root, O_DIRECTORY | O_RDONLY);
+    if (data->mountfd == -1) {
+        error_setg_errno(errp, errno, "failed to open '%s'", ctx->fs_root);
+        goto err;
+    }
+
+    if (local_ioc_getversion_init(ctx, data, errp) < 0) {
+        close(data->mountfd);
+        goto err;
+    }
 
     if (ctx->export_flags & V9FS_SM_PASSTHROUGH) {
         ctx->xops = passthrough_xattr_ops;
@@ -1457,11 +1463,15 @@ static void local_cleanup(FsContext *ctx)
 {
     LocalData *data = ctx->private;
 
+    if (!data) {
+        return;
+    }
+
     close(data->mountfd);
     g_free(data);
 }
 
-static void error_append_security_model_hint(Error **errp)
+static void error_append_security_model_hint(Error *const *errp)
 {
     error_append_hint(errp, "Valid options are: security_model="
                       "[passthrough|mapped-xattr|mapped-file|none]\n");
@@ -1471,6 +1481,7 @@ static int local_parse_opts(QemuOpts *opts, FsDriverEntry *fse, Error **errp)
 {
     const char *sec_model = qemu_opt_get(opts, "security_model");
     const char *path = qemu_opt_get(opts, "path");
+    const char *multidevs = qemu_opt_get(opts, "multidevs");
     Error *local_err = NULL;
 
     if (!sec_model) {
@@ -1494,15 +1505,34 @@ static int local_parse_opts(QemuOpts *opts, FsDriverEntry *fse, Error **errp)
         return -1;
     }
 
+    if (multidevs) {
+        if (!strcmp(multidevs, "remap")) {
+            fse->export_flags &= ~V9FS_FORBID_MULTIDEVS;
+            fse->export_flags |= V9FS_REMAP_INODES;
+        } else if (!strcmp(multidevs, "forbid")) {
+            fse->export_flags &= ~V9FS_REMAP_INODES;
+            fse->export_flags |= V9FS_FORBID_MULTIDEVS;
+        } else if (!strcmp(multidevs, "warn")) {
+            fse->export_flags &= ~V9FS_FORBID_MULTIDEVS;
+            fse->export_flags &= ~V9FS_REMAP_INODES;
+        } else {
+            error_setg(&local_err, "invalid multidevs property '%s'",
+                       multidevs);
+            error_append_hint(&local_err, "Valid options are: multidevs="
+                              "[remap|forbid|warn]\n");
+            error_propagate(errp, local_err);
+            return -1;
+        }
+    }
+
     if (!path) {
         error_setg(errp, "path property not set");
         return -1;
     }
 
-    fsdev_throttle_parse_opts(opts, &fse->fst, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        error_prepend(errp, "invalid throttle configuration: ");
+    if (fsdev_throttle_parse_opts(opts, &fse->fst, &local_err)) {
+        error_propagate_prepend(errp, local_err,
+                                "invalid throttle configuration: ");
         return -1;
     }
 

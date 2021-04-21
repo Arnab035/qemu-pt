@@ -14,19 +14,21 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "qemu/host-utils.h"
-#include "sysemu/sysemu.h"
+#include "qemu/module.h"
 #include "sysemu/kvm.h"
+#include "sysemu/runstate.h"
 #include "sysemu/hw_accel.h"
 #include "kvm_i386.h"
+#include "migration/vmstate.h"
 #include "hw/sysbus.h"
 #include "hw/kvm/clock.h"
+#include "hw/qdev-properties.h"
 #include "qapi/error.h"
 
 #include <linux/kvm.h>
-#include <linux/kvm_para.h>
+#include "standard-headers/asm-x86/kvm_para.h"
 
 #define TYPE_KVM_CLOCK "kvmclock"
 #define KVM_CLOCK(obj) OBJECT_CHECK(KVMClockState, (obj), TYPE_KVM_CLOCK)
@@ -38,6 +40,9 @@ typedef struct KVMClockState {
 
     uint64_t clock;
     bool clock_valid;
+
+    /* whether the 'clock' value was obtained in the 'paused' state */
+    bool runstate_paused;
 
     /* whether machine type supports reliable KVM_GET_CLOCK */
     bool mach_use_reliable_get_clock;
@@ -147,6 +152,15 @@ static void kvm_update_clock(KVMClockState *s)
     s->clock_is_reliable = kvm_has_adjust_clock_stable();
 }
 
+static void do_kvmclock_ctrl(CPUState *cpu, run_on_cpu_data data)
+{
+    int ret = kvm_vcpu_ioctl(cpu, KVM_KVMCLOCK_CTRL, 0);
+
+    if (ret && ret != -EINVAL) {
+        fprintf(stderr, "%s: %s\n", __func__, strerror(-ret));
+    }
+}
+
 static void kvmclock_vm_state_change(void *opaque, int running,
                                      RunState state)
 {
@@ -183,19 +197,15 @@ static void kvmclock_vm_state_change(void *opaque, int running,
             return;
         }
         CPU_FOREACH(cpu) {
-            ret = kvm_vcpu_ioctl(cpu, KVM_KVMCLOCK_CTRL, 0);
-            if (ret) {
-                if (ret != -EINVAL) {
-                    fprintf(stderr, "%s: %s\n", __func__, strerror(-ret));
-                }
-                return;
-            }
+            run_on_cpu(cpu, do_kvmclock_ctrl, RUN_ON_CPU_NULL);
         }
     } else {
 
         if (s->clock_valid) {
             return;
         }
+
+        s->runstate_paused = runstate_check(RUN_STATE_PAUSED);
 
         kvm_synchronize_all_tsc();
 
@@ -242,9 +252,22 @@ static const VMStateDescription kvmclock_reliable_get_clock = {
 };
 
 /*
- * When migrating, read the clock just before migration,
- * so that the guest clock counts during the events
- * between:
+ * When migrating, assume the source has an unreliable
+ * KVM_GET_CLOCK unless told otherwise.
+ */
+static int kvmclock_pre_load(void *opaque)
+{
+    KVMClockState *s = opaque;
+
+    s->clock_is_reliable = false;
+
+    return 0;
+}
+
+/*
+ * When migrating a running guest, read the clock just
+ * before migration, so that the guest clock counts
+ * during the events between:
  *
  *  * vm_stop()
  *  *
@@ -259,7 +282,9 @@ static int kvmclock_pre_save(void *opaque)
 {
     KVMClockState *s = opaque;
 
-    kvm_update_clock(s);
+    if (!s->runstate_paused) {
+        kvm_update_clock(s);
+    }
 
     return 0;
 }
@@ -268,6 +293,7 @@ static const VMStateDescription kvmclock_vmsd = {
     .name = "kvmclock",
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_load = kvmclock_pre_load,
     .pre_save = kvmclock_pre_save,
     .fields = (VMStateField[]) {
         VMSTATE_UINT64(clock, KVMClockState),
@@ -291,7 +317,7 @@ static void kvmclock_class_init(ObjectClass *klass, void *data)
 
     dc->realize = kvmclock_realize;
     dc->vmsd = &kvmclock_vmsd;
-    dc->props = kvmclock_properties;
+    device_class_set_props(dc, kvmclock_properties);
 }
 
 static const TypeInfo kvmclock_info = {

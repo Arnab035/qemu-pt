@@ -14,6 +14,7 @@ See the COPYING file in the top-level directory.
 """
 
 from qapi.common import *
+from qapi.gen import QAPIGenCCode, QAPISchemaModularCVisitor, ifcontext
 
 
 def gen_command_decl(name, arg_type, boxed, ret_type):
@@ -30,7 +31,7 @@ def gen_call(name, arg_type, boxed, ret_type):
 
     argstr = ''
     if boxed:
-        assert arg_type and not arg_type.is_empty()
+        assert arg_type
         argstr = '&arg, '
     elif arg_type:
         assert not arg_type.variants
@@ -96,7 +97,7 @@ def gen_marshal_decl(name):
 
 
 def gen_marshal(name, arg_type, boxed, ret_type):
-    have_args = arg_type and not arg_type.is_empty()
+    have_args = boxed or (arg_type and not arg_type.is_empty())
 
     ret = mcgen('''
 
@@ -193,13 +194,15 @@ out:
     return ret
 
 
-def gen_register_command(name, success_response, allow_oob):
+def gen_register_command(name, success_response, allow_oob, allow_preconfig):
     options = []
 
     if not success_response:
         options += ['QCO_NO_SUCCESS_RESP']
     if allow_oob:
         options += ['QCO_ALLOW_OOB']
+    if allow_preconfig:
+        options += ['QCO_ALLOW_PRECONFIG']
 
     if not options:
         options = ['QCO_NO_OPTIONS']
@@ -234,21 +237,19 @@ void %(c_prefix)sqmp_init_marshal(QmpCommandList *cmds)
 class QAPISchemaGenCommandVisitor(QAPISchemaModularCVisitor):
 
     def __init__(self, prefix):
-        QAPISchemaModularCVisitor.__init__(
-            self, prefix, 'qapi-commands',
-            ' * Schema-defined QAPI/QMP commands', __doc__)
-        self._regy = ''
+        super().__init__(
+            prefix, 'qapi-commands',
+            ' * Schema-defined QAPI/QMP commands', None, __doc__)
+        self._regy = QAPIGenCCode(None)
         self._visited_ret_types = {}
 
-    def _begin_module(self, name):
+    def _begin_user_module(self, name):
         self._visited_ret_types[self._genc] = set()
         commands = self._module_basename('qapi-commands', name)
         types = self._module_basename('qapi-types', name)
         visit = self._module_basename('qapi-visit', name)
         self._genc.add(mcgen('''
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "qemu/module.h"
 #include "qapi/visitor.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qobject-output-visitor.h"
@@ -262,30 +263,47 @@ class QAPISchemaGenCommandVisitor(QAPISchemaModularCVisitor):
                              commands=commands, visit=visit))
         self._genh.add(mcgen('''
 #include "%(types)s.h"
-#include "qapi/qmp/dispatch.h"
 
 ''',
                              types=types))
 
     def visit_end(self):
-        (genc, genh) = self._module[self._main_module]
-        genh.add(mcgen('''
+        self._add_system_module('init', ' * QAPI Commands initialization')
+        self._genh.add(mcgen('''
+#include "qapi/qmp/dispatch.h"
+
 void %(c_prefix)sqmp_init_marshal(QmpCommandList *cmds);
 ''',
-                       c_prefix=c_name(self._prefix, protect=False)))
-        genc.add(gen_registry(self._regy, self._prefix))
+                             c_prefix=c_name(self._prefix, protect=False)))
+        self._genc.preamble_add(mcgen('''
+#include "qemu/osdep.h"
+#include "%(prefix)sqapi-commands.h"
+#include "%(prefix)sqapi-init-commands.h"
+''',
+                                      prefix=self._prefix))
+        self._genc.add(gen_registry(self._regy.get_content(), self._prefix))
 
-    def visit_command(self, name, info, arg_type, ret_type,
-                      gen, success_response, boxed, allow_oob):
+    def visit_command(self, name, info, ifcond, features,
+                      arg_type, ret_type, gen, success_response, boxed,
+                      allow_oob, allow_preconfig):
         if not gen:
             return
-        self._genh.add(gen_command_decl(name, arg_type, boxed, ret_type))
+        # FIXME: If T is a user-defined type, the user is responsible
+        # for making this work, i.e. to make T's condition the
+        # conjunction of the T-returning commands' conditions.  If T
+        # is a built-in type, this isn't possible: the
+        # qmp_marshal_output_T() will be generated unconditionally.
         if ret_type and ret_type not in self._visited_ret_types[self._genc]:
             self._visited_ret_types[self._genc].add(ret_type)
-            self._genc.add(gen_marshal_output(ret_type))
-        self._genh.add(gen_marshal_decl(name))
-        self._genc.add(gen_marshal(name, arg_type, boxed, ret_type))
-        self._regy += gen_register_command(name, success_response, allow_oob)
+            with ifcontext(ret_type.ifcond,
+                           self._genh, self._genc, self._regy):
+                self._genc.add(gen_marshal_output(ret_type))
+        with ifcontext(ifcond, self._genh, self._genc, self._regy):
+            self._genh.add(gen_command_decl(name, arg_type, boxed, ret_type))
+            self._genh.add(gen_marshal_decl(name))
+            self._genc.add(gen_marshal(name, arg_type, boxed, ret_type))
+            self._regy.add(gen_register_command(name, success_response,
+                                                allow_oob, allow_preconfig))
 
 
 def gen_commands(schema, output_dir, prefix):

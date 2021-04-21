@@ -4,8 +4,8 @@
 #include "qemu/queue.h"
 #include "qemu/bitmap.h"
 #include "qom/object.h"
-#include "hw/irq.h"
 #include "hw/hotplug.h"
+#include "hw/resettable.h"
 
 enum {
     DEV_NVECTORS_UNSPECIFIED = -1,
@@ -29,27 +29,19 @@ typedef enum DeviceCategory {
     DEVICE_CATEGORY_MAX
 } DeviceCategory;
 
-typedef int (*qdev_initfn)(DeviceState *dev);
-typedef int (*qdev_event)(DeviceState *dev);
 typedef void (*DeviceRealize)(DeviceState *dev, Error **errp);
 typedef void (*DeviceUnrealize)(DeviceState *dev, Error **errp);
 typedef void (*DeviceReset)(DeviceState *dev);
 typedef void (*BusRealize)(BusState *bus, Error **errp);
 typedef void (*BusUnrealize)(BusState *bus, Error **errp);
 
-struct VMStateDescription;
-
 /**
  * DeviceClass:
  * @props: Properties accessing state fields.
  * @realize: Callback function invoked when the #DeviceState:realized
- * property is changed to %true. The default invokes @init if not %NULL.
+ * property is changed to %true.
  * @unrealize: Callback function invoked when the #DeviceState:realized
  * property is changed to %false.
- * @init: Callback function invoked when the #DeviceState::realized property
- * is changed to %true. Deprecated, new types inheriting directly from
- * TYPE_DEVICE should use @realize instead, new leaf types should consult
- * their respective parent type.
  * @hotpluggable: indicates if #DeviceClass is hotpluggable, available
  * as readonly "hotpluggable" property of #DeviceState instance
  *
@@ -57,8 +49,9 @@ struct VMStateDescription;
  * Devices are constructed in two stages,
  * 1) object instantiation via object_initialize() and
  * 2) device realization via #DeviceState:realized property.
- * The former may not fail (it might assert or exit), the latter may return
- * error information to the caller and must be re-entrant.
+ * The former may not fail (and must not abort or exit, since it is called
+ * during device introspection already), and the latter may return error
+ * information to the caller and must be re-entrant.
  * Trivial field initializations should go into #TypeInfo.instance_init.
  * Operations depending on @props static properties should go into @realize.
  * After successful realization, setting static properties will fail.
@@ -73,23 +66,32 @@ struct VMStateDescription;
  * object_initialize() in their own #TypeInfo.instance_init and forward the
  * realization events appropriately.
  *
- * The @init callback is considered private to a particular bus implementation
- * (immediate abstract child types of TYPE_DEVICE). Derived leaf types set an
- * "init" callback on their parent class instead.
- *
  * Any type may override the @realize and/or @unrealize callbacks but needs
  * to call the parent type's implementation if keeping their functionality
  * is desired. Refer to QOM documentation for further discussion and examples.
  *
  * <note>
  *   <para>
- * If a type derived directly from TYPE_DEVICE implements @realize, it does
- * not need to implement @init and therefore does not need to store and call
- * #DeviceClass' default @realize callback.
+ * Since TYPE_DEVICE doesn't implement @realize and @unrealize, types
+ * derived directly from it need not call their parent's @realize and
+ * @unrealize.
  * For other types consult the documentation and implementation of the
  * respective parent types.
  *   </para>
  * </note>
+ *
+ * # Hiding a device #
+ * To hide a device, a DeviceListener function should_be_hidden() needs to
+ * be registered.
+ * It can be used to defer adding a device and therefore hide it from the
+ * guest. The handler registering to this DeviceListener can save the QOpts
+ * passed to it for re-using it later and must return that it wants the device
+ * to be/remain hidden or not. When the handler function decides the device
+ * shall not be hidden it will be added in qdev_device_add() and
+ * realized as any other device. Otherwise qdev_device_add() will return early
+ * without adding the device. The guest will not see a "hidden" device
+ * until it was marked don't hide and qdev_device_add called again.
+ *
  */
 typedef struct DeviceClass {
     /*< private >*/
@@ -99,7 +101,12 @@ typedef struct DeviceClass {
     DECLARE_BITMAP(categories, DEVICE_CATEGORY_MAX);
     const char *fw_name;
     const char *desc;
-    Property *props;
+
+    /*
+     * The underscore at the end ensures a compile-time error if someone
+     * assigns to dc->props instead of using device_class_set_props.
+     */
+    Property *props_;
 
     /*
      * Can this device be instantiated with -device / device_add?
@@ -116,16 +123,19 @@ typedef struct DeviceClass {
     bool hotpluggable;
 
     /* callbacks */
+    /*
+     * Reset method here is deprecated and replaced by methods in the
+     * resettable class interface to implement a multi-phase reset.
+     * TODO: remove once every reset callback is unused
+     */
     DeviceReset reset;
     DeviceRealize realize;
     DeviceUnrealize unrealize;
 
     /* device state */
-    const struct VMStateDescription *vmsd;
+    const VMStateDescription *vmsd;
 
     /* Private to qdev / bus.  */
-    qdev_initfn init; /* TODO remove, once users are converted to realize */
-    qdev_event exit; /* TODO remove, once users are converted to unrealize */
     const char *bus_type;
 } DeviceClass;
 
@@ -142,6 +152,7 @@ struct NamedGPIOList {
 /**
  * DeviceState:
  * @realized: Indicates whether the device has been fully constructed.
+ * @reset: ResettableState for the device; handled by Resettable interface.
  *
  * This structure should not be accessed directly.  We declare it here
  * so that it can be embedded in individual device state structures.
@@ -157,17 +168,25 @@ struct DeviceState {
     bool pending_deleted_event;
     QemuOpts *opts;
     int hotplugged;
+    bool allow_unplug_during_migration;
     BusState *parent_bus;
     QLIST_HEAD(, NamedGPIOList) gpios;
     QLIST_HEAD(, BusState) child_bus;
     int num_child_bus;
     int instance_id_alias;
     int alias_required_for_version;
+    ResettableState reset;
 };
 
 struct DeviceListener {
     void (*realize)(DeviceListener *listener, DeviceState *dev);
     void (*unrealize)(DeviceListener *listener, DeviceState *dev);
+    /*
+     * This callback is called upon init of the DeviceState and allows to
+     * inform qdev that a device should be hidden, depending on the device
+     * opts, for example, to hide a standby device.
+     */
+    int (*should_be_hidden)(DeviceListener *listener, QemuOpts *device_opts);
     QTAILQ_ENTRY(DeviceListener) link;
 };
 
@@ -208,7 +227,8 @@ typedef struct BusChild {
 
 /**
  * BusState:
- * @hotplug_device: link to a hotplug device associated with bus.
+ * @hotplug_handler: link to a hotplug handler associated with bus.
+ * @reset: ResettableState for the bus; handled by Resettable interface.
  */
 struct BusState {
     Object obj;
@@ -217,8 +237,10 @@ struct BusState {
     HotplugHandler *hotplug_handler;
     int max_index;
     bool realized;
-    QTAILQ_HEAD(ChildrenHead, BusChild) children;
+    int num_children;
+    QTAILQ_HEAD(, BusChild) children;
     QLIST_ENTRY(BusState) sibling;
+    ResettableState reset;
 };
 
 /**
@@ -251,8 +273,8 @@ struct PropertyInfo {
     const char *description;
     const QEnumLookup *enum_table;
     int (*print)(DeviceState *dev, Property *prop, char *dest, size_t len);
-    void (*set_default_value)(Object *obj, const Property *prop);
-    void (*create)(Object *obj, Property *prop, Error **errp);
+    void (*set_default_value)(ObjectProperty *op, const Property *prop);
+    void (*create)(ObjectClass *oc, Property *prop, Error **errp);
     ObjectPropertyAccessor *get;
     ObjectPropertyAccessor *set;
     ObjectPropertyRelease *release;
@@ -260,23 +282,29 @@ struct PropertyInfo {
 
 /**
  * GlobalProperty:
- * @user_provided: Set to true if property comes from user-provided config
- * (command-line or config file).
  * @used: Set to true if property was used when initializing a device.
- * @errp: Error destination, used like first argument of error_setg()
- *        in case property setting fails later. If @errp is NULL, we
- *        print warnings instead of ignoring errors silently. For
- *        hotplugged devices, errp is always ignored and warnings are
- *        printed instead.
+ * @optional: If set to true, GlobalProperty will be skipped without errors
+ *            if the property doesn't exist.
+ *
+ * An error is fatal for non-hotplugged devices, when the global is applied.
  */
 typedef struct GlobalProperty {
     const char *driver;
     const char *property;
     const char *value;
-    bool user_provided;
     bool used;
-    Error **errp;
+    bool optional;
 } GlobalProperty;
+
+static inline void
+compat_props_add(GPtrArray *arr,
+                 GlobalProperty props[], size_t nelem)
+{
+    int i;
+    for (i = 0; i < nelem; i++) {
+        g_ptr_array_add(arr, (void *)&props[i]);
+    }
+}
 
 /*** Board API.  This should go away once we have a machine config file.  ***/
 
@@ -285,7 +313,20 @@ DeviceState *qdev_try_create(BusState *bus, const char *name);
 void qdev_init_nofail(DeviceState *dev);
 void qdev_set_legacy_instance_id(DeviceState *dev, int alias_id,
                                  int required_for_version);
+HotplugHandler *qdev_get_bus_hotplug_handler(DeviceState *dev);
 HotplugHandler *qdev_get_machine_hotplug_handler(DeviceState *dev);
+bool qdev_hotplug_allowed(DeviceState *dev, Error **errp);
+/**
+ * qdev_get_hotplug_handler: Get handler responsible for device wiring
+ *
+ * Find HOTPLUG_HANDLER for @dev that provides [pre|un]plug callbacks for it.
+ *
+ * Note: in case @dev has a parent bus, it will be returned as handler unless
+ * machine handler overrides it.
+ *
+ * Returns: pointer to object that implements TYPE_HOTPLUG_HANDLER interface
+ *          or NULL if there aren't any.
+ */
 HotplugHandler *qdev_get_hotplug_handler(DeviceState *dev);
 void qdev_unplug(DeviceState *dev, Error **errp);
 void qdev_simple_device_unplug_cb(HotplugHandler *hotplug_dev,
@@ -370,6 +411,13 @@ int qdev_walk_children(DeviceState *dev,
                        qdev_walkerfn *post_devfn, qbus_walkerfn *post_busfn,
                        void *opaque);
 
+/**
+ * @qdev_reset_all:
+ * Reset @dev. See @qbus_reset_all() for more details.
+ *
+ * Note: This function is deprecated and will be removed when it becomes unused.
+ * Please use device_cold_reset() now.
+ */
 void qdev_reset_all(DeviceState *dev);
 void qdev_reset_all_fn(void *opaque);
 
@@ -382,9 +430,39 @@ void qdev_reset_all_fn(void *opaque);
  * hard reset means that qbus_reset_all will reset all state of the device.
  * For PCI devices, for example, this will include the base address registers
  * or configuration space.
+ *
+ * Note: This function is deprecated and will be removed when it becomes unused.
+ * Please use bus_cold_reset() now.
  */
 void qbus_reset_all(BusState *bus);
 void qbus_reset_all_fn(void *opaque);
+
+/**
+ * device_cold_reset:
+ * Reset device @dev and perform a recursive processing using the resettable
+ * interface. It triggers a RESET_TYPE_COLD.
+ */
+void device_cold_reset(DeviceState *dev);
+
+/**
+ * bus_cold_reset:
+ *
+ * Reset bus @bus and perform a recursive processing using the resettable
+ * interface. It triggers a RESET_TYPE_COLD.
+ */
+void bus_cold_reset(BusState *bus);
+
+/**
+ * device_is_in_reset:
+ * Return true if the device @dev is currently being reset.
+ */
+bool device_is_in_reset(DeviceState *dev);
+
+/**
+ * bus_is_in_reset:
+ * Return true if the bus @bus is currently being reset.
+ */
+bool bus_is_in_reset(BusState *bus);
 
 /* This should go away once we get rid of the NULL bus hack */
 BusState *sysbus_get_default(void);
@@ -401,12 +479,21 @@ char *qdev_get_own_fw_dev_path_from_handler(BusState *bus, DeviceState *dev);
 void qdev_machine_init(void);
 
 /**
- * @device_reset
+ * device_legacy_reset:
  *
  * Reset a single device (by calling the reset method).
+ * Note: This function is deprecated and will be removed when it becomes unused.
+ * Please use device_cold_reset() now.
  */
-void device_reset(DeviceState *dev);
+void device_legacy_reset(DeviceState *dev);
 
+void device_class_set_props(DeviceClass *dc, Property *props);
+
+/**
+ * device_class_set_parent_reset:
+ * TODO: remove the function when DeviceClass's reset method
+ * is not used anymore.
+ */
 void device_class_set_parent_reset(DeviceClass *dc,
                                    DeviceReset dev_reset,
                                    DeviceReset *parent_reset);
@@ -417,7 +504,7 @@ void device_class_set_parent_unrealize(DeviceClass *dc,
                                        DeviceUnrealize dev_unrealize,
                                        DeviceUnrealize *parent_unrealize);
 
-const struct VMStateDescription *qdev_get_vmsd(DeviceState *dev);
+const VMStateDescription *qdev_get_vmsd(DeviceState *dev);
 
 const char *qdev_fw_name(DeviceState *dev);
 
@@ -431,10 +518,7 @@ extern bool qdev_hot_removed;
 
 char *qdev_get_dev_path(DeviceState *dev);
 
-GSList *qdev_build_hotpluggable_device_list(Object *peripheral);
-
-void qbus_set_hotplug_handler(BusState *bus, DeviceState *handler,
-                              Error **errp);
+void qbus_set_hotplug_handler(BusState *bus, Object *handler, Error **errp);
 
 void qbus_set_bus_hotplug_handler(BusState *bus, Error **errp);
 
@@ -445,5 +529,15 @@ static inline bool qbus_is_hotpluggable(BusState *bus)
 
 void device_listener_register(DeviceListener *listener);
 void device_listener_unregister(DeviceListener *listener);
+
+/**
+ * @qdev_should_hide_device:
+ * @opts: QemuOpts as passed on cmdline.
+ *
+ * Check if a device should be added.
+ * When a device is added via qdev_device_add() this will be called,
+ * and return if the device should be added now or not.
+ */
+bool qdev_should_hide_device(QemuOpts *opts);
 
 #endif

@@ -13,7 +13,9 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/module.h"
 #include "chardev/char-fe.h"
+#include "hw/qdev-properties.h"
 #include "hw/s390x/3270-ccw.h"
 
 /* Enough spaces for different window sizes. */
@@ -31,7 +33,7 @@ typedef struct Terminal3270 {
     uint8_t outv[OUTPUT_BUFFER_SIZE];
     int in_len;
     bool handshake_done;
-    GSource *timer_src;
+    guint timer_tag;
 } Terminal3270;
 
 #define TYPE_TERMINAL_3270 "x-terminal3270"
@@ -47,10 +49,9 @@ static int terminal_can_read(void *opaque)
 
 static void terminal_timer_cancel(Terminal3270 *t)
 {
-    if (t->timer_src) {
-        g_source_destroy(t->timer_src);
-        g_source_unref(t->timer_src);
-        t->timer_src = NULL;
+    if (t->timer_tag) {
+        g_source_remove(t->timer_tag);
+        t->timer_tag = 0;
     }
 }
 
@@ -100,8 +101,7 @@ static void terminal_read(void *opaque, const uint8_t *buf, int size)
     assert(size <= (INPUT_BUFFER_SIZE - t->in_len));
 
     terminal_timer_cancel(t);
-    t->timer_src = qemu_chr_timeout_add_ms(t->chr.chr, 600 * 1000,
-                                           send_timing_mark_cb, t);
+    t->timer_tag = g_timeout_add_seconds(600, send_timing_mark_cb, t);
     memcpy(&t->inv[t->in_len], buf, size);
     t->in_len += size;
     if (t->in_len < 2) {
@@ -142,7 +142,7 @@ static void terminal_read(void *opaque, const uint8_t *buf, int size)
     }
 }
 
-static void chr_event(void *opaque, int event)
+static void chr_event(void *opaque, QEMUChrEvent event)
 {
     Terminal3270 *t = opaque;
     CcwDevice *ccw_dev = CCW_DEVICE(t);
@@ -160,12 +160,16 @@ static void chr_event(void *opaque, int event)
          * char-socket.c. Once qemu receives the terminal-type of the
          * client, mark handshake done and trigger everything rolling again.
          */
-        t->timer_src = qemu_chr_timeout_add_ms(t->chr.chr, 600 * 1000,
-                                               send_timing_mark_cb, t);
+        t->timer_tag = g_timeout_add_seconds(600, send_timing_mark_cb, t);
         break;
     case CHR_EVENT_CLOSED:
         sch->curr_status.scsw.dstat = SCSW_DSTAT_DEVICE_END;
         css_conditional_io_interrupt(sch);
+        break;
+    case CHR_EVENT_BREAK:
+    case CHR_EVENT_MUX_IN:
+    case CHR_EVENT_MUX_OUT:
+        /* Ignore */
         break;
     }
 }
@@ -284,7 +288,7 @@ static void terminal_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     EmulatedCcw3270Class *ck = EMULATED_CCW_3270_CLASS(klass);
 
-    dc->props = terminal_properties;
+    device_class_set_props(dc, terminal_properties);
     dc->vmsd = &terminal3270_vmstate;
     ck->init = terminal_init;
     ck->read_payload_3270 = read_payload_3270;

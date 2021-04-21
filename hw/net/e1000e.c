@@ -34,14 +34,19 @@
 */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "net/net.h"
 #include "net/tap.h"
+#include "qemu/module.h"
 #include "qemu/range.h"
 #include "sysemu/sysemu.h"
+#include "hw/hw.h"
 #include "hw/pci/msi.h"
 #include "hw/pci/msix.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 
-#include "hw/net/e1000_regs.h"
+#include "e1000_regs.h"
 
 #include "e1000x_common.h"
 #include "e1000e_core.h"
@@ -81,10 +86,10 @@ typedef struct E1000EState {
 #define E1000E_IO_IDX       2
 #define E1000E_MSIX_IDX     3
 
-#define E1000E_MMIO_SIZE    (128 * 1024)
-#define E1000E_FLASH_SIZE   (128 * 1024)
+#define E1000E_MMIO_SIZE    (128 * KiB)
+#define E1000E_FLASH_SIZE   (128 * KiB)
 #define E1000E_IO_SIZE      (32)
-#define E1000E_MSIX_SIZE    (16 * 1024)
+#define E1000E_MSIX_SIZE    (16 * KiB)
 
 #define E1000E_MSIX_TABLE   (0x0000)
 #define E1000E_MSIX_PBA     (0x2000)
@@ -194,7 +199,7 @@ static const MemoryRegionOps io_ops = {
     },
 };
 
-static int
+static bool
 e1000e_nc_can_receive(NetClientState *nc)
 {
     E1000EState *s = qemu_get_nic_opaque(nc);
@@ -323,7 +328,7 @@ e1000e_init_net_peer(E1000EState *s, PCIDevice *pci_dev, uint8_t *macaddr)
     s->nic = qemu_new_nic(&net_e1000e_info, &s->conf,
         object_get_typename(OBJECT(s)), dev->id, s);
 
-    s->core.max_queue_num = s->conf.peers.queues - 1;
+    s->core.max_queue_num = s->conf.peers.queues ? s->conf.peers.queues - 1 : 0;
 
     trace_e1000e_mac_set_permanent(MAC_ARG(macaddr));
     memcpy(s->core.permanent_mac, macaddr, sizeof(s->core.permanent_mac));
@@ -679,7 +684,6 @@ static void e1000e_class_init(ObjectClass *class, void *data)
     dc->desc = "Intel 82574L GbE Controller";
     dc->reset = e1000e_qdev_reset;
     dc->vmsd = &e1000e_vmstate;
-    dc->props = e1000e_properties;
 
     e1000e_prop_disable_vnet = qdev_prop_uint8;
     e1000e_prop_disable_vnet.description = "Do not use virtio headers, "
@@ -692,6 +696,7 @@ static void e1000e_class_init(ObjectClass *class, void *data)
     e1000e_prop_subsys = qdev_prop_uint16;
     e1000e_prop_subsys.description = "PCI device Subsystem ID";
 
+    device_class_set_props(dc, e1000e_properties);
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
 }
 

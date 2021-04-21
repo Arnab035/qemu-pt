@@ -21,7 +21,7 @@
 #ifndef HW_SIFIVE_PLIC_H
 #define HW_SIFIVE_PLIC_H
 
-#include "hw/irq.h"
+#include "hw/sysbus.h"
 
 #define TYPE_SIFIVE_PLIC "riscv.sifive.plic"
 
@@ -55,8 +55,6 @@ typedef struct SiFivePLICState {
     uint32_t *pending;
     uint32_t *claimed;
     uint32_t *enable;
-    QemuMutex lock;
-    qemu_irq *irqs;
 
     /* config */
     char *hart_config;
@@ -71,9 +69,6 @@ typedef struct SiFivePLICState {
     uint32_t aperture_size;
 } SiFivePLICState;
 
-void sifive_plic_raise_irq(SiFivePLICState *plic, uint32_t irq);
-void sifive_plic_lower_irq(SiFivePLICState *plic, uint32_t irq);
-
 DeviceState *sifive_plic_create(hwaddr addr, char *hart_config,
     uint32_t num_sources, uint32_t num_priorities,
     uint32_t priority_base, uint32_t pending_base,
@@ -82,4 +77,3 @@ DeviceState *sifive_plic_create(hwaddr addr, char *hart_config,
     uint32_t aperture_size);
 
 #endif
-

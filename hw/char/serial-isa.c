@@ -25,8 +25,12 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/module.h"
+#include "sysemu/sysemu.h"
 #include "hw/char/serial.h"
 #include "hw/isa/isa.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 
 #define ISA_SERIAL(obj) OBJECT_CHECK(ISASerialState, (obj), TYPE_ISA_SERIAL)
 
@@ -39,10 +43,10 @@ typedef struct ISASerialState {
     SerialState state;
 } ISASerialState;
 
-static const int isa_serial_io[MAX_SERIAL_PORTS] = {
+static const int isa_serial_io[MAX_ISA_SERIAL_PORTS] = {
     0x3f8, 0x2f8, 0x3e8, 0x2e8
 };
-static const int isa_serial_irq[MAX_SERIAL_PORTS] = {
+static const int isa_serial_irq[MAX_ISA_SERIAL_PORTS] = {
     4, 3, 4, 3
 };
 
@@ -56,9 +60,9 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
     if (isa->index == -1) {
         isa->index = index;
     }
-    if (isa->index >= MAX_SERIAL_PORTS) {
+    if (isa->index >= MAX_ISA_SERIAL_PORTS) {
         error_setg(errp, "Max. supported number of ISA serial ports is %d.",
-                   MAX_SERIAL_PORTS);
+                   MAX_ISA_SERIAL_PORTS);
         return;
     }
     if (isa->iobase == -1) {
@@ -69,9 +73,8 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
     }
     index++;
 
-    s->baudbase = 115200;
     isa_init_irq(isadev, &s->irq, isa->isairq);
-    serial_realize_core(s, errp);
+    object_property_set_bool(OBJECT(s), true, "realized", errp);
     qdev_set_legacy_instance_id(dev, isa->iobase, 3);
 
     memory_region_init_io(&s->io, OBJECT(isa), &serial_io_ops, s, "serial", 8);
@@ -103,14 +106,23 @@ static void serial_isa_class_initfn(ObjectClass *klass, void *data)
 
     dc->realize = serial_isa_realizefn;
     dc->vmsd = &vmstate_isa_serial;
-    dc->props = serial_isa_properties;
+    device_class_set_props(dc, serial_isa_properties);
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
+}
+
+static void serial_isa_initfn(Object *o)
+{
+    ISASerialState *self = ISA_SERIAL(o);
+
+    object_initialize_child(o, "serial", &self->state, sizeof(self->state),
+                            TYPE_SERIAL, &error_abort, NULL);
 }
 
 static const TypeInfo serial_isa_info = {
     .name          = TYPE_ISA_SERIAL,
     .parent        = TYPE_ISA_DEVICE,
     .instance_size = sizeof(ISASerialState),
+    .instance_init = serial_isa_initfn,
     .class_init    = serial_isa_class_initfn,
 };
 
@@ -138,11 +150,11 @@ void serial_hds_isa_init(ISABus *bus, int from, int to)
     int i;
 
     assert(from >= 0);
-    assert(to <= MAX_SERIAL_PORTS);
+    assert(to <= MAX_ISA_SERIAL_PORTS);
 
     for (i = from; i < to; ++i) {
-        if (serial_hds[i]) {
-            serial_isa_init(bus, i, serial_hds[i]);
+        if (serial_hd(i)) {
+            serial_isa_init(bus, i, serial_hd(i));
         }
     }
 }

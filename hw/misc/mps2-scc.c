@@ -19,10 +19,13 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "trace.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/registerfields.h"
 #include "hw/misc/mps2-scc.h"
+#include "hw/qdev-properties.h"
 
 REG32(CFG0, 0)
 REG32(CFG1, 4)
@@ -290,7 +293,7 @@ static void mps2_scc_class_init(ObjectClass *klass, void *data)
     dc->realize = mps2_scc_realize;
     dc->vmsd = &mps2_scc_vmstate;
     dc->reset = mps2_scc_reset;
-    dc->props = mps2_scc_properties;
+    device_class_set_props(dc, mps2_scc_properties);
 }
 
 static const TypeInfo mps2_scc_info = {

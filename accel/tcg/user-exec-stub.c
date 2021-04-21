@@ -1,7 +1,9 @@
 #include "qemu/osdep.h"
-#include "qemu-common.h"
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 #include "sysemu/replay.h"
+#include "sysemu/sysemu.h"
+
+bool enable_cpu_pm = false;
 
 void cpu_resume(CPUState *cpu)
 {

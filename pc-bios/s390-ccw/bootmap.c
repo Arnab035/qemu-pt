@@ -29,14 +29,6 @@
 /* Scratch space */
 static uint8_t sec[MAX_SECTOR_SIZE*4] __attribute__((__aligned__(PAGE_SIZE)));
 
-typedef struct ResetInfo {
-    uint32_t ipl_mask;
-    uint32_t ipl_addr;
-    uint32_t ipl_continue;
-} ResetInfo;
-
-static ResetInfo save;
-
 const uint8_t el_torito_magic[] = "EL TORITO SPECIFICATION"
                                   "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
 
@@ -55,46 +47,6 @@ static inline bool is_iso_vd_valid(IsoVolDesc *vd)
     return !memcmp(&vd->ident[0], vol_desc_magic, 5) &&
            vd->version == 0x1 &&
            vd->type <= VOL_DESC_TYPE_PARTITION;
-}
-
-static void jump_to_IPL_2(void)
-{
-    ResetInfo *current = 0;
-
-    void (*ipl)(void) = (void *) (uint64_t) current->ipl_continue;
-    *current = save;
-    ipl(); /* should not return */
-}
-
-static void jump_to_IPL_code(uint64_t address)
-{
-    /* store the subsystem information _after_ the bootmap was loaded */
-    write_subsystem_identification();
-    /*
-     * The IPL PSW is at address 0. We also must not overwrite the
-     * content of non-BIOS memory after we loaded the guest, so we
-     * save the original content and restore it in jump_to_IPL_2.
-     */
-    ResetInfo *current = 0;
-
-    save = *current;
-    current->ipl_addr = (uint32_t) (uint64_t) &jump_to_IPL_2;
-    current->ipl_continue = address & 0x7fffffff;
-
-    debug_print_int("set IPL addr to", current->ipl_continue);
-
-    /* Ensure the guest output starts fresh */
-    sclp_print("\n");
-
-    /*
-     * HACK ALERT.
-     * We use the load normal reset to keep r15 unchanged. jump_to_IPL_2
-     * can then use r15 as its stack pointer.
-     */
-    asm volatile("lghi 1,1\n\t"
-                 "diag 1,1,0x308\n\t"
-                 : : : "1", "memory");
-    panic("\n! IPL returns !\n");
 }
 
 /***********************************************************************
@@ -290,7 +242,7 @@ static void run_eckd_boot_script(block_number_t bmt_block_nr,
     }
 
     debug_print_int("loadparm", loadparm);
-    IPL_assert(loadparm <= MAX_TABLE_ENTRIES, "loadparm value greater than"
+    IPL_assert(loadparm < MAX_BOOT_ENTRIES, "loadparm value greater than"
                " maximum number of boot entries allowed");
 
     memset(sec, FREE_SPACE_FILLER, sizeof(sec));
@@ -302,7 +254,14 @@ static void run_eckd_boot_script(block_number_t bmt_block_nr,
     memset(sec, FREE_SPACE_FILLER, sizeof(sec));
     read_block(block_nr, sec, "Cannot read Boot Map Script");
 
-    for (i = 0; bms->entry[i].type == BOOT_SCRIPT_LOAD; i++) {
+    for (i = 0; bms->entry[i].type == BOOT_SCRIPT_LOAD ||
+                bms->entry[i].type == BOOT_SCRIPT_SIGNATURE; i++) {
+
+        /* We don't support secure boot yet, so we skip signature entries */
+        if (bms->entry[i].type == BOOT_SCRIPT_SIGNATURE) {
+            continue;
+        }
+
         address = bms->entry[i].address.load_address;
         block_nr = eckd_block_num(&bms->entry[i].blkptr.xeckd.bptr.chs);
 
@@ -537,7 +496,15 @@ static void zipl_run(ScsiBlockPtr *pte)
 
     /* Load image(s) into RAM */
     entry = (ComponentEntry *)(&header[1]);
-    while (entry->component_type == ZIPL_COMP_ENTRY_LOAD) {
+    while (entry->component_type == ZIPL_COMP_ENTRY_LOAD ||
+           entry->component_type == ZIPL_COMP_ENTRY_SIGNATURE) {
+
+        /* We don't support secure boot yet, so we skip signature entries */
+        if (entry->component_type == ZIPL_COMP_ENTRY_SIGNATURE) {
+            entry++;
+            continue;
+        }
+
         zipl_load_segment(entry);
 
         entry++;
@@ -558,6 +525,8 @@ static void ipl_scsi(void)
     int program_table_entries = 0;
     BootMapTable *prog_table = (void *)sec;
     unsigned int loadparm = get_loadparm_index();
+    bool valid_entries[MAX_BOOT_ENTRIES] = {false};
+    size_t i;
 
     /* Grab the MBR */
     memset(sec, FREE_SPACE_FILLER, sizeof(sec));
@@ -578,22 +547,22 @@ static void ipl_scsi(void)
     read_block(mbr->pt.blockno, sec, "Error reading Program Table");
     IPL_assert(magic_match(sec, ZIPL_MAGIC), "No zIPL magic in PT");
 
-    while (program_table_entries <= MAX_TABLE_ENTRIES) {
-        if (!prog_table->entry[program_table_entries].scsi.blockno) {
-            break;
+    for (i = 0; i < MAX_BOOT_ENTRIES; i++) {
+        if (prog_table->entry[i].scsi.blockno) {
+            valid_entries[i] = true;
+            program_table_entries++;
         }
-        program_table_entries++;
     }
 
     debug_print_int("program table entries", program_table_entries);
     IPL_assert(program_table_entries != 0, "Empty Program Table");
 
     if (menu_is_enabled_enum()) {
-        loadparm = menu_get_enum_boot_index(program_table_entries);
+        loadparm = menu_get_enum_boot_index(valid_entries);
     }
 
     debug_print_int("loadparm", loadparm);
-    IPL_assert(loadparm <= MAX_TABLE_ENTRIES, "loadparm value greater than"
+    IPL_assert(loadparm < MAX_BOOT_ENTRIES, "loadparm value greater than"
                " maximum number of boot entries allowed");
 
     zipl_run(&prog_table->entry[loadparm].scsi); /* no return */
@@ -720,13 +689,7 @@ static void load_iso_bc_entry(IsoBcSection *load)
                         (void *)((uint64_t)bswap16(s.load_segment)),
                         blks_to_load);
 
-    /* Trying to get PSW at zero address */
-    if (*((uint64_t *)0) & IPL_PSW_MASK) {
-        jump_to_IPL_code((*((uint64_t *)0)) & 0x7fffffff);
-    }
-
-    /* Try default linux start address */
-    jump_to_IPL_code(KERN_IMAGE_START);
+    jump_to_low_kernel();
 }
 
 static uint32_t find_iso_bc(void)

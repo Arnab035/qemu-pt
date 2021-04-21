@@ -57,8 +57,6 @@ typedef union BootMapPointer {
     ExtEckdBlockPtr xeckd;
 } __attribute__ ((packed)) BootMapPointer;
 
-#define MAX_TABLE_ENTRIES  30
-
 /* aka Program Table */
 typedef struct BootMapTable {
     uint8_t magic[4];
@@ -100,8 +98,9 @@ typedef struct ScsiMbr {
 #define ZIPL_COMP_HEADER_IPL    0x00
 #define ZIPL_COMP_HEADER_DUMP   0x01
 
-#define ZIPL_COMP_ENTRY_LOAD    0x02
-#define ZIPL_COMP_ENTRY_EXEC    0x01
+#define ZIPL_COMP_ENTRY_EXEC      0x01
+#define ZIPL_COMP_ENTRY_LOAD      0x02
+#define ZIPL_COMP_ENTRY_SIGNATURE 0x03
 
 typedef struct XEckdMbr {
     uint8_t magic[4];   /* == "xIPL"        */
@@ -119,8 +118,9 @@ typedef struct BootMapScriptEntry {
     BootMapPointer blkptr;
     uint8_t pad[7];
     uint8_t type;   /* == BOOT_SCRIPT_* */
-#define BOOT_SCRIPT_EXEC 0x01
-#define BOOT_SCRIPT_LOAD 0x02
+#define BOOT_SCRIPT_EXEC      0x01
+#define BOOT_SCRIPT_LOAD      0x02
+#define BOOT_SCRIPT_SIGNATURE 0x03
     union {
         uint64_t load_address;
         uint64_t load_psw;
@@ -136,7 +136,7 @@ typedef struct BootMapScriptHeader {
 
 typedef struct BootMapScript {
     BootMapScriptHeader header;
-    BootMapScriptEntry  entry[0];
+    BootMapScriptEntry  entry[];
 } __attribute__ ((packed)) BootMapScript;
 
 /*
@@ -355,10 +355,6 @@ static inline uint32_t iso_733_to_u32(uint64_t x)
 #define ISO_SECTOR_SIZE 2048
 /* El Torito specifies boot image size in 512 byte blocks */
 #define ET_SECTOR_SHIFT 2
-#define KERN_IMAGE_START 0x010000UL
-#define PSW_MASK_64 0x0000000100000000ULL
-#define PSW_MASK_32 0x0000000080000000ULL
-#define IPL_PSW_MASK (PSW_MASK_32 | PSW_MASK_64)
 
 #define ISO_PRIMARY_VD_SECTOR 16
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test qcow2's bdrv_make_empty for images without internal snapshots
 #
@@ -24,7 +24,6 @@ owner=mreitz@redhat.com
 seq="$(basename $0)"
 echo "QA output created by $seq"
 
-here="$PWD"
 status=1	# failure is the default!
 
 _cleanup()
@@ -41,9 +40,10 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt qcow2
 _supported_proto file
-_supported_os Linux
-
-IMGOPTS="compat=1.1"
+# The code path we want to test here only works for compat=1.1 images;
+# blkdebug can only inject errors on bs->file, so external data files
+# do not work with this test
+_unsupported_imgopts 'compat=0.10' data_file
 
 for event in l1_update empty_image_prepare reftable_update refblock_alloc; do
 

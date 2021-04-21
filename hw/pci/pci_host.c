@@ -20,7 +20,9 @@
 
 #include "qemu/osdep.h"
 #include "hw/pci/pci.h"
+#include "hw/pci/pci_bridge.h"
 #include "hw/pci/pci_host.h"
+#include "qemu/module.h"
 #include "hw/pci/pci_bus.h"
 #include "trace.h"
 
@@ -50,9 +52,22 @@ static inline PCIDevice *pci_dev_find_by_addr(PCIBus *bus, uint32_t addr)
     return pci_find_device(bus, bus_num, devfn);
 }
 
+static void pci_adjust_config_limit(PCIBus *bus, uint32_t *limit)
+{
+    if ((*limit > PCI_CONFIG_SPACE_SIZE) &&
+        !pci_bus_allows_extended_config_space(bus)) {
+        *limit = PCI_CONFIG_SPACE_SIZE;
+    }
+}
+
 void pci_host_config_write_common(PCIDevice *pci_dev, uint32_t addr,
                                   uint32_t limit, uint32_t val, uint32_t len)
 {
+    pci_adjust_config_limit(pci_get_bus(pci_dev), &limit);
+    if (limit <= addr) {
+        return;
+    }
+
     assert(len <= 4);
     /* non-zero functions are only exposed when function 0 is present,
      * allowing direct removal of unexposed functions.
@@ -71,6 +86,11 @@ uint32_t pci_host_config_read_common(PCIDevice *pci_dev, uint32_t addr,
 {
     uint32_t ret;
 
+    pci_adjust_config_limit(pci_get_bus(pci_dev), &limit);
+    if (limit <= addr) {
+        return ~0x0;
+    }
+
     assert(len <= 4);
     /* non-zero functions are only exposed when function 0 is present,
      * allowing direct removal of unexposed functions.
@@ -86,7 +106,7 @@ uint32_t pci_host_config_read_common(PCIDevice *pci_dev, uint32_t addr,
     return ret;
 }
 
-void pci_data_write(PCIBus *s, uint32_t addr, uint32_t val, int len)
+void pci_data_write(PCIBus *s, uint32_t addr, uint32_t val, unsigned len)
 {
     PCIDevice *pci_dev = pci_dev_find_by_addr(s, addr);
     uint32_t config_addr = addr & (PCI_CONFIG_SPACE_SIZE - 1);
@@ -95,28 +115,21 @@ void pci_data_write(PCIBus *s, uint32_t addr, uint32_t val, int len)
         return;
     }
 
-    PCI_DPRINTF("%s: %s: addr=%02" PRIx32 " val=%08" PRIx32 " len=%d\n",
-                __func__, pci_dev->name, config_addr, val, len);
     pci_host_config_write_common(pci_dev, config_addr, PCI_CONFIG_SPACE_SIZE,
                                  val, len);
 }
 
-uint32_t pci_data_read(PCIBus *s, uint32_t addr, int len)
+uint32_t pci_data_read(PCIBus *s, uint32_t addr, unsigned len)
 {
     PCIDevice *pci_dev = pci_dev_find_by_addr(s, addr);
     uint32_t config_addr = addr & (PCI_CONFIG_SPACE_SIZE - 1);
-    uint32_t val;
 
     if (!pci_dev) {
         return ~0x0;
     }
 
-    val = pci_host_config_read_common(pci_dev, config_addr,
-                                      PCI_CONFIG_SPACE_SIZE, len);
-    PCI_DPRINTF("%s: %s: addr=%02"PRIx32" val=%08"PRIx32" len=%d\n",
-                __func__, pci_dev->name, config_addr, val, len);
-
-    return val;
+    return pci_host_config_read_common(pci_dev, config_addr,
+                                       PCI_CONFIG_SPACE_SIZE, len);
 }
 
 static void pci_host_config_write(void *opaque, hwaddr addr,
@@ -147,8 +160,7 @@ static void pci_host_data_write(void *opaque, hwaddr addr,
                                 uint64_t val, unsigned len)
 {
     PCIHostState *s = opaque;
-    PCI_DPRINTF("write addr " TARGET_FMT_plx " len %d val %x\n",
-                addr, len, (unsigned)val);
+
     if (s->config_reg & (1u << 31))
         pci_data_write(s->bus, s->config_reg | (addr & 3), val, len);
 }
@@ -157,14 +169,11 @@ static uint64_t pci_host_data_read(void *opaque,
                                    hwaddr addr, unsigned len)
 {
     PCIHostState *s = opaque;
-    uint32_t val;
+
     if (!(s->config_reg & (1U << 31))) {
         return 0xffffffff;
     }
-    val = pci_data_read(s->bus, s->config_reg | (addr & 3), len);
-    PCI_DPRINTF("read addr " TARGET_FMT_plx " len %d val %x\n",
-                addr, len, val);
-    return val;
+    return pci_data_read(s->bus, s->config_reg | (addr & 3), len);
 }
 
 const MemoryRegionOps pci_host_conf_le_ops = {

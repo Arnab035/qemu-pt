@@ -13,8 +13,8 @@
 #ifndef SYSEMU_HOSTMEM_H
 #define SYSEMU_HOSTMEM_H
 
-#include "sysemu/sysemu.h" /* for MAX_NODES */
-#include "qapi/qapi-types-misc.h"
+#include "sysemu/numa.h"
+#include "qapi/qapi-types-machine.h"
 #include "qom/object.h"
 #include "exec/memory.h"
 #include "qemu/bitmap.h"
@@ -26,6 +26,21 @@
     OBJECT_GET_CLASS(HostMemoryBackendClass, (obj), TYPE_MEMORY_BACKEND)
 #define MEMORY_BACKEND_CLASS(klass) \
     OBJECT_CLASS_CHECK(HostMemoryBackendClass, (klass), TYPE_MEMORY_BACKEND)
+
+/* hostmem-ram.c */
+/**
+ * @TYPE_MEMORY_BACKEND_RAM:
+ * name of backend that uses mmap on the anonymous RAM
+ */
+
+#define TYPE_MEMORY_BACKEND_RAM "memory-backend-ram"
+
+/* hostmem-file.c */
+/**
+ * @TYPE_MEMORY_BACKEND_FILE:
+ * name of backend that uses mmap on a file descriptor
+ */
+#define TYPE_MEMORY_BACKEND_FILE "memory-backend-file"
 
 typedef struct HostMemoryBackend HostMemoryBackend;
 typedef struct HostMemoryBackendClass HostMemoryBackendClass;
@@ -46,16 +61,17 @@ struct HostMemoryBackendClass {
  * @parent: opaque parent object container
  * @size: amount of memory backend provides
  * @mr: MemoryRegion representing host memory belonging to backend
+ * @prealloc_threads: number of threads to be used for preallocatining RAM
  */
 struct HostMemoryBackend {
     /* private */
     Object parent;
 
     /* protected */
-    char *id;
     uint64_t size;
-    bool merge, dump;
-    bool prealloc, force_prealloc, is_mapped, share;
+    bool merge, dump, use_canonical_path;
+    bool prealloc, is_mapped, share;
+    uint32_t prealloc_threads;
     DECLARE_BITMAP(host_nodes, MAX_NODES + 1);
     HostMemPolicy policy;
 
@@ -63,9 +79,11 @@ struct HostMemoryBackend {
 };
 
 bool host_memory_backend_mr_inited(HostMemoryBackend *backend);
-MemoryRegion *host_memory_backend_get_memory(HostMemoryBackend *backend,
-                                             Error **errp);
+MemoryRegion *host_memory_backend_get_memory(HostMemoryBackend *backend);
 
 void host_memory_backend_set_mapped(HostMemoryBackend *backend, bool mapped);
 bool host_memory_backend_is_mapped(HostMemoryBackend *backend);
+size_t host_memory_backend_pagesize(HostMemoryBackend *memdev);
+char *host_memory_backend_get_name(HostMemoryBackend *backend);
+
 #endif

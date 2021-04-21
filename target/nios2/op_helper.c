@@ -22,6 +22,7 @@
 #include "cpu.h"
 #include "exec/helper-proto.h"
 #include "exec/cpu_ldst.h"
+#include "exec/exec-all.h"
 #include "qemu/main-loop.h"
 
 #if !defined(CONFIG_USER_ONLY)
@@ -45,7 +46,7 @@ void helper_check_interrupts(CPUNios2State *env)
 
 void helper_raise_exception(CPUNios2State *env, uint32_t index)
 {
-    CPUState *cs = ENV_GET_CPU(env);
+    CPUState *cs = env_cpu(env);
     cs->exception_index = index;
     cpu_loop_exit(cs);
 }

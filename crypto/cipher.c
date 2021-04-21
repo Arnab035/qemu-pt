@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -150,11 +150,11 @@ qcrypto_cipher_munge_des_rfb_key(const uint8_t *key,
 #endif /* CONFIG_GCRYPT || CONFIG_NETTLE */
 
 #ifdef CONFIG_GCRYPT
-#include "crypto/cipher-gcrypt.c"
+#include "cipher-gcrypt.c"
 #elif defined CONFIG_NETTLE
-#include "crypto/cipher-nettle.c"
+#include "cipher-nettle.c"
 #else
-#include "crypto/cipher-builtin.c"
+#include "cipher-builtin.c"
 #endif
 
 QCryptoCipher *qcrypto_cipher_new(QCryptoCipherAlgorithm alg,

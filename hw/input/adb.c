@@ -21,8 +21,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
 #include "hw/input/adb.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "adb-internal.h"
 
 /* error codes */
@@ -113,11 +117,18 @@ static void adb_device_realizefn(DeviceState *dev, Error **errp)
     bus->devices[bus->nb_devices++] = d;
 }
 
+static Property adb_device_properties[] = {
+    DEFINE_PROP_BOOL("disable-direct-reg3-writes", ADBDevice,
+                     disable_direct_reg3_writes, false),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void adb_device_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
     dc->realize = adb_device_realizefn;
+    device_class_set_props(dc, adb_device_properties);
     dc->bus_type = TYPE_ADB_BUS;
 }
 

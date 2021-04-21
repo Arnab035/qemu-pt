@@ -11,6 +11,10 @@
 # or (at your option) any later version. See the COPYING file in
 # the top-level directory.
 
+# This might be set by ENV of a docker container... it is always
+# overriden by TARGET_LIST if the user sets it.
+DEF_TARGET_LIST=${DEF_TARGET_LIST:-"x86_64-softmmu,aarch64-softmmu"}
+
 requires()
 {
     for c in $@; do
@@ -21,7 +25,7 @@ requires()
     done
 }
 
-build_qemu()
+configure_qemu()
 {
     config_opts="--enable-werror \
                  ${TARGET_LIST:+--target-list=${TARGET_LIST}} \
@@ -30,7 +34,26 @@ build_qemu()
                  $@"
     echo "Configure options:"
     echo $config_opts
-    $QEMU_SRC/configure $config_opts && make $MAKEFLAGS
+    $QEMU_SRC/configure $config_opts || \
+        { cat config.log && test_fail "Failed to run 'configure'"; }
+}
+
+build_qemu()
+{
+    configure_qemu $@
+    make $MAKEFLAGS
+}
+
+check_qemu()
+{
+    # default to make check unless the caller specifies
+    if test -z "$@"; then
+        INVOCATION="check"
+    else
+        INVOCATION="$@"
+    fi
+
+    make $MAKEFLAGS $INVOCATION
 }
 
 test_fail()

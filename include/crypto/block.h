@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -75,6 +75,7 @@ typedef enum {
  * @readfunc: callback for reading data from the volume
  * @opaque: data to pass to @readfunc
  * @flags: bitmask of QCryptoBlockOpenFlags values
+ * @n_threads: allow concurrent I/O from up to @n_threads threads
  * @errp: pointer to a NULL-initialized error object
  *
  * Create a new block encryption object for an existing
@@ -107,6 +108,7 @@ QCryptoBlock *qcrypto_block_open(QCryptoBlockOpenOptions *options,
                                  QCryptoBlockReadFunc readfunc,
                                  void *opaque,
                                  unsigned int flags,
+                                 size_t n_threads,
                                  Error **errp);
 
 /**
@@ -141,6 +143,26 @@ QCryptoBlock *qcrypto_block_create(QCryptoBlockCreateOptions *options,
                                    QCryptoBlockWriteFunc writefunc,
                                    void *opaque,
                                    Error **errp);
+
+
+/**
+ * qcrypto_block_calculate_payload_offset:
+ * @create_opts: the encryption options
+ * @optprefix: name prefix for options
+ * @len: output for number of header bytes before payload
+ * @errp: pointer to a NULL-initialized error object
+ *
+ * Calculate the number of header bytes before the payload in an encrypted
+ * storage volume.  The header is an area before the payload that is reserved
+ * for encryption metadata.
+ *
+ * Returns: true on success, false on error
+ */
+bool
+qcrypto_block_calculate_payload_offset(QCryptoBlockCreateOptions *create_opts,
+                                       const char *optprefix,
+                                       size_t *len,
+                                       Error **errp);
 
 
 /**
@@ -265,5 +287,9 @@ uint64_t qcrypto_block_get_sector_size(QCryptoBlock *block);
  * object
  */
 void qcrypto_block_free(QCryptoBlock *block);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(QCryptoBlock, qcrypto_block_free)
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(QCryptoBlockCreateOptions,
+                              qapi_free_QCryptoBlockCreateOptions)
 
 #endif /* QCRYPTO_BLOCK_H */

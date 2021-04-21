@@ -26,16 +26,19 @@
 
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "net/net.h"
 #include "net/checksum.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/dma.h"
 #include "qemu/iov.h"
+#include "qemu/module.h"
 #include "qemu/range.h"
 
 #include "e1000x_common.h"
+#include "trace.h"
 
 static const uint8_t bcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -119,14 +122,21 @@ typedef struct E1000State_st {
     bool mit_irq_level;        /* Tracks interrupt pin level. */
     uint32_t mit_ide;          /* Tracks E1000_TXD_CMD_IDE bit. */
 
+    QEMUTimer *flush_queue_timer;
+
 /* Compatibility flags for migration to/from qemu 1.3.0 and older */
 #define E1000_FLAG_AUTONEG_BIT 0
 #define E1000_FLAG_MIT_BIT 1
 #define E1000_FLAG_MAC_BIT 2
+#define E1000_FLAG_TSO_BIT 3
 #define E1000_FLAG_AUTONEG (1 << E1000_FLAG_AUTONEG_BIT)
 #define E1000_FLAG_MIT (1 << E1000_FLAG_MIT_BIT)
 #define E1000_FLAG_MAC (1 << E1000_FLAG_MAC_BIT)
+#define E1000_FLAG_TSO (1 << E1000_FLAG_TSO_BIT)
     uint32_t compat_flags;
+    bool received_tx_tso;
+    bool use_tso_for_migration;
+    e1000x_txd_props mig_props;
 } E1000State;
 
 #define chkflag(x)     (s->compat_flags & E1000_FLAG_##x)
@@ -360,6 +370,7 @@ static void e1000_reset(void *opaque)
 
     timer_del(d->autoneg_timer);
     timer_del(d->mit_timer);
+    timer_del(d->flush_queue_timer);
     d->mit_timer_on = 0;
     d->mit_irq_level = 0;
     d->mit_ide = 0;
@@ -386,6 +397,14 @@ set_ctrl(E1000State *s, int index, uint32_t val)
 }
 
 static void
+e1000_flush_queue_timer(void *opaque)
+{
+    E1000State *s = opaque;
+
+    qemu_flush_queued_packets(qemu_get_queue(s->nic));
+}
+
+static void
 set_rx_control(E1000State *s, int index, uint32_t val)
 {
     s->mac_reg[RCTL] = val;
@@ -393,7 +412,8 @@ set_rx_control(E1000State *s, int index, uint32_t val)
     s->rxbuf_min_shift = ((val / E1000_RCTL_RDMTS_QUAT) & 3) + 1;
     DBGOUT(RX, "RCTL: %d, mac_reg[RCTL] = 0x%x\n", s->mac_reg[RDT],
            s->mac_reg[RCTL]);
-    qemu_flush_queued_packets(qemu_get_queue(s->nic));
+    timer_mod(s->flush_queue_timer,
+              qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
 }
 
 static void
@@ -618,9 +638,11 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     if (dtype == E1000_TXD_CMD_DEXT) {    /* context descriptor */
         if (le32_to_cpu(xp->cmd_and_length) & E1000_TXD_CMD_TSE) {
             e1000x_read_tx_ctx_descr(xp, &tp->tso_props);
+            s->use_tso_for_migration = 1;
             tp->tso_frames = 0;
         } else {
             e1000x_read_tx_ctx_descr(xp, &tp->props);
+            s->use_tso_for_migration = 0;
         }
         return;
     } else if (dtype == (E1000_TXD_CMD_DEXT | E1000_TXD_DTYP_D)) {
@@ -823,13 +845,13 @@ static bool e1000_has_rxbufs(E1000State *s, size_t total_size)
     return total_size <= bufs * s->rxbuf_size;
 }
 
-static int
+static bool
 e1000_can_receive(NetClientState *nc)
 {
     E1000State *s = qemu_get_nic_opaque(nc);
 
     return e1000x_rx_ready(&s->parent_obj, s->mac_reg) &&
-        e1000_has_rxbufs(s, 1);
+        e1000_has_rxbufs(s, 1) && !timer_pending(s->flush_queue_timer);
 }
 
 static uint64_t rx_desc_base(E1000State *s)
@@ -838,6 +860,15 @@ static uint64_t rx_desc_base(E1000State *s)
     uint64_t bal = s->mac_reg[RDBAL] & ~0xf;
 
     return (bah << 32) + bal;
+}
+
+static void
+e1000_receiver_overrun(E1000State *s, size_t size)
+{
+    trace_e1000_receiver_overrun(size, s->mac_reg[RDH], s->mac_reg[RDT]);
+    e1000x_inc_reg_if_not_full(s->mac_reg, RNBC);
+    e1000x_inc_reg_if_not_full(s->mac_reg, MPC);
+    set_ics(s, 0, E1000_ICS_RXO);
 }
 
 static ssize_t
@@ -864,11 +895,14 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
         return -1;
     }
 
+    if (timer_pending(s->flush_queue_timer)) {
+        return 0;
+    }
+
     /* Pad to minimum Ethernet frame length */
     if (size < sizeof(min_buf)) {
         iov_to_buf(iov, iovcnt, 0, min_buf, size);
         memset(&min_buf[size], 0, sizeof(min_buf) - size);
-        e1000x_inc_reg_if_not_full(s->mac_reg, RUC);
         min_iov.iov_base = filter_buf = min_buf;
         min_iov.iov_len = size = sizeof(min_buf);
         iovcnt = 1;
@@ -909,8 +943,8 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
     desc_offset = 0;
     total_size = size + e1000x_fcs_len(s->mac_reg);
     if (!e1000_has_rxbufs(s, total_size)) {
-            set_ics(s, 0, E1000_ICS_RXO);
-            return -1;
+        e1000_receiver_overrun(s, total_size);
+        return -1;
     }
     do {
         desc_size = total_size - desc_offset;
@@ -962,7 +996,7 @@ e1000_receive_iov(NetClientState *nc, const struct iovec *iov, int iovcnt)
             rdh_start >= s->mac_reg[RDLEN] / sizeof(desc)) {
             DBGOUT(RXERR, "RDH wraparound @%x, RDT %x, RDLEN %x\n",
                    rdh_start, s->mac_reg[RDT], s->mac_reg[RDLEN]);
-            set_ics(s, 0, E1000_ICS_RXO);
+            e1000_receiver_overrun(s, total_size);
             return -1;
         }
     } while (desc_offset < total_size);
@@ -1116,7 +1150,8 @@ set_ims(E1000State *s, int index, uint32_t val)
 }
 
 #define getreg(x)    [x] = mac_readreg
-static uint32_t (*macreg_readops[])(E1000State *, int) = {
+typedef uint32_t (*readops)(E1000State *, int);
+static const readops macreg_readops[] = {
     getreg(PBA),      getreg(RCTL),     getreg(TDH),      getreg(TXDCTL),
     getreg(WUFC),     getreg(TDT),      getreg(CTRL),     getreg(LEDCTL),
     getreg(MANC),     getreg(MDIC),     getreg(SWSM),     getreg(STATUS),
@@ -1171,7 +1206,8 @@ static uint32_t (*macreg_readops[])(E1000State *, int) = {
 enum { NREADOPS = ARRAY_SIZE(macreg_readops) };
 
 #define putreg(x)    [x] = mac_writereg
-static void (*macreg_writeops[])(E1000State *, int, uint32_t) = {
+typedef void (*writeops)(E1000State *, int, uint32_t);
+static const writeops macreg_writeops[] = {
     putreg(PBA),      putreg(EERD),     putreg(SWSM),     putreg(WUFC),
     putreg(TDBAL),    putreg(TDBAH),    putreg(TXDCTL),   putreg(RDBAH),
     putreg(RDBAL),    putreg(LEDCTL),   putreg(VET),      putreg(FCRUC),
@@ -1347,11 +1383,6 @@ static int e1000_pre_save(void *opaque)
     E1000State *s = opaque;
     NetClientState *nc = qemu_get_queue(s->nic);
 
-    /* If the mitigation timer is active, emulate a timeout now. */
-    if (s->mit_timer_on) {
-        e1000_mit_timer(s);
-    }
-
     /*
      * If link is down and auto-negotiation is supported and ongoing,
      * complete auto-negotiation immediately. This allows us to look
@@ -1361,6 +1392,20 @@ static int e1000_pre_save(void *opaque)
         s->phy_reg[PHY_STATUS] |= MII_SR_AUTONEG_COMPLETE;
     }
 
+    /* Decide which set of props to migrate in the main structure */
+    if (chkflag(TSO) || !s->use_tso_for_migration) {
+        /* Either we're migrating with the extra subsection, in which
+         * case the mig_props is always 'props' OR
+         * we've not got the subsection, but 'props' was the last
+         * updated.
+         */
+        s->mig_props = s->tx.props;
+    } else {
+        /* We're not using the subsection, and 'tso_props' was
+         * the last updated.
+         */
+        s->mig_props = s->tx.tso_props;
+    }
     return 0;
 }
 
@@ -1375,7 +1420,8 @@ static int e1000_post_load(void *opaque, int version_id)
         s->mit_irq_level = false;
     }
     s->mit_ide = 0;
-    s->mit_timer_on = false;
+    s->mit_timer_on = true;
+    timer_mod(s->mit_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1);
 
     /* nc.link_down can't be migrated, so infer link_down according
      * to link status bit in mac_reg[STATUS].
@@ -1389,6 +1435,21 @@ static int e1000_post_load(void *opaque, int version_id)
                   qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 500);
     }
 
+    s->tx.props = s->mig_props;
+    if (!s->received_tx_tso) {
+        /* We received only one set of offload data (tx.props)
+         * and haven't got tx.tso_props.  The best we can do
+         * is dupe the data.
+         */
+        s->tx.tso_props = s->mig_props;
+    }
+    return 0;
+}
+
+static int e1000_tx_tso_post_load(void *opaque, int version_id)
+{
+    E1000State *s = opaque;
+    s->received_tx_tso = true;
     return 0;
 }
 
@@ -1404,6 +1465,13 @@ static bool e1000_full_mac_needed(void *opaque)
     E1000State *s = opaque;
 
     return chkflag(MAC);
+}
+
+static bool e1000_tso_state_needed(void *opaque)
+{
+    E1000State *s = opaque;
+
+    return chkflag(TSO);
 }
 
 static const VMStateDescription vmstate_e1000_mit_state = {
@@ -1432,9 +1500,31 @@ static const VMStateDescription vmstate_e1000_full_mac_state = {
     }
 };
 
+static const VMStateDescription vmstate_e1000_tx_tso_state = {
+    .name = "e1000/tx_tso_state",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = e1000_tso_state_needed,
+    .post_load = e1000_tx_tso_post_load,
+    .fields = (VMStateField[]) {
+        VMSTATE_UINT8(tx.tso_props.ipcss, E1000State),
+        VMSTATE_UINT8(tx.tso_props.ipcso, E1000State),
+        VMSTATE_UINT16(tx.tso_props.ipcse, E1000State),
+        VMSTATE_UINT8(tx.tso_props.tucss, E1000State),
+        VMSTATE_UINT8(tx.tso_props.tucso, E1000State),
+        VMSTATE_UINT16(tx.tso_props.tucse, E1000State),
+        VMSTATE_UINT32(tx.tso_props.paylen, E1000State),
+        VMSTATE_UINT8(tx.tso_props.hdr_len, E1000State),
+        VMSTATE_UINT16(tx.tso_props.mss, E1000State),
+        VMSTATE_INT8(tx.tso_props.ip, E1000State),
+        VMSTATE_INT8(tx.tso_props.tcp, E1000State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_e1000 = {
     .name = "e1000",
-    .version_id = 3,
+    .version_id = 2,
     .minimum_version_id = 1,
     .pre_save = e1000_pre_save,
     .post_load = e1000_post_load,
@@ -1449,20 +1539,20 @@ static const VMStateDescription vmstate_e1000 = {
         VMSTATE_UINT16(eecd_state.bitnum_out, E1000State),
         VMSTATE_UINT16(eecd_state.reading, E1000State),
         VMSTATE_UINT32(eecd_state.old_eecd, E1000State),
-        VMSTATE_UINT8(tx.props.ipcss, E1000State),
-        VMSTATE_UINT8(tx.props.ipcso, E1000State),
-        VMSTATE_UINT16(tx.props.ipcse, E1000State),
-        VMSTATE_UINT8(tx.props.tucss, E1000State),
-        VMSTATE_UINT8(tx.props.tucso, E1000State),
-        VMSTATE_UINT16(tx.props.tucse, E1000State),
-        VMSTATE_UINT32(tx.props.paylen, E1000State),
-        VMSTATE_UINT8(tx.props.hdr_len, E1000State),
-        VMSTATE_UINT16(tx.props.mss, E1000State),
+        VMSTATE_UINT8(mig_props.ipcss, E1000State),
+        VMSTATE_UINT8(mig_props.ipcso, E1000State),
+        VMSTATE_UINT16(mig_props.ipcse, E1000State),
+        VMSTATE_UINT8(mig_props.tucss, E1000State),
+        VMSTATE_UINT8(mig_props.tucso, E1000State),
+        VMSTATE_UINT16(mig_props.tucse, E1000State),
+        VMSTATE_UINT32(mig_props.paylen, E1000State),
+        VMSTATE_UINT8(mig_props.hdr_len, E1000State),
+        VMSTATE_UINT16(mig_props.mss, E1000State),
         VMSTATE_UINT16(tx.size, E1000State),
         VMSTATE_UINT16(tx.tso_frames, E1000State),
         VMSTATE_UINT8(tx.sum_needed, E1000State),
-        VMSTATE_INT8(tx.props.ip, E1000State),
-        VMSTATE_INT8(tx.props.tcp, E1000State),
+        VMSTATE_INT8(mig_props.ip, E1000State),
+        VMSTATE_INT8(mig_props.tcp, E1000State),
         VMSTATE_BUFFER(tx.header, E1000State),
         VMSTATE_BUFFER(tx.data, E1000State),
         VMSTATE_UINT16_ARRAY(eeprom_data, E1000State, 64),
@@ -1507,29 +1597,19 @@ static const VMStateDescription vmstate_e1000 = {
         VMSTATE_UINT32_SUB_ARRAY(mac_reg, E1000State, RA, 32),
         VMSTATE_UINT32_SUB_ARRAY(mac_reg, E1000State, MTA, 128),
         VMSTATE_UINT32_SUB_ARRAY(mac_reg, E1000State, VFTA, 128),
-        VMSTATE_UINT8_V(tx.tso_props.ipcss, E1000State, 3),
-        VMSTATE_UINT8_V(tx.tso_props.ipcso, E1000State, 3),
-        VMSTATE_UINT16_V(tx.tso_props.ipcse, E1000State, 3),
-        VMSTATE_UINT8_V(tx.tso_props.tucss, E1000State, 3),
-        VMSTATE_UINT8_V(tx.tso_props.tucso, E1000State, 3),
-        VMSTATE_UINT16_V(tx.tso_props.tucse, E1000State, 3),
-        VMSTATE_UINT32_V(tx.tso_props.paylen, E1000State, 3),
-        VMSTATE_UINT8_V(tx.tso_props.hdr_len, E1000State, 3),
-        VMSTATE_UINT16_V(tx.tso_props.mss, E1000State, 3),
-        VMSTATE_INT8_V(tx.tso_props.ip, E1000State, 3),
-        VMSTATE_INT8_V(tx.tso_props.tcp, E1000State, 3),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription*[]) {
         &vmstate_e1000_mit_state,
         &vmstate_e1000_full_mac_state,
+        &vmstate_e1000_tx_tso_state,
         NULL
     }
 };
 
 /*
  * EEPROM contents documented in Tables 5-2 and 5-3, pp. 98-102.
- * Note: A valid DevId will be inserted during pci_e1000_init().
+ * Note: A valid DevId will be inserted during pci_e1000_realize().
  */
 static const uint16_t e1000_eeprom_template[64] = {
     0x0000, 0x0000, 0x0000, 0x0000,      0xffff, 0x0000,      0x0000, 0x0000,
@@ -1571,6 +1651,8 @@ pci_e1000_uninit(PCIDevice *dev)
     timer_free(d->autoneg_timer);
     timer_del(d->mit_timer);
     timer_free(d->mit_timer);
+    timer_del(d->flush_queue_timer);
+    timer_free(d->flush_queue_timer);
     qemu_del_nic(d->nic);
 }
 
@@ -1634,6 +1716,8 @@ static void pci_e1000_realize(PCIDevice *pci_dev, Error **errp)
 
     d->autoneg_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, e1000_autoneg_timer, d);
     d->mit_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, e1000_mit_timer, d);
+    d->flush_queue_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                        e1000_flush_queue_timer, d);
 }
 
 static void qdev_e1000_reset(DeviceState *dev)
@@ -1650,6 +1734,8 @@ static Property e1000_properties[] = {
                     compat_flags, E1000_FLAG_MIT_BIT, true),
     DEFINE_PROP_BIT("extra_mac_registers", E1000State,
                     compat_flags, E1000_FLAG_MAC_BIT, true),
+    DEFINE_PROP_BIT("migrate_tso_props", E1000State,
+                    compat_flags, E1000_FLAG_TSO_BIT, true),
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -1679,7 +1765,7 @@ static void e1000_class_init(ObjectClass *klass, void *data)
     dc->desc = "Intel Gigabit Ethernet";
     dc->reset = qdev_e1000_reset;
     dc->vmsd = &vmstate_e1000;
-    dc->props = e1000_properties;
+    device_class_set_props(dc, e1000_properties);
 }
 
 static void e1000_instance_init(Object *obj)

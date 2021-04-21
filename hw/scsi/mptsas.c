@@ -23,17 +23,20 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/dma.h"
-#include "sysemu/block-backend.h"
 #include "hw/pci/msi.h"
 #include "qemu/iov.h"
+#include "qemu/main-loop.h"
+#include "qemu/module.h"
 #include "hw/scsi/scsi.h"
 #include "scsi/constants.h"
 #include "trace.h"
 #include "qapi/error.h"
 #include "mptsas.h"
+#include "migration/qemu-file-types.h"
+#include "migration/vmstate.h"
 #include "mpi.h"
 
 #define NAA_LOCALLY_ASSIGNED_ID 0x3ULL
@@ -541,7 +544,7 @@ reply_maybe_async:
         break;
 
     case MPI_SCSITASKMGMT_TASKTYPE_RESET_BUS:
-        qbus_reset_all(&s->bus.qbus);
+        qbus_reset_all(BUS(&s->bus));
         break;
 
     default:
@@ -804,7 +807,7 @@ static void mptsas_soft_reset(MPTSASState *s)
     s->intr_mask = MPI_HIM_DIM | MPI_HIM_RIM;
     mptsas_update_interrupt(s);
 
-    qbus_reset_all(&s->bus.qbus);
+    qbus_reset_all(BUS(&s->bus));
     s->intr_status = 0;
     s->intr_mask = save_mask;
 
@@ -1428,10 +1431,11 @@ static void mptsas1068_class_init(ObjectClass *oc, void *data)
     pc->subsystem_vendor_id = PCI_VENDOR_ID_LSI_LOGIC;
     pc->subsystem_id = 0x8000;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
-    dc->props = mptsas_properties;
+    device_class_set_props(dc, mptsas_properties);
     dc->reset = mptsas_reset;
     dc->vmsd = &vmstate_mptsas;
     dc->desc = "LSI SAS 1068";
+    set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
 static const TypeInfo mptsas_info = {

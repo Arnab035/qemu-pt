@@ -41,6 +41,8 @@
 #endif
 
 #include "qemu/atomic.h"
+#include "qemu/osdep.h"
+#include "qemu/memfd.h"
 
 #include "libvhost-user.h"
 
@@ -52,6 +54,18 @@
             (void) (&_min1 == &_min2);          \
             _min1 < _min2 ? _min1 : _min2; })
 #endif
+
+/* Round number down to multiple */
+#define ALIGN_DOWN(n, m) ((n) / (m) * (m))
+
+/* Round number up to multiple */
+#define ALIGN_UP(n, m) ALIGN_DOWN((n) + (m) - 1, (m))
+
+/* Align each region to cache line size in inflight buffer */
+#define INFLIGHT_ALIGNMENT 64
+
+/* The version of inflight buffer */
+#define INFLIGHT_VERSION 1
 
 #define VHOST_USER_HDR_SIZE offsetof(VhostUserMsg, payload.u64)
 
@@ -65,6 +79,25 @@
             fprintf(stderr, __VA_ARGS__);        \
         }                                       \
     } while (0)
+
+static inline
+bool has_feature(uint64_t features, unsigned int fbit)
+{
+    assert(fbit < 64);
+    return !!(features & (1ULL << fbit));
+}
+
+static inline
+bool vu_has_feature(VuDev *dev,
+                    unsigned int fbit)
+{
+    return has_feature(dev->features, fbit);
+}
+
+static inline bool vu_has_protocol_feature(VuDev *dev, unsigned int fbit)
+{
+    return has_feature(dev->protocol_features, fbit);
+}
 
 static const char *
 vu_request_to_string(unsigned int req)
@@ -100,6 +133,10 @@ vu_request_to_string(unsigned int req)
         REQ(VHOST_USER_POSTCOPY_ADVISE),
         REQ(VHOST_USER_POSTCOPY_LISTEN),
         REQ(VHOST_USER_POSTCOPY_END),
+        REQ(VHOST_USER_GET_INFLIGHT_FD),
+        REQ(VHOST_USER_SET_INFLIGHT_FD),
+        REQ(VHOST_USER_GPU_SET_SOCKET),
+        REQ(VHOST_USER_VRING_KICK),
         REQ(VHOST_USER_MAX),
     };
 #undef REQ
@@ -127,7 +164,10 @@ vu_panic(VuDev *dev, const char *msg, ...)
     dev->panic(dev, buf);
     free(buf);
 
-    /* FIXME: find a way to call virtio_error? */
+    /*
+     * FIXME:
+     * find a way to call virtio_error, or perhaps close the connection?
+     */
 }
 
 /* Translate guest physical address to our virtual address.  */
@@ -183,6 +223,15 @@ vmsg_close_fds(VhostUserMsg *vmsg)
     for (i = 0; i < vmsg->fd_num; i++) {
         close(vmsg->fds[i]);
     }
+}
+
+/* Set reply payload.u64 and clear request flags and fd_num */
+static void vmsg_set_reply_u64(VhostUserMsg *vmsg, uint64_t val)
+{
+    vmsg->flags = 0; /* defaults will be set by vu_send_reply() */
+    vmsg->size = sizeof(vmsg->payload.u64);
+    vmsg->payload.u64 = val;
+    vmsg->fd_num = 0;
 }
 
 /* A test to see if we have userfault available */
@@ -314,22 +363,19 @@ vu_message_write(VuDev *dev, int conn_fd, VhostUserMsg *vmsg)
         msg.msg_controllen = 0;
     }
 
-    /* Set the version in the flags when sending the reply */
-    vmsg->flags &= ~VHOST_USER_VERSION_MASK;
-    vmsg->flags |= VHOST_USER_VERSION;
-    vmsg->flags |= VHOST_USER_REPLY_MASK;
-
     do {
         rc = sendmsg(conn_fd, &msg, 0);
     } while (rc < 0 && (errno == EINTR || errno == EAGAIN));
 
-    do {
-        if (vmsg->data) {
-            rc = write(conn_fd, vmsg->data, vmsg->size);
-        } else {
-            rc = write(conn_fd, p + VHOST_USER_HDR_SIZE, vmsg->size);
-        }
-    } while (rc < 0 && (errno == EINTR || errno == EAGAIN));
+    if (vmsg->size) {
+        do {
+            if (vmsg->data) {
+                rc = write(conn_fd, vmsg->data, vmsg->size);
+            } else {
+                rc = write(conn_fd, p + VHOST_USER_HDR_SIZE, vmsg->size);
+            }
+        } while (rc < 0 && (errno == EINTR || errno == EAGAIN));
+    }
 
     if (rc <= 0) {
         vu_panic(dev, "Error while writing: %s", strerror(errno));
@@ -337,6 +383,50 @@ vu_message_write(VuDev *dev, int conn_fd, VhostUserMsg *vmsg)
     }
 
     return true;
+}
+
+static bool
+vu_send_reply(VuDev *dev, int conn_fd, VhostUserMsg *vmsg)
+{
+    /* Set the version in the flags when sending the reply */
+    vmsg->flags &= ~VHOST_USER_VERSION_MASK;
+    vmsg->flags |= VHOST_USER_VERSION;
+    vmsg->flags |= VHOST_USER_REPLY_MASK;
+
+    return vu_message_write(dev, conn_fd, vmsg);
+}
+
+/*
+ * Processes a reply on the slave channel.
+ * Entered with slave_mutex held and releases it before exit.
+ * Returns true on success.
+ */
+static bool
+vu_process_message_reply(VuDev *dev, const VhostUserMsg *vmsg)
+{
+    VhostUserMsg msg_reply;
+    bool result = false;
+
+    if ((vmsg->flags & VHOST_USER_NEED_REPLY_MASK) == 0) {
+        result = true;
+        goto out;
+    }
+
+    if (!vu_message_read(dev, dev->slave_fd, &msg_reply)) {
+        goto out;
+    }
+
+    if (msg_reply.request != vmsg->request) {
+        DPRINT("Received unexpected msg type. Expected %d received %d",
+               vmsg->request, msg_reply.request);
+        goto out;
+    }
+
+    result = msg_reply.payload.u64 == 0;
+
+out:
+    pthread_mutex_unlock(&dev->slave_mutex);
+    return result;
 }
 
 /* Kick the log_call_fd if required. */
@@ -373,7 +463,7 @@ vu_log_write(VuDev *dev, uint64_t address, uint64_t length)
     page = address / VHOST_LOG_PAGE;
     while (page * VHOST_LOG_PAGE < address + length) {
         vu_log_page(dev->log_table, page);
-        page += VHOST_LOG_PAGE;
+        page += 1;
     }
 
     vu_log_kick(dev);
@@ -423,9 +513,9 @@ vu_get_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 static void
 vu_set_enable_all_rings(VuDev *dev, bool enabled)
 {
-    int i;
+    uint16_t i;
 
-    for (i = 0; i < VHOST_MAX_NR_VIRTQUEUE; i++) {
+    for (i = 0; i < dev->max_queues; i++) {
         dev->vq[i].enable = enabled;
     }
 }
@@ -479,10 +569,25 @@ vu_reset_device_exec(VuDev *dev, VhostUserMsg *vmsg)
 }
 
 static bool
+map_ring(VuDev *dev, VuVirtq *vq)
+{
+    vq->vring.desc = qva_to_va(dev, vq->vra.desc_user_addr);
+    vq->vring.used = qva_to_va(dev, vq->vra.used_user_addr);
+    vq->vring.avail = qva_to_va(dev, vq->vra.avail_user_addr);
+
+    DPRINT("Setting virtq addresses:\n");
+    DPRINT("    vring_desc  at %p\n", vq->vring.desc);
+    DPRINT("    vring_used  at %p\n", vq->vring.used);
+    DPRINT("    vring_avail at %p\n", vq->vring.avail);
+
+    return !(vq->vring.desc && vq->vring.used && vq->vring.avail);
+}
+
+static bool
 vu_set_mem_table_exec_postcopy(VuDev *dev, VhostUserMsg *vmsg)
 {
     int i;
-    VhostUserMemory *memory = &vmsg->payload.memory;
+    VhostUserMemory m = vmsg->payload.memory, *memory = &m;
     dev->nregions = memory->nregions;
 
     DPRINT("Nregions: %d\n", memory->nregions);
@@ -534,7 +639,7 @@ vu_set_mem_table_exec_postcopy(VuDev *dev, VhostUserMsg *vmsg)
 
     /* Send the message back to qemu with the addresses filled in */
     vmsg->fd_num = 0;
-    if (!vu_message_write(dev, dev->sock, vmsg)) {
+    if (!vu_send_reply(dev, dev->sock, vmsg)) {
         vu_panic(dev, "failed to respond to set-mem-table for postcopy");
         return false;
     }
@@ -561,7 +666,7 @@ vu_set_mem_table_exec_postcopy(VuDev *dev, VhostUserMsg *vmsg)
          * data that's already arrived in the shared process.
          * TODO: How to do hugepage
          */
-        ret = madvise((void *)dev_region->mmap_addr,
+        ret = madvise((void *)(uintptr_t)dev_region->mmap_addr,
                       dev_region->size + dev_region->mmap_offset,
                       MADV_DONTNEED);
         if (ret) {
@@ -573,7 +678,7 @@ vu_set_mem_table_exec_postcopy(VuDev *dev, VhostUserMsg *vmsg)
          * in neighbouring pages.
          * TODO: Turn this backon later.
          */
-        ret = madvise((void *)dev_region->mmap_addr,
+        ret = madvise((void *)(uintptr_t)dev_region->mmap_addr,
                       dev_region->size + dev_region->mmap_offset,
                       MADV_NOHUGEPAGE);
         if (ret) {
@@ -603,10 +708,12 @@ vu_set_mem_table_exec_postcopy(VuDev *dev, VhostUserMsg *vmsg)
                      __func__, i);
             return false;
         }
-        DPRINT("%s: region %d: Registered userfault for %llx + %llx\n",
-                __func__, i, reg_struct.range.start, reg_struct.range.len);
+        DPRINT("%s: region %d: Registered userfault for %"
+               PRIx64 " + %" PRIx64 "\n", __func__, i,
+               (uint64_t)reg_struct.range.start,
+               (uint64_t)reg_struct.range.len);
         /* Now it's registered we can let the client at it */
-        if (mprotect((void *)dev_region->mmap_addr,
+        if (mprotect((void *)(uintptr_t)dev_region->mmap_addr,
                      dev_region->size + dev_region->mmap_offset,
                      PROT_READ | PROT_WRITE)) {
             vu_panic(dev, "failed to mprotect region %d for postcopy (%s)",
@@ -624,7 +731,7 @@ static bool
 vu_set_mem_table_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
     int i;
-    VhostUserMemory *memory = &vmsg->payload.memory;
+    VhostUserMemory m = vmsg->payload.memory, *memory = &m;
 
     for (i = 0; i < dev->nregions; i++) {
         VuDevRegion *r = &dev->regions[i];
@@ -677,6 +784,14 @@ vu_set_mem_table_exec(VuDev *dev, VhostUserMsg *vmsg)
         }
 
         close(vmsg->fds[i]);
+    }
+
+    for (i = 0; i < dev->max_queues; i++) {
+        if (dev->vq[i].vring.desc) {
+            if (map_ring(dev, &dev->vq[i])) {
+                vu_panic(dev, "remaping queue %d during setmemtable", i);
+            }
+        }
     }
 
     return false;
@@ -753,30 +868,24 @@ vu_set_vring_num_exec(VuDev *dev, VhostUserMsg *vmsg)
 static bool
 vu_set_vring_addr_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
-    struct vhost_vring_addr *vra = &vmsg->payload.addr;
+    struct vhost_vring_addr addr = vmsg->payload.addr, *vra = &addr;
     unsigned int index = vra->index;
     VuVirtq *vq = &dev->vq[index];
 
     DPRINT("vhost_vring_addr:\n");
     DPRINT("    index:  %d\n", vra->index);
     DPRINT("    flags:  %d\n", vra->flags);
-    DPRINT("    desc_user_addr:   0x%016llx\n", vra->desc_user_addr);
-    DPRINT("    used_user_addr:   0x%016llx\n", vra->used_user_addr);
-    DPRINT("    avail_user_addr:  0x%016llx\n", vra->avail_user_addr);
-    DPRINT("    log_guest_addr:   0x%016llx\n", vra->log_guest_addr);
+    DPRINT("    desc_user_addr:   0x%016" PRIx64 "\n", vra->desc_user_addr);
+    DPRINT("    used_user_addr:   0x%016" PRIx64 "\n", vra->used_user_addr);
+    DPRINT("    avail_user_addr:  0x%016" PRIx64 "\n", vra->avail_user_addr);
+    DPRINT("    log_guest_addr:   0x%016" PRIx64 "\n", vra->log_guest_addr);
 
+    vq->vra = *vra;
     vq->vring.flags = vra->flags;
-    vq->vring.desc = qva_to_va(dev, vra->desc_user_addr);
-    vq->vring.used = qva_to_va(dev, vra->used_user_addr);
-    vq->vring.avail = qva_to_va(dev, vra->avail_user_addr);
     vq->vring.log_guest_addr = vra->log_guest_addr;
 
-    DPRINT("Setting virtq addresses:\n");
-    DPRINT("    vring_desc  at %p\n", vq->vring.desc);
-    DPRINT("    vring_used  at %p\n", vq->vring.used);
-    DPRINT("    vring_avail at %p\n", vq->vring.avail);
 
-    if (!(vq->vring.desc && vq->vring.used && vq->vring.avail)) {
+    if (map_ring(dev, vq)) {
         vu_panic(dev, "Invalid vring_addr message");
         return false;
     }
@@ -843,15 +952,20 @@ static bool
 vu_check_queue_msg_file(VuDev *dev, VhostUserMsg *vmsg)
 {
     int index = vmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+    bool nofd = vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK;
 
-    if (index >= VHOST_MAX_NR_VIRTQUEUE) {
+    if (index >= dev->max_queues) {
         vmsg_close_fds(vmsg);
         vu_panic(dev, "Invalid queue index: %u", index);
         return false;
     }
 
-    if (vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK ||
-        vmsg->fd_num != 1) {
+    if (nofd) {
+        vmsg_close_fds(vmsg);
+        return true;
+    }
+
+    if (vmsg->fd_num != 1) {
         vmsg_close_fds(vmsg);
         vu_panic(dev, "Invalid fds in request: %d", vmsg->request);
         return false;
@@ -860,10 +974,95 @@ vu_check_queue_msg_file(VuDev *dev, VhostUserMsg *vmsg)
     return true;
 }
 
+static int
+inflight_desc_compare(const void *a, const void *b)
+{
+    VuVirtqInflightDesc *desc0 = (VuVirtqInflightDesc *)a,
+                        *desc1 = (VuVirtqInflightDesc *)b;
+
+    if (desc1->counter > desc0->counter &&
+        (desc1->counter - desc0->counter) < VIRTQUEUE_MAX_SIZE * 2) {
+        return 1;
+    }
+
+    return -1;
+}
+
+static int
+vu_check_queue_inflights(VuDev *dev, VuVirtq *vq)
+{
+    int i = 0;
+
+    if (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD)) {
+        return 0;
+    }
+
+    if (unlikely(!vq->inflight)) {
+        return -1;
+    }
+
+    if (unlikely(!vq->inflight->version)) {
+        /* initialize the buffer */
+        vq->inflight->version = INFLIGHT_VERSION;
+        return 0;
+    }
+
+    vq->used_idx = vq->vring.used->idx;
+    vq->resubmit_num = 0;
+    vq->resubmit_list = NULL;
+    vq->counter = 0;
+
+    if (unlikely(vq->inflight->used_idx != vq->used_idx)) {
+        vq->inflight->desc[vq->inflight->last_batch_head].inflight = 0;
+
+        barrier();
+
+        vq->inflight->used_idx = vq->used_idx;
+    }
+
+    for (i = 0; i < vq->inflight->desc_num; i++) {
+        if (vq->inflight->desc[i].inflight == 1) {
+            vq->inuse++;
+        }
+    }
+
+    vq->shadow_avail_idx = vq->last_avail_idx = vq->inuse + vq->used_idx;
+
+    if (vq->inuse) {
+        vq->resubmit_list = calloc(vq->inuse, sizeof(VuVirtqInflightDesc));
+        if (!vq->resubmit_list) {
+            return -1;
+        }
+
+        for (i = 0; i < vq->inflight->desc_num; i++) {
+            if (vq->inflight->desc[i].inflight) {
+                vq->resubmit_list[vq->resubmit_num].index = i;
+                vq->resubmit_list[vq->resubmit_num].counter =
+                                        vq->inflight->desc[i].counter;
+                vq->resubmit_num++;
+            }
+        }
+
+        if (vq->resubmit_num > 1) {
+            qsort(vq->resubmit_list, vq->resubmit_num,
+                  sizeof(VuVirtqInflightDesc), inflight_desc_compare);
+        }
+        vq->counter = vq->resubmit_list[0].counter + 1;
+    }
+
+    /* in case of I/O hang after reconnecting */
+    if (eventfd_write(vq->kick_fd, 1)) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static bool
 vu_set_vring_kick_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
     int index = vmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+    bool nofd = vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK;
 
     DPRINT("u64: 0x%016"PRIx64"\n", vmsg->payload.u64);
 
@@ -877,10 +1076,8 @@ vu_set_vring_kick_exec(VuDev *dev, VhostUserMsg *vmsg)
         dev->vq[index].kick_fd = -1;
     }
 
-    if (!(vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK)) {
-        dev->vq[index].kick_fd = vmsg->fds[0];
-        DPRINT("Got kick_fd: %d for vq: %d\n", vmsg->fds[0], index);
-    }
+    dev->vq[index].kick_fd = nofd ? -1 : vmsg->fds[0];
+    DPRINT("Got kick_fd: %d for vq: %d\n", dev->vq[index].kick_fd, index);
 
     dev->vq[index].started = true;
     if (dev->iface->queue_set_started) {
@@ -893,6 +1090,10 @@ vu_set_vring_kick_exec(VuDev *dev, VhostUserMsg *vmsg)
 
         DPRINT("Waiting for kicks on fd: %d for vq: %d\n",
                dev->vq[index].kick_fd, index);
+    }
+
+    if (vu_check_queue_inflights(dev, &dev->vq[index])) {
+        vu_panic(dev, "Failed to check inflights for vq: %d\n", index);
     }
 
     return false;
@@ -914,10 +1115,49 @@ void vu_set_queue_handler(VuDev *dev, VuVirtq *vq,
     }
 }
 
+bool vu_set_queue_host_notifier(VuDev *dev, VuVirtq *vq, int fd,
+                                int size, int offset)
+{
+    int qidx = vq - dev->vq;
+    int fd_num = 0;
+    VhostUserMsg vmsg = {
+        .request = VHOST_USER_SLAVE_VRING_HOST_NOTIFIER_MSG,
+        .flags = VHOST_USER_VERSION | VHOST_USER_NEED_REPLY_MASK,
+        .size = sizeof(vmsg.payload.area),
+        .payload.area = {
+            .u64 = qidx & VHOST_USER_VRING_IDX_MASK,
+            .size = size,
+            .offset = offset,
+        },
+    };
+
+    if (fd == -1) {
+        vmsg.payload.area.u64 |= VHOST_USER_VRING_NOFD_MASK;
+    } else {
+        vmsg.fds[fd_num++] = fd;
+    }
+
+    vmsg.fd_num = fd_num;
+
+    if (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD)) {
+        return false;
+    }
+
+    pthread_mutex_lock(&dev->slave_mutex);
+    if (!vu_message_write(dev, dev->slave_fd, &vmsg)) {
+        pthread_mutex_unlock(&dev->slave_mutex);
+        return false;
+    }
+
+    /* Also unlocks the slave_mutex */
+    return vu_process_message_reply(dev, &vmsg);
+}
+
 static bool
 vu_set_vring_call_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
     int index = vmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+    bool nofd = vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK;
 
     DPRINT("u64: 0x%016"PRIx64"\n", vmsg->payload.u64);
 
@@ -930,11 +1170,14 @@ vu_set_vring_call_exec(VuDev *dev, VhostUserMsg *vmsg)
         dev->vq[index].call_fd = -1;
     }
 
-    if (!(vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK)) {
-        dev->vq[index].call_fd = vmsg->fds[0];
+    dev->vq[index].call_fd = nofd ? -1 : vmsg->fds[0];
+
+    /* in case of I/O hang after reconnecting */
+    if (dev->vq[index].call_fd != -1 && eventfd_write(vmsg->fds[0], 1)) {
+        return -1;
     }
 
-    DPRINT("Got call_fd: %d for vq: %d\n", vmsg->fds[0], index);
+    DPRINT("Got call_fd: %d for vq: %d\n", dev->vq[index].call_fd, index);
 
     return false;
 }
@@ -943,6 +1186,7 @@ static bool
 vu_set_vring_err_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
     int index = vmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
+    bool nofd = vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK;
 
     DPRINT("u64: 0x%016"PRIx64"\n", vmsg->payload.u64);
 
@@ -955,9 +1199,7 @@ vu_set_vring_err_exec(VuDev *dev, VhostUserMsg *vmsg)
         dev->vq[index].err_fd = -1;
     }
 
-    if (!(vmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK)) {
-        dev->vq[index].err_fd = vmsg->fds[0];
-    }
+    dev->vq[index].err_fd = nofd ? -1 : vmsg->fds[0];
 
     return false;
 }
@@ -965,21 +1207,34 @@ vu_set_vring_err_exec(VuDev *dev, VhostUserMsg *vmsg)
 static bool
 vu_get_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
-    uint64_t features = 1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD |
-                        1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ;
+    /*
+     * Note that we support, but intentionally do not set,
+     * VHOST_USER_PROTOCOL_F_INBAND_NOTIFICATIONS. This means that
+     * a device implementation can return it in its callback
+     * (get_protocol_features) if it wants to use this for
+     * simulation, but it is otherwise not desirable (if even
+     * implemented by the master.)
+     */
+    uint64_t features = 1ULL << VHOST_USER_PROTOCOL_F_MQ |
+                        1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD |
+                        1ULL << VHOST_USER_PROTOCOL_F_SLAVE_REQ |
+                        1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER |
+                        1ULL << VHOST_USER_PROTOCOL_F_SLAVE_SEND_FD |
+                        1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK;
 
     if (have_userfault()) {
         features |= 1ULL << VHOST_USER_PROTOCOL_F_PAGEFAULT;
+    }
+
+    if (dev->iface->get_config && dev->iface->set_config) {
+        features |= 1ULL << VHOST_USER_PROTOCOL_F_CONFIG;
     }
 
     if (dev->iface->get_protocol_features) {
         features |= dev->iface->get_protocol_features(dev);
     }
 
-    vmsg->payload.u64 = features;
-    vmsg->size = sizeof(vmsg->payload.u64);
-    vmsg->fd_num = 0;
-
+    vmsg_set_reply_u64(vmsg, features);
     return true;
 }
 
@@ -992,6 +1247,25 @@ vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 
     dev->protocol_features = vmsg->payload.u64;
 
+    if (vu_has_protocol_feature(dev,
+                                VHOST_USER_PROTOCOL_F_INBAND_NOTIFICATIONS) &&
+        (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_SLAVE_REQ) ||
+         !vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_REPLY_ACK))) {
+        /*
+         * The use case for using messages for kick/call is simulation, to make
+         * the kick and call synchronous. To actually get that behaviour, both
+         * of the other features are required.
+         * Theoretically, one could use only kick messages, or do them without
+         * having F_REPLY_ACK, but too many (possibly pending) messages on the
+         * socket will eventually cause the master to hang, to avoid this in
+         * scenarios where not desired enforce that the settings are in a way
+         * that actually enables the simulation case.
+         */
+        vu_panic(dev,
+                 "F_IN_BAND_NOTIFICATIONS requires F_SLAVE_REQ && F_REPLY_ACK");
+        return false;
+    }
+
     if (dev->iface->set_protocol_features) {
         dev->iface->set_protocol_features(dev, features);
     }
@@ -1002,8 +1276,8 @@ vu_set_protocol_features_exec(VuDev *dev, VhostUserMsg *vmsg)
 static bool
 vu_get_queue_num_exec(VuDev *dev, VhostUserMsg *vmsg)
 {
-    DPRINT("Function %s() not implemented yet.\n", __func__);
-    return false;
+    vmsg_set_reply_u64(vmsg, dev->max_queues);
+    return true;
 }
 
 static bool
@@ -1015,7 +1289,7 @@ vu_set_vring_enable_exec(VuDev *dev, VhostUserMsg *vmsg)
     DPRINT("State.index: %d\n", index);
     DPRINT("State.enable:   %d\n", enable);
 
-    if (index >= VHOST_MAX_NR_VIRTQUEUE) {
+    if (index >= dev->max_queues) {
         vu_panic(dev, "Invalid vring_enable index: %u", index);
         return false;
     }
@@ -1115,17 +1389,14 @@ out:
 static bool
 vu_set_postcopy_listen(VuDev *dev, VhostUserMsg *vmsg)
 {
-    vmsg->payload.u64 = -1;
-    vmsg->size = sizeof(vmsg->payload.u64);
-
     if (dev->nregions) {
         vu_panic(dev, "Regions already registered at postcopy-listen");
+        vmsg_set_reply_u64(vmsg, -1);
         return true;
     }
     dev->postcopy_listening = true;
 
-    vmsg->flags = VHOST_USER_VERSION |  VHOST_USER_REPLY_MASK;
-    vmsg->payload.u64 = 0; /* Success */
+    vmsg_set_reply_u64(vmsg, 0);
     return true;
 }
 
@@ -1140,12 +1411,147 @@ vu_set_postcopy_end(VuDev *dev, VhostUserMsg *vmsg)
         DPRINT("%s: Done close\n", __func__);
     }
 
-    vmsg->fd_num = 0;
-    vmsg->payload.u64 = 0;
-    vmsg->size = sizeof(vmsg->payload.u64);
-    vmsg->flags = VHOST_USER_VERSION |  VHOST_USER_REPLY_MASK;
+    vmsg_set_reply_u64(vmsg, 0);
     DPRINT("%s: exit\n", __func__);
     return true;
+}
+
+static inline uint64_t
+vu_inflight_queue_size(uint16_t queue_size)
+{
+    return ALIGN_UP(sizeof(VuDescStateSplit) * queue_size +
+           sizeof(uint16_t), INFLIGHT_ALIGNMENT);
+}
+
+static bool
+vu_get_inflight_fd(VuDev *dev, VhostUserMsg *vmsg)
+{
+    int fd;
+    void *addr;
+    uint64_t mmap_size;
+    uint16_t num_queues, queue_size;
+
+    if (vmsg->size != sizeof(vmsg->payload.inflight)) {
+        vu_panic(dev, "Invalid get_inflight_fd message:%d", vmsg->size);
+        vmsg->payload.inflight.mmap_size = 0;
+        return true;
+    }
+
+    num_queues = vmsg->payload.inflight.num_queues;
+    queue_size = vmsg->payload.inflight.queue_size;
+
+    DPRINT("set_inflight_fd num_queues: %"PRId16"\n", num_queues);
+    DPRINT("set_inflight_fd queue_size: %"PRId16"\n", queue_size);
+
+    mmap_size = vu_inflight_queue_size(queue_size) * num_queues;
+
+    addr = qemu_memfd_alloc("vhost-inflight", mmap_size,
+                            F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL,
+                            &fd, NULL);
+
+    if (!addr) {
+        vu_panic(dev, "Failed to alloc vhost inflight area");
+        vmsg->payload.inflight.mmap_size = 0;
+        return true;
+    }
+
+    memset(addr, 0, mmap_size);
+
+    dev->inflight_info.addr = addr;
+    dev->inflight_info.size = vmsg->payload.inflight.mmap_size = mmap_size;
+    dev->inflight_info.fd = vmsg->fds[0] = fd;
+    vmsg->fd_num = 1;
+    vmsg->payload.inflight.mmap_offset = 0;
+
+    DPRINT("send inflight mmap_size: %"PRId64"\n",
+           vmsg->payload.inflight.mmap_size);
+    DPRINT("send inflight mmap offset: %"PRId64"\n",
+           vmsg->payload.inflight.mmap_offset);
+
+    return true;
+}
+
+static bool
+vu_set_inflight_fd(VuDev *dev, VhostUserMsg *vmsg)
+{
+    int fd, i;
+    uint64_t mmap_size, mmap_offset;
+    uint16_t num_queues, queue_size;
+    void *rc;
+
+    if (vmsg->fd_num != 1 ||
+        vmsg->size != sizeof(vmsg->payload.inflight)) {
+        vu_panic(dev, "Invalid set_inflight_fd message size:%d fds:%d",
+                 vmsg->size, vmsg->fd_num);
+        return false;
+    }
+
+    fd = vmsg->fds[0];
+    mmap_size = vmsg->payload.inflight.mmap_size;
+    mmap_offset = vmsg->payload.inflight.mmap_offset;
+    num_queues = vmsg->payload.inflight.num_queues;
+    queue_size = vmsg->payload.inflight.queue_size;
+
+    DPRINT("set_inflight_fd mmap_size: %"PRId64"\n", mmap_size);
+    DPRINT("set_inflight_fd mmap_offset: %"PRId64"\n", mmap_offset);
+    DPRINT("set_inflight_fd num_queues: %"PRId16"\n", num_queues);
+    DPRINT("set_inflight_fd queue_size: %"PRId16"\n", queue_size);
+
+    rc = mmap(0, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
+              fd, mmap_offset);
+
+    if (rc == MAP_FAILED) {
+        vu_panic(dev, "set_inflight_fd mmap error: %s", strerror(errno));
+        return false;
+    }
+
+    if (dev->inflight_info.fd) {
+        close(dev->inflight_info.fd);
+    }
+
+    if (dev->inflight_info.addr) {
+        munmap(dev->inflight_info.addr, dev->inflight_info.size);
+    }
+
+    dev->inflight_info.fd = fd;
+    dev->inflight_info.addr = rc;
+    dev->inflight_info.size = mmap_size;
+
+    for (i = 0; i < num_queues; i++) {
+        dev->vq[i].inflight = (VuVirtqInflight *)rc;
+        dev->vq[i].inflight->desc_num = queue_size;
+        rc = (void *)((char *)rc + vu_inflight_queue_size(queue_size));
+    }
+
+    return false;
+}
+
+static bool
+vu_handle_vring_kick(VuDev *dev, VhostUserMsg *vmsg)
+{
+    unsigned int index = vmsg->payload.state.index;
+
+    if (index >= dev->max_queues) {
+        vu_panic(dev, "Invalid queue index: %u", index);
+        return false;
+    }
+
+    DPRINT("Got kick message: handler:%p idx:%d\n",
+           dev->vq[index].handler, index);
+
+    if (!dev->vq[index].started) {
+        dev->vq[index].started = true;
+
+        if (dev->iface->queue_set_started) {
+            dev->iface->queue_set_started(dev, index, true);
+        }
+    }
+
+    if (dev->vq[index].handler) {
+        dev->vq[index].handler(dev, index);
+    }
+
+    return false;
 }
 
 static bool
@@ -1218,13 +1624,20 @@ vu_process_message(VuDev *dev, VhostUserMsg *vmsg)
     case VHOST_USER_SET_CONFIG:
         return vu_set_config(dev, vmsg);
     case VHOST_USER_NONE:
-        break;
+        /* if you need processing before exit, override iface->process_msg */
+        exit(0);
     case VHOST_USER_POSTCOPY_ADVISE:
         return vu_set_postcopy_advise(dev, vmsg);
     case VHOST_USER_POSTCOPY_LISTEN:
         return vu_set_postcopy_listen(dev, vmsg);
     case VHOST_USER_POSTCOPY_END:
         return vu_set_postcopy_end(dev, vmsg);
+    case VHOST_USER_GET_INFLIGHT_FD:
+        return vu_get_inflight_fd(dev, vmsg);
+    case VHOST_USER_SET_INFLIGHT_FD:
+        return vu_set_inflight_fd(dev, vmsg);
+    case VHOST_USER_VRING_KICK:
+        return vu_handle_vring_kick(dev, vmsg);
     default:
         vmsg_close_fds(vmsg);
         vu_panic(dev, "Unhandled request: %d", vmsg->request);
@@ -1238,19 +1651,26 @@ vu_dispatch(VuDev *dev)
 {
     VhostUserMsg vmsg = { 0, };
     int reply_requested;
-    bool success = false;
+    bool need_reply, success = false;
 
     if (!vu_message_read(dev, dev->sock, &vmsg)) {
         goto end;
     }
 
+    need_reply = vmsg.flags & VHOST_USER_NEED_REPLY_MASK;
+
     reply_requested = vu_process_message(dev, &vmsg);
+    if (!reply_requested && need_reply) {
+        vmsg_set_reply_u64(&vmsg, 0);
+        reply_requested = 1;
+    }
+
     if (!reply_requested) {
         success = true;
         goto end;
     }
 
-    if (!vu_message_write(dev, dev->sock, &vmsg)) {
+    if (!vu_send_reply(dev, dev->sock, &vmsg)) {
         goto end;
     }
 
@@ -1275,7 +1695,7 @@ vu_deinit(VuDev *dev)
     }
     dev->nregions = 0;
 
-    for (i = 0; i < VHOST_MAX_NR_VIRTQUEUE; i++) {
+    for (i = 0; i < dev->max_queues; i++) {
         VuVirtq *vq = &dev->vq[i];
 
         if (vq->call_fd != -1) {
@@ -1292,30 +1712,52 @@ vu_deinit(VuDev *dev)
             close(vq->err_fd);
             vq->err_fd = -1;
         }
+
+        if (vq->resubmit_list) {
+            free(vq->resubmit_list);
+            vq->resubmit_list = NULL;
+        }
+
+        vq->inflight = NULL;
     }
 
+    if (dev->inflight_info.addr) {
+        munmap(dev->inflight_info.addr, dev->inflight_info.size);
+        dev->inflight_info.addr = NULL;
+    }
+
+    if (dev->inflight_info.fd > 0) {
+        close(dev->inflight_info.fd);
+        dev->inflight_info.fd = -1;
+    }
 
     vu_close_log(dev);
     if (dev->slave_fd != -1) {
         close(dev->slave_fd);
         dev->slave_fd = -1;
     }
+    pthread_mutex_destroy(&dev->slave_mutex);
 
     if (dev->sock != -1) {
         close(dev->sock);
     }
+
+    free(dev->vq);
+    dev->vq = NULL;
 }
 
-void
+bool
 vu_init(VuDev *dev,
+        uint16_t max_queues,
         int socket,
         vu_panic_cb panic,
         vu_set_watch_cb set_watch,
         vu_remove_watch_cb remove_watch,
         const VuDevIface *iface)
 {
-    int i;
+    uint16_t i;
 
+    assert(max_queues > 0);
     assert(socket >= 0);
     assert(set_watch);
     assert(remove_watch);
@@ -1330,19 +1772,30 @@ vu_init(VuDev *dev,
     dev->remove_watch = remove_watch;
     dev->iface = iface;
     dev->log_call_fd = -1;
+    pthread_mutex_init(&dev->slave_mutex, NULL);
     dev->slave_fd = -1;
-    for (i = 0; i < VHOST_MAX_NR_VIRTQUEUE; i++) {
+    dev->max_queues = max_queues;
+
+    dev->vq = malloc(max_queues * sizeof(dev->vq[0]));
+    if (!dev->vq) {
+        DPRINT("%s: failed to malloc virtqueues\n", __func__);
+        return false;
+    }
+
+    for (i = 0; i < max_queues; i++) {
         dev->vq[i] = (VuVirtq) {
             .call_fd = -1, .kick_fd = -1, .err_fd = -1,
             .notification = true,
         };
     }
+
+    return true;
 }
 
 VuVirtq *
 vu_get_queue(VuDev *dev, int qidx)
 {
-    assert(qidx < VHOST_MAX_NR_VIRTQUEUE);
+    assert(qidx < dev->max_queues);
     return &dev->vq[qidx];
 }
 
@@ -1414,7 +1867,7 @@ virtqueue_get_head(VuDev *dev, VuVirtq *vq,
 
     /* If their number is silly, that's a fatal mistake. */
     if (*head >= vq->vring.num) {
-        vu_panic(dev, "Guest says index %u is available", head);
+        vu_panic(dev, "Guest says index %u is available", *head);
         return false;
     }
 
@@ -1473,7 +1926,7 @@ virtqueue_read_next_desc(VuDev *dev, struct vring_desc *desc,
     smp_wmb();
 
     if (*next >= max) {
-        vu_panic(dev, "Desc next is %u", next);
+        vu_panic(dev, "Desc next is %u", *next);
         return VIRTQUEUE_READ_DESC_ERROR;
     }
 
@@ -1620,20 +2073,6 @@ vu_queue_empty(VuDev *dev, VuVirtq *vq)
     return vring_avail_idx(vq) == vq->last_avail_idx;
 }
 
-static inline
-bool has_feature(uint64_t features, unsigned int fbit)
-{
-    assert(fbit < 64);
-    return !!(features & (1ULL << fbit));
-}
-
-static inline
-bool vu_has_feature(VuDev *dev,
-                    unsigned int fbit)
-{
-    return has_feature(dev->features, fbit);
-}
-
 static bool
 vring_notify(VuDev *dev, VuVirtq *vq)
 {
@@ -1660,8 +2099,7 @@ vring_notify(VuDev *dev, VuVirtq *vq)
     return !v || vring_need_event(vring_get_used_event(vq), new, old);
 }
 
-void
-vu_queue_notify(VuDev *dev, VuVirtq *vq)
+static void _vu_queue_notify(VuDev *dev, VuVirtq *vq, bool sync)
 {
     if (unlikely(dev->broken) ||
         unlikely(!vq->vring.avail)) {
@@ -1673,9 +2111,46 @@ vu_queue_notify(VuDev *dev, VuVirtq *vq)
         return;
     }
 
+    if (vq->call_fd < 0 &&
+        vu_has_protocol_feature(dev,
+                                VHOST_USER_PROTOCOL_F_INBAND_NOTIFICATIONS) &&
+        vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_SLAVE_REQ)) {
+        VhostUserMsg vmsg = {
+            .request = VHOST_USER_SLAVE_VRING_CALL,
+            .flags = VHOST_USER_VERSION,
+            .size = sizeof(vmsg.payload.state),
+            .payload.state = {
+                .index = vq - dev->vq,
+            },
+        };
+        bool ack = sync &&
+                   vu_has_protocol_feature(dev,
+                                           VHOST_USER_PROTOCOL_F_REPLY_ACK);
+
+        if (ack) {
+            vmsg.flags |= VHOST_USER_NEED_REPLY_MASK;
+        }
+
+        vu_message_write(dev, dev->slave_fd, &vmsg);
+        if (ack) {
+            vu_message_read(dev, dev->slave_fd, &vmsg);
+        }
+        return;
+    }
+
     if (eventfd_write(vq->call_fd, 1) < 0) {
         vu_panic(dev, "Error writing eventfd: %s", strerror(errno));
     }
+}
+
+void vu_queue_notify(VuDev *dev, VuVirtq *vq)
+{
+    _vu_queue_notify(dev, vq, false);
+}
+
+void vu_queue_notify_sync(VuDev *dev, VuVirtq *vq)
+{
+    _vu_queue_notify(dev, vq, true);
 }
 
 static inline void
@@ -1762,12 +2237,6 @@ virtqueue_map_desc(VuDev *dev,
     *p_num_sg = num_sg;
 }
 
-/* Round number down to multiple */
-#define ALIGN_DOWN(n, m) ((n) / (m) * (m))
-
-/* Round number up to multiple */
-#define ALIGN_UP(n, m) ALIGN_DOWN((n) + (m) - 1, (m))
-
 static void *
 virtqueue_alloc_element(size_t sz,
                                      unsigned out_num, unsigned in_num)
@@ -1786,49 +2255,20 @@ virtqueue_alloc_element(size_t sz,
     return elem;
 }
 
-void *
-vu_queue_pop(VuDev *dev, VuVirtq *vq, size_t sz)
+static void *
+vu_queue_map_desc(VuDev *dev, VuVirtq *vq, unsigned int idx, size_t sz)
 {
-    unsigned int i, head, max, desc_len;
+    struct vring_desc *desc = vq->vring.desc;
     uint64_t desc_addr, read_len;
+    unsigned int desc_len;
+    unsigned int max = vq->vring.num;
+    unsigned int i = idx;
     VuVirtqElement *elem;
-    unsigned out_num, in_num;
+    unsigned int out_num = 0, in_num = 0;
     struct iovec iov[VIRTQUEUE_MAX_SIZE];
     struct vring_desc desc_buf[VIRTQUEUE_MAX_SIZE];
-    struct vring_desc *desc;
     int rc;
 
-    if (unlikely(dev->broken) ||
-        unlikely(!vq->vring.avail)) {
-        return NULL;
-    }
-
-    if (vu_queue_empty(dev, vq)) {
-        return NULL;
-    }
-    /* Needed after virtio_queue_empty(), see comment in
-     * virtqueue_num_heads(). */
-    smp_rmb();
-
-    /* When we start there are none of either input nor output. */
-    out_num = in_num = 0;
-
-    max = vq->vring.num;
-    if (vq->inuse >= vq->vring.num) {
-        vu_panic(dev, "Virtqueue size exceeded");
-        return NULL;
-    }
-
-    if (!virtqueue_get_head(dev, vq, vq->last_avail_idx++, &head)) {
-        return NULL;
-    }
-
-    if (vu_has_feature(dev, VIRTIO_RING_F_EVENT_IDX)) {
-        vring_set_avail_event(vq, vq->last_avail_idx);
-    }
-
-    i = head;
-    desc = vq->vring.desc;
     if (desc[i].flags & VRING_DESC_F_INDIRECT) {
         if (desc[i].len % sizeof(struct vring_desc)) {
             vu_panic(dev, "Invalid size for indirect buffer table");
@@ -1880,12 +2320,13 @@ vu_queue_pop(VuDev *dev, VuVirtq *vq, size_t sz)
     } while (rc == VIRTQUEUE_READ_DESC_MORE);
 
     if (rc == VIRTQUEUE_READ_DESC_ERROR) {
+        vu_panic(dev, "read descriptor error");
         return NULL;
     }
 
     /* Now copy what we have collected and mapped */
     elem = virtqueue_alloc_element(sz, out_num, in_num);
-    elem->index = head;
+    elem->index = idx;
     for (i = 0; i < out_num; i++) {
         elem->out_sg[i] = iov[i];
     }
@@ -1893,9 +2334,137 @@ vu_queue_pop(VuDev *dev, VuVirtq *vq, size_t sz)
         elem->in_sg[i] = iov[out_num + i];
     }
 
+    return elem;
+}
+
+static int
+vu_queue_inflight_get(VuDev *dev, VuVirtq *vq, int desc_idx)
+{
+    if (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD)) {
+        return 0;
+    }
+
+    if (unlikely(!vq->inflight)) {
+        return -1;
+    }
+
+    vq->inflight->desc[desc_idx].counter = vq->counter++;
+    vq->inflight->desc[desc_idx].inflight = 1;
+
+    return 0;
+}
+
+static int
+vu_queue_inflight_pre_put(VuDev *dev, VuVirtq *vq, int desc_idx)
+{
+    if (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD)) {
+        return 0;
+    }
+
+    if (unlikely(!vq->inflight)) {
+        return -1;
+    }
+
+    vq->inflight->last_batch_head = desc_idx;
+
+    return 0;
+}
+
+static int
+vu_queue_inflight_post_put(VuDev *dev, VuVirtq *vq, int desc_idx)
+{
+    if (!vu_has_protocol_feature(dev, VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD)) {
+        return 0;
+    }
+
+    if (unlikely(!vq->inflight)) {
+        return -1;
+    }
+
+    barrier();
+
+    vq->inflight->desc[desc_idx].inflight = 0;
+
+    barrier();
+
+    vq->inflight->used_idx = vq->used_idx;
+
+    return 0;
+}
+
+void *
+vu_queue_pop(VuDev *dev, VuVirtq *vq, size_t sz)
+{
+    int i;
+    unsigned int head;
+    VuVirtqElement *elem;
+
+    if (unlikely(dev->broken) ||
+        unlikely(!vq->vring.avail)) {
+        return NULL;
+    }
+
+    if (unlikely(vq->resubmit_list && vq->resubmit_num > 0)) {
+        i = (--vq->resubmit_num);
+        elem = vu_queue_map_desc(dev, vq, vq->resubmit_list[i].index, sz);
+
+        if (!vq->resubmit_num) {
+            free(vq->resubmit_list);
+            vq->resubmit_list = NULL;
+        }
+
+        return elem;
+    }
+
+    if (vu_queue_empty(dev, vq)) {
+        return NULL;
+    }
+    /*
+     * Needed after virtio_queue_empty(), see comment in
+     * virtqueue_num_heads().
+     */
+    smp_rmb();
+
+    if (vq->inuse >= vq->vring.num) {
+        vu_panic(dev, "Virtqueue size exceeded");
+        return NULL;
+    }
+
+    if (!virtqueue_get_head(dev, vq, vq->last_avail_idx++, &head)) {
+        return NULL;
+    }
+
+    if (vu_has_feature(dev, VIRTIO_RING_F_EVENT_IDX)) {
+        vring_set_avail_event(vq, vq->last_avail_idx);
+    }
+
+    elem = vu_queue_map_desc(dev, vq, head, sz);
+
+    if (!elem) {
+        return NULL;
+    }
+
     vq->inuse++;
 
+    vu_queue_inflight_get(dev, vq, head);
+
     return elem;
+}
+
+static void
+vu_queue_detach_element(VuDev *dev, VuVirtq *vq, VuVirtqElement *elem,
+                        size_t len)
+{
+    vq->inuse--;
+    /* unmap, when DMA support is added */
+}
+
+void
+vu_queue_unpop(VuDev *dev, VuVirtq *vq, VuVirtqElement *elem,
+               size_t len)
+{
+    vq->last_avail_idx--;
+    vu_queue_detach_element(dev, vq, elem, len);
 }
 
 bool
@@ -2039,5 +2608,7 @@ vu_queue_push(VuDev *dev, VuVirtq *vq,
               const VuVirtqElement *elem, unsigned int len)
 {
     vu_queue_fill(dev, vq, elem, len, 0);
+    vu_queue_inflight_pre_put(dev, vq, elem->index);
     vu_queue_flush(dev, vq, 1);
+    vu_queue_inflight_post_put(dev, vq, elem->index);
 }

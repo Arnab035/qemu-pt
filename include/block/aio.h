@@ -14,7 +14,9 @@
 #ifndef QEMU_AIO_H
 #define QEMU_AIO_H
 
-#include "qemu-common.h"
+#ifdef CONFIG_LINUX_IO_URING
+#include <liburing.h>
+#endif
 #include "qemu/queue.h"
 #include "qemu/event_notifier.h"
 #include "qemu/thread.h"
@@ -43,6 +45,7 @@ void qemu_aio_unref(void *p);
 void qemu_aio_ref(void *p);
 
 typedef struct AioHandler AioHandler;
+typedef QLIST_HEAD(, AioHandler) AioHandlerList;
 typedef void QEMUBHFunc(void *opaque);
 typedef bool AioPollFn(void *opaque);
 typedef void IOHandler(void *opaque);
@@ -50,6 +53,72 @@ typedef void IOHandler(void *opaque);
 struct Coroutine;
 struct ThreadPool;
 struct LinuxAioState;
+struct LuringState;
+
+/* Is polling disabled? */
+bool aio_poll_disabled(AioContext *ctx);
+
+/* Callbacks for file descriptor monitoring implementations */
+typedef struct {
+    /*
+     * update:
+     * @ctx: the AioContext
+     * @old_node: the existing handler or NULL if this file descriptor is being
+     *            monitored for the first time
+     * @new_node: the new handler or NULL if this file descriptor is being
+     *            removed
+     *
+     * Add/remove/modify a monitored file descriptor.
+     *
+     * Called with ctx->list_lock acquired.
+     */
+    void (*update)(AioContext *ctx, AioHandler *old_node, AioHandler *new_node);
+
+    /*
+     * wait:
+     * @ctx: the AioContext
+     * @ready_list: list for handlers that become ready
+     * @timeout: maximum duration to wait, in nanoseconds
+     *
+     * Wait for file descriptors to become ready and place them on ready_list.
+     *
+     * Called with ctx->list_lock incremented but not locked.
+     *
+     * Returns: number of ready file descriptors.
+     */
+    int (*wait)(AioContext *ctx, AioHandlerList *ready_list, int64_t timeout);
+
+    /*
+     * need_wait:
+     * @ctx: the AioContext
+     *
+     * Tell aio_poll() when to stop userspace polling early because ->wait()
+     * has fds ready.
+     *
+     * File descriptor monitoring implementations that cannot poll fd readiness
+     * from userspace should use aio_poll_disabled() here.  This ensures that
+     * file descriptors are not starved by handlers that frequently make
+     * progress via userspace polling.
+     *
+     * Returns: true if ->wait() should be called, false otherwise.
+     */
+    bool (*need_wait)(AioContext *ctx);
+} FDMonOps;
+
+/*
+ * Each aio_bh_poll() call carves off a slice of the BH list, so that newly
+ * scheduled BHs are not processed until the next aio_bh_poll() call.  All
+ * active aio_bh_poll() calls chain their slices together in a list, so that
+ * nested aio_bh_poll() calls process all scheduled bottom halves.
+ */
+typedef QSLIST_HEAD(, QEMUBH) BHList;
+typedef struct BHListSlice BHListSlice;
+struct BHListSlice {
+    BHList bh_list;
+    QSIMPLEQ_ENTRY(BHListSlice) next;
+};
+
+typedef QSLIST_HEAD(, AioHandler) AioHandlerSList;
 
 struct AioContext {
     GSource source;
@@ -58,15 +127,22 @@ struct AioContext {
     QemuRecMutex lock;
 
     /* The list of registered AIO handlers.  Protected by ctx->list_lock. */
-    QLIST_HEAD(, AioHandler) aio_handlers;
+    AioHandlerList aio_handlers;
+
+    /* The list of AIO handlers to be deleted.  Protected by ctx->list_lock. */
+    AioHandlerList deleted_aio_handlers;
 
     /* Used to avoid unnecessary event_notifier_set calls in aio_notify;
-     * accessed with atomic primitives.  If this field is 0, everything
-     * (file descriptors, bottom halves, timers) will be re-evaluated
-     * before the next blocking poll(), thus the event_notifier_set call
-     * can be skipped.  If it is non-zero, you may need to wake up a
-     * concurrent aio_poll or the glib main event loop, making
-     * event_notifier_set necessary.
+     * only written from the AioContext home thread, or under the BQL in
+     * the case of the main AioContext.  However, it is read from any
+     * thread so it is still accessed with atomic primitives.
+     *
+     * If this field is 0, everything (file descriptors, bottom halves,
+     * timers) will be re-evaluated before the next blocking poll() or
+     * io_uring wait; therefore, the event_notifier_set call can be
+     * skipped.  If it is non-zero, you may need to wake up a concurrent
+     * aio_poll or the glib main event loop, making event_notifier_set
+     * necessary.
      *
      * Bit 0 is reserved for GSource usage of the AioContext, and is 1
      * between a call to aio_ctx_prepare and the next call to aio_ctx_check.
@@ -91,8 +167,11 @@ struct AioContext {
      */
     QemuLockCnt list_lock;
 
-    /* Anchor of the list of Bottom Halves belonging to the context */
-    struct QEMUBH *first_bh;
+    /* Bottom Halves pending aio_bh_poll() processing */
+    BHList bh_list;
+
+    /* Chained BH list slices for each nested aio_bh_poll() call */
+    QSIMPLEQ_HEAD(, BHListSlice) bh_slice_list;
 
     /* Used by aio_notify.
      *
@@ -118,10 +197,22 @@ struct AioContext {
     struct ThreadPool *thread_pool;
 
 #ifdef CONFIG_LINUX_AIO
-    /* State for native Linux AIO.  Uses aio_context_acquire/release for
+    /*
+     * State for native Linux AIO.  Uses aio_context_acquire/release for
      * locking.
      */
     struct LinuxAioState *linux_aio;
+#endif
+#ifdef CONFIG_LINUX_IO_URING
+    /*
+     * State for Linux io_uring.  Uses aio_context_acquire/release for
+     * locking.
+     */
+    struct LuringState *linux_io_uring;
+
+    /* State for file descriptor monitoring using Linux io_uring */
+    struct io_uring fdmon_io_uring;
+    AioHandlerSList submit_list;
 #endif
 
     /* TimerLists for calling timers - one per clock type.  Has its own
@@ -140,13 +231,21 @@ struct AioContext {
     int64_t poll_grow;      /* polling time growth factor */
     int64_t poll_shrink;    /* polling time shrink factor */
 
+    /*
+     * List of handlers participating in userspace polling.  Protected by
+     * ctx->list_lock.  Iterated and modified mostly by the event loop thread
+     * from aio_poll() with ctx->list_lock incremented.  aio_set_fd_handler()
+     * only touches the list to delete nodes if ctx->list_lock's count is zero.
+     */
+    AioHandlerList poll_aio_handlers;
+
     /* Are we in polling mode or monitoring file descriptors? */
     bool poll_started;
 
     /* epoll(7) state used when built with CONFIG_EPOLL */
     int epollfd;
-    bool epoll_enabled;
-    bool epoll_available;
+
+    const FDMonOps *fdmon_ops;
 };
 
 /**
@@ -381,8 +480,42 @@ GSource *aio_get_g_source(AioContext *ctx);
 /* Return the ThreadPool bound to this AioContext */
 struct ThreadPool *aio_get_thread_pool(AioContext *ctx);
 
+/* Setup the LinuxAioState bound to this AioContext */
+struct LinuxAioState *aio_setup_linux_aio(AioContext *ctx, Error **errp);
+
 /* Return the LinuxAioState bound to this AioContext */
 struct LinuxAioState *aio_get_linux_aio(AioContext *ctx);
+
+/* Setup the LuringState bound to this AioContext */
+struct LuringState *aio_setup_linux_io_uring(AioContext *ctx, Error **errp);
+
+/* Return the LuringState bound to this AioContext */
+struct LuringState *aio_get_linux_io_uring(AioContext *ctx);
+/**
+ * aio_timer_new_with_attrs:
+ * @ctx: the aio context
+ * @type: the clock type
+ * @scale: the scale
+ * @attributes: 0, or one to multiple OR'ed QEMU_TIMER_ATTR_<id> values
+ *              to assign
+ * @cb: the callback to call on timer expiry
+ * @opaque: the opaque pointer to pass to the callback
+ *
+ * Allocate a new timer (with attributes) attached to the context @ctx.
+ * The function is responsible for memory allocation.
+ *
+ * The preferred interface is aio_timer_init or aio_timer_init_with_attrs.
+ * Use that unless you really need dynamic memory allocation.
+ *
+ * Returns: a pointer to the new timer
+ */
+static inline QEMUTimer *aio_timer_new_with_attrs(AioContext *ctx,
+                                                  QEMUClockType type,
+                                                  int scale, int attributes,
+                                                  QEMUTimerCB *cb, void *opaque)
+{
+    return timer_new_full(&ctx->tlg, type, scale, attributes, cb, opaque);
+}
 
 /**
  * aio_timer_new:
@@ -393,10 +526,7 @@ struct LinuxAioState *aio_get_linux_aio(AioContext *ctx);
  * @opaque: the opaque pointer to pass to the callback
  *
  * Allocate a new timer attached to the context @ctx.
- * The function is responsible for memory allocation.
- *
- * The preferred interface is aio_timer_init. Use that
- * unless you really need dynamic memory allocation.
+ * See aio_timer_new_with_attrs for details.
  *
  * Returns: a pointer to the new timer
  */
@@ -404,7 +534,29 @@ static inline QEMUTimer *aio_timer_new(AioContext *ctx, QEMUClockType type,
                                        int scale,
                                        QEMUTimerCB *cb, void *opaque)
 {
-    return timer_new_tl(ctx->tlg.tl[type], scale, cb, opaque);
+    return timer_new_full(&ctx->tlg, type, scale, 0, cb, opaque);
+}
+
+/**
+ * aio_timer_init_with_attrs:
+ * @ctx: the aio context
+ * @ts: the timer
+ * @type: the clock type
+ * @scale: the scale
+ * @attributes: 0, or one to multiple OR'ed QEMU_TIMER_ATTR_<id> values
+ *              to assign
+ * @cb: the callback to call on timer expiry
+ * @opaque: the opaque pointer to pass to the callback
+ *
+ * Initialise a new timer (with attributes) attached to the context @ctx.
+ * The caller is responsible for memory allocation.
+ */
+static inline void aio_timer_init_with_attrs(AioContext *ctx,
+                                             QEMUTimer *ts, QEMUClockType type,
+                                             int scale, int attributes,
+                                             QEMUTimerCB *cb, void *opaque)
+{
+    timer_init_full(ts, &ctx->tlg, type, scale, attributes, cb, opaque);
 }
 
 /**
@@ -417,14 +569,14 @@ static inline QEMUTimer *aio_timer_new(AioContext *ctx, QEMUClockType type,
  * @opaque: the opaque pointer to pass to the callback
  *
  * Initialise a new timer attached to the context @ctx.
- * The caller is responsible for memory allocation.
+ * See aio_timer_init_with_attrs for details.
  */
 static inline void aio_timer_init(AioContext *ctx,
                                   QEMUTimer *ts, QEMUClockType type,
                                   int scale,
                                   QEMUTimerCB *cb, void *opaque)
 {
-    timer_init_tl(ts, ctx->tlg.tl[type], scale, cb, opaque);
+    timer_init_full(ts, &ctx->tlg, type, scale, 0, cb, opaque);
 }
 
 /**
@@ -534,25 +686,23 @@ void aio_co_enter(AioContext *ctx, struct Coroutine *co);
 AioContext *qemu_get_current_aio_context(void);
 
 /**
- * in_aio_context_home_thread:
- * @ctx: the aio context
- *
- * Return whether we are running in the thread that normally runs @ctx.  Note
- * that acquiring/releasing ctx does not affect the outcome, each AioContext
- * still only has one home thread that is responsible for running it.
- */
-static inline bool in_aio_context_home_thread(AioContext *ctx)
-{
-    return ctx == qemu_get_current_aio_context();
-}
-
-/**
  * aio_context_setup:
  * @ctx: the aio context
  *
  * Initialize the aio context.
  */
 void aio_context_setup(AioContext *ctx);
+
+/**
+ * aio_context_destroy:
+ * @ctx: the aio context
+ *
+ * Destroy the aio context.
+ */
+void aio_context_destroy(AioContext *ctx);
+
+/* Used internally, do not call outside AioContext code */
+void aio_context_use_g_source(AioContext *ctx);
 
 /**
  * aio_context_set_poll_params:

@@ -1,12 +1,10 @@
 #ifndef HW_ICH9_H
 #define HW_ICH9_H
 
-#include "hw/hw.h"
 #include "hw/isa/isa.h"
 #include "hw/sysbus.h"
 #include "hw/i386/pc.h"
 #include "hw/isa/apm.h"
-#include "hw/i386/ioapic.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pcie_host.h"
 #include "hw/pci/pci_bridge.h"
@@ -80,8 +78,6 @@ typedef struct ICH9LPCState {
 
     qemu_irq gsi[GSI_NUM_PINS];
 } ICH9LPCState;
-
-Object *ich9_lpc_find(void);
 
 #define Q35_MASK(bit, ms_bit, ls_bit) \
 ((uint##bit##_t)(((1ULL << ((ms_bit) + 1)) - 1) & ~((1ULL << ls_bit) - 1)))

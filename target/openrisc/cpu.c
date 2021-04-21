@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -19,15 +19,15 @@
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/qemu-print.h"
 #include "cpu.h"
-#include "qemu-common.h"
-#include "exec/exec-all.h"
 
 static void openrisc_cpu_set_pc(CPUState *cs, vaddr value)
 {
     OpenRISCCPU *cpu = OPENRISC_CPU(cs);
 
     cpu->env.pc = value;
+    cpu->env.dflag = 0;
 }
 
 static bool openrisc_cpu_has_work(CPUState *cs)
@@ -36,13 +36,18 @@ static bool openrisc_cpu_has_work(CPUState *cs)
                                     CPU_INTERRUPT_TIMER);
 }
 
-/* CPUClass::reset() */
-static void openrisc_cpu_reset(CPUState *s)
+static void openrisc_disas_set_info(CPUState *cpu, disassemble_info *info)
 {
+    info->print_insn = print_insn_or1k;
+}
+
+static void openrisc_cpu_reset(DeviceState *dev)
+{
+    CPUState *s = CPU(dev);
     OpenRISCCPU *cpu = OPENRISC_CPU(s);
     OpenRISCCPUClass *occ = OPENRISC_CPU_GET_CLASS(cpu);
 
-    occ->parent_reset(s);
+    occ->parent_reset(dev);
 
     memset(&cpu->env, 0, offsetof(CPUOpenRISCState, end_reset_fields));
 
@@ -50,11 +55,7 @@ static void openrisc_cpu_reset(CPUState *s)
     cpu->env.sr = SR_FO | SR_SM;
     cpu->env.lock_addr = -1;
     s->exception_index = -1;
-
-    cpu->env.upr = UPR_UP | UPR_DMP | UPR_IMP | UPR_PICP | UPR_TTP |
-                   UPR_PMP;
-    cpu->env.dmmucfgr = (DMMUCFGR_NTW & (0 << 2)) | (DMMUCFGR_NTS & (6 << 2));
-    cpu->env.immucfgr = (IMMUCFGR_NTW & (0 << 2)) | (IMMUCFGR_NTS & (6 << 2));
+    cpu_set_fpcsr(&cpu->env, 0);
 
 #ifndef CONFIG_USER_ONLY
     cpu->env.picmr = 0x00000000;
@@ -84,14 +85,9 @@ static void openrisc_cpu_realizefn(DeviceState *dev, Error **errp)
 
 static void openrisc_cpu_initfn(Object *obj)
 {
-    CPUState *cs = CPU(obj);
     OpenRISCCPU *cpu = OPENRISC_CPU(obj);
 
-    cs->env_ptr = &cpu->env;
-
-#ifndef CONFIG_USER_ONLY
-    cpu_openrisc_mmu_init(cpu);
-#endif
+    cpu_set_cpustate_pointers(cpu);
 }
 
 /* CPU models */
@@ -115,15 +111,35 @@ static void or1200_initfn(Object *obj)
 {
     OpenRISCCPU *cpu = OPENRISC_CPU(obj);
 
+    cpu->env.vr = 0x13000008;
+    cpu->env.upr = UPR_UP | UPR_DMP | UPR_IMP | UPR_PICP | UPR_TTP | UPR_PMP;
     cpu->env.cpucfgr = CPUCFGR_NSGF | CPUCFGR_OB32S | CPUCFGR_OF32S |
                        CPUCFGR_EVBARP;
+
+    /* 1Way, TLB_SIZE entries.  */
+    cpu->env.dmmucfgr = (DMMUCFGR_NTW & (0 << 2))
+                      | (DMMUCFGR_NTS & (ctz32(TLB_SIZE) << 2));
+    cpu->env.immucfgr = (IMMUCFGR_NTW & (0 << 2))
+                      | (IMMUCFGR_NTS & (ctz32(TLB_SIZE) << 2));
 }
 
 static void openrisc_any_initfn(Object *obj)
 {
     OpenRISCCPU *cpu = OPENRISC_CPU(obj);
 
-    cpu->env.cpucfgr = CPUCFGR_NSGF | CPUCFGR_OB32S | CPUCFGR_EVBARP;
+    cpu->env.vr = 0x13000040;   /* Obsolete VER + UVRP for new SPRs */
+    cpu->env.vr2 = 0;           /* No version specific id */
+    cpu->env.avr = 0x01030000;  /* Architecture v1.3 */
+
+    cpu->env.upr = UPR_UP | UPR_DMP | UPR_IMP | UPR_PICP | UPR_TTP | UPR_PMP;
+    cpu->env.cpucfgr = CPUCFGR_NSGF | CPUCFGR_OB32S | CPUCFGR_OF32S |
+                       CPUCFGR_AVRP | CPUCFGR_EVBARP | CPUCFGR_OF64A32S;
+
+    /* 1Way, TLB_SIZE entries.  */
+    cpu->env.dmmucfgr = (DMMUCFGR_NTW & (0 << 2))
+                      | (DMMUCFGR_NTS & (ctz32(TLB_SIZE) << 2));
+    cpu->env.immucfgr = (IMMUCFGR_NTW & (0 << 2))
+                      | (IMMUCFGR_NTS & (ctz32(TLB_SIZE) << 2));
 }
 
 static void openrisc_cpu_class_init(ObjectClass *oc, void *data)
@@ -134,8 +150,7 @@ static void openrisc_cpu_class_init(ObjectClass *oc, void *data)
 
     device_class_set_parent_realize(dc, openrisc_cpu_realizefn,
                                     &occ->parent_realize);
-    occ->parent_reset = cc->reset;
-    cc->reset = openrisc_cpu_reset;
+    device_class_set_parent_reset(dc, openrisc_cpu_reset, &occ->parent_reset);
 
     cc->class_by_name = openrisc_cpu_class_by_name;
     cc->has_work = openrisc_cpu_has_work;
@@ -145,14 +160,14 @@ static void openrisc_cpu_class_init(ObjectClass *oc, void *data)
     cc->set_pc = openrisc_cpu_set_pc;
     cc->gdb_read_register = openrisc_cpu_gdb_read_register;
     cc->gdb_write_register = openrisc_cpu_gdb_write_register;
-#ifdef CONFIG_USER_ONLY
-    cc->handle_mmu_fault = openrisc_cpu_handle_mmu_fault;
-#else
+    cc->tlb_fill = openrisc_cpu_tlb_fill;
+#ifndef CONFIG_USER_ONLY
     cc->get_phys_page_debug = openrisc_cpu_get_phys_page_debug;
     dc->vmsd = &vmstate_openrisc_cpu;
 #endif
     cc->gdb_num_core_regs = 32 + 3;
     cc->tcg_initialize = openrisc_translate_init;
+    cc->disas_set_info = openrisc_disas_set_info;
 }
 
 /* Sort alphabetically by type name, except for "any". */
@@ -176,30 +191,24 @@ static gint openrisc_cpu_list_compare(gconstpointer a, gconstpointer b)
 static void openrisc_cpu_list_entry(gpointer data, gpointer user_data)
 {
     ObjectClass *oc = data;
-    CPUListState *s = user_data;
     const char *typename;
     char *name;
 
     typename = object_class_get_name(oc);
     name = g_strndup(typename,
                      strlen(typename) - strlen("-" TYPE_OPENRISC_CPU));
-    (*s->cpu_fprintf)(s->file, "  %s\n",
-                      name);
+    qemu_printf("  %s\n", name);
     g_free(name);
 }
 
-void cpu_openrisc_list(FILE *f, fprintf_function cpu_fprintf)
+void cpu_openrisc_list(void)
 {
-    CPUListState s = {
-        .file = f,
-        .cpu_fprintf = cpu_fprintf,
-    };
     GSList *list;
 
     list = object_class_get_list(TYPE_OPENRISC_CPU, false);
     list = g_slist_sort(list, openrisc_cpu_list_compare);
-    (*cpu_fprintf)(f, "Available CPUs:\n");
-    g_slist_foreach(list, openrisc_cpu_list_entry, &s);
+    qemu_printf("Available CPUs:\n");
+    g_slist_foreach(list, openrisc_cpu_list_entry, NULL);
     g_slist_free(list);
 }
 

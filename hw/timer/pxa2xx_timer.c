@@ -8,12 +8,15 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "qemu/timer.h"
-#include "sysemu/sysemu.h"
+#include "sysemu/runstate.h"
 #include "hw/arm/pxa.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 #define OSMR0	0x00
 #define OSMR1	0x04
@@ -559,7 +562,7 @@ static void pxa25x_timer_dev_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "PXA25x timer";
-    dc->props = pxa25x_timer_dev_properties;
+    device_class_set_props(dc, pxa25x_timer_dev_properties);
 }
 
 static const TypeInfo pxa25x_timer_dev_info = {
@@ -581,7 +584,7 @@ static void pxa27x_timer_dev_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "PXA27x timer";
-    dc->props = pxa27x_timer_dev_properties;
+    device_class_set_props(dc, pxa27x_timer_dev_properties);
 }
 
 static const TypeInfo pxa27x_timer_dev_info = {

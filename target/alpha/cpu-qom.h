@@ -20,7 +20,7 @@
 #ifndef QEMU_ALPHA_CPU_QOM_H
 #define QEMU_ALPHA_CPU_QOM_H
 
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_ALPHA_CPU "alpha-cpu"
 
@@ -44,7 +44,7 @@ typedef struct AlphaCPUClass {
     /*< public >*/
 
     DeviceRealize parent_realize;
-    void (*parent_reset)(CPUState *cpu);
+    DeviceReset parent_reset;
 } AlphaCPUClass;
 
 typedef struct AlphaCPU AlphaCPU;

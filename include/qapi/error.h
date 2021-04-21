@@ -52,8 +52,12 @@
  * where Error **errp is a parameter, by convention the last one.
  *
  * Pass an existing error to the caller with the message modified:
+ *     error_propagate_prepend(errp, err);
+ *
+ * Avoid
  *     error_propagate(errp, err);
  *     error_prepend(errp, "Could not frobnicate '%s': ", name);
+ * because this fails to prepend when @errp is &error_fatal.
  *
  * Create a new error and pass it to the caller:
  *     error_setg(errp, "situation normal, all fouled up");
@@ -115,7 +119,7 @@
 #ifndef ERROR_H
 #define ERROR_H
 
-#include "qapi/qapi-types-common.h"
+#include "qapi/qapi-types-error.h"
 
 /*
  * Overall category of an error.
@@ -215,17 +219,27 @@ void error_setg_win32_internal(Error **errp,
  */
 void error_propagate(Error **dst_errp, Error *local_err);
 
+
+/*
+ * Propagate error object (if any) with some text prepended.
+ * Behaves like
+ *     error_prepend(&local_err, fmt, ...);
+ *     error_propagate(dst_errp, local_err);
+ */
+void error_propagate_prepend(Error **dst_errp, Error *local_err,
+                             const char *fmt, ...);
+
 /*
  * Prepend some text to @errp's human-readable error message.
  * The text is made by formatting @fmt, @ap like vprintf().
  */
-void error_vprepend(Error **errp, const char *fmt, va_list ap);
+void error_vprepend(Error *const *errp, const char *fmt, va_list ap);
 
 /*
  * Prepend some text to @errp's human-readable error message.
  * The text is made by formatting @fmt, ... like printf().
  */
-void error_prepend(Error **errp, const char *fmt, ...)
+void error_prepend(Error *const *errp, const char *fmt, ...)
     GCC_FMT_ATTR(2, 3);
 
 /*
@@ -242,7 +256,7 @@ void error_prepend(Error **errp, const char *fmt, ...)
  * May be called multiple times.  The resulting hint should end with a
  * newline.
  */
-void error_append_hint(Error **errp, const char *fmt, ...)
+void error_append_hint(Error *const *errp, const char *fmt, ...)
     GCC_FMT_ATTR(2, 3);
 
 /*

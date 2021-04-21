@@ -11,6 +11,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/qdev-core.h"
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "qom/object_interfaces.h"
@@ -18,8 +19,10 @@
 #include "qapi/visitor.h"
 #include "qapi/string-input-visitor.h"
 #include "qapi/string-output-visitor.h"
+#include "qapi/qobject-input-visitor.h"
 #include "qapi/qapi-builtin-visit.h"
 #include "qapi/qmp/qerror.h"
+#include "qapi/qmp/qjson.h"
 #include "trace.h"
 
 /* TODO: replace QObject with a simpler visitor to avoid a dependency
@@ -28,6 +31,7 @@
 #include "qapi/qmp/qbool.h"
 #include "qapi/qmp/qnum.h"
 #include "qapi/qmp/qstring.h"
+#include "qemu/error-report.h"
 
 #define MAX_INTERFACES 32
 
@@ -49,7 +53,6 @@ struct TypeImpl
 
     void (*class_init)(ObjectClass *klass, void *data);
     void (*class_base_init)(ObjectClass *klass, void *data);
-    void (*class_finalize)(ObjectClass *klass, void *data);
 
     void *class_data;
 
@@ -114,7 +117,6 @@ static TypeImpl *type_new(const TypeInfo *info)
 
     ti->class_init = info->class_init;
     ti->class_base_init = info->class_base_init;
-    ti->class_finalize = info->class_finalize;
     ti->class_data = info->class_data;
 
     ti->instance_init = info->instance_init;
@@ -173,7 +175,11 @@ static TypeImpl *type_get_parent(TypeImpl *type)
 {
     if (!type->parent_type && type->parent) {
         type->parent_type = type_get_by_name(type->parent);
-        g_assert(type->parent_type != NULL);
+        if (!type->parent_type) {
+            fprintf(stderr, "Type '%s' is missing its parent '%s'\n",
+                    type->name, type->parent);
+            abort();
+        }
     }
 
     return type->parent_type;
@@ -264,6 +270,10 @@ static void object_property_free(gpointer data)
 {
     ObjectProperty *prop = data;
 
+    if (prop->defval) {
+        qobject_unref(prop->defval);
+        prop->defval = NULL;
+    }
     g_free(prop->name);
     g_free(prop->type);
     g_free(prop->description);
@@ -286,7 +296,14 @@ static void type_initialize(TypeImpl *ti)
     if (ti->instance_size == 0) {
         ti->abstract = true;
     }
-
+    if (type_is_ancestor(ti, type_interface)) {
+        assert(ti->instance_size == 0);
+        assert(ti->abstract);
+        assert(!ti->instance_init);
+        assert(!ti->instance_post_init);
+        assert(!ti->instance_finalize);
+        assert(!ti->num_interfaces);
+    }
     ti->class = g_malloc0(ti->class_size);
 
     parent = type_get_parent(ti);
@@ -295,11 +312,12 @@ static void type_initialize(TypeImpl *ti)
         GSList *e;
         int i;
 
-        g_assert_cmpint(parent->class_size, <=, ti->class_size);
+        g_assert(parent->class_size <= ti->class_size);
+        g_assert(parent->instance_size <= ti->instance_size);
         memcpy(ti->class, parent->class, parent->class_size);
         ti->class->interfaces = NULL;
         ti->class->properties = g_hash_table_new_full(
-            g_str_hash, g_str_equal, g_free, object_property_free);
+            g_str_hash, g_str_equal, NULL, object_property_free);
 
         for (e = parent->class->interfaces; e; e = e->next) {
             InterfaceClass *iface = e->data;
@@ -310,6 +328,11 @@ static void type_initialize(TypeImpl *ti)
 
         for (i = 0; i < ti->num_interfaces; i++) {
             TypeImpl *t = type_get_by_name(ti->interfaces[i].typename);
+            if (!t) {
+                error_report("missing interface '%s' for object '%s'",
+                             ti->interfaces[i].typename, parent->name);
+                abort();
+            }
             for (e = ti->class->interfaces; e; e = e->next) {
                 TypeImpl *target_type = OBJECT_CLASS(e->data)->type;
 
@@ -326,7 +349,7 @@ static void type_initialize(TypeImpl *ti)
         }
     } else {
         ti->class->properties = g_hash_table_new_full(
-            g_str_hash, g_str_equal, g_free, object_property_free);
+            g_str_hash, g_str_equal, NULL, object_property_free);
     }
 
     ti->class->type = ti;
@@ -365,20 +388,129 @@ static void object_post_init_with_type(Object *obj, TypeImpl *ti)
     }
 }
 
+void object_apply_global_props(Object *obj, const GPtrArray *props, Error **errp)
+{
+    int i;
+
+    if (!props) {
+        return;
+    }
+
+    for (i = 0; i < props->len; i++) {
+        GlobalProperty *p = g_ptr_array_index(props, i);
+        Error *err = NULL;
+
+        if (object_dynamic_cast(obj, p->driver) == NULL) {
+            continue;
+        }
+        if (p->optional && !object_property_find(obj, p->property, NULL)) {
+            continue;
+        }
+        p->used = true;
+        object_property_parse(obj, p->value, p->property, &err);
+        if (err != NULL) {
+            error_prepend(&err, "can't apply global %s.%s=%s: ",
+                          p->driver, p->property, p->value);
+            /*
+             * If errp != NULL, propagate error and return.
+             * If errp == NULL, report a warning, but keep going
+             * with the remaining globals.
+             */
+            if (errp) {
+                error_propagate(errp, err);
+                return;
+            } else {
+                warn_report_err(err);
+            }
+        }
+    }
+}
+
+/*
+ * Global property defaults
+ * Slot 0: accelerator's global property defaults
+ * Slot 1: machine's global property defaults
+ * Slot 2: global properties from legacy command line option
+ * Each is a GPtrArray of of GlobalProperty.
+ * Applied in order, later entries override earlier ones.
+ */
+static GPtrArray *object_compat_props[3];
+
+/*
+ * Retrieve @GPtrArray for global property defined with options
+ * other than "-global".  These are generally used for syntactic
+ * sugar and legacy command line options.
+ */
+void object_register_sugar_prop(const char *driver, const char *prop, const char *value)
+{
+    GlobalProperty *g;
+    if (!object_compat_props[2]) {
+        object_compat_props[2] = g_ptr_array_new();
+    }
+    g = g_new0(GlobalProperty, 1);
+    g->driver = g_strdup(driver);
+    g->property = g_strdup(prop);
+    g->value = g_strdup(value);
+    g_ptr_array_add(object_compat_props[2], g);
+}
+
+/*
+ * Set machine's global property defaults to @compat_props.
+ * May be called at most once.
+ */
+void object_set_machine_compat_props(GPtrArray *compat_props)
+{
+    assert(!object_compat_props[1]);
+    object_compat_props[1] = compat_props;
+}
+
+/*
+ * Set accelerator's global property defaults to @compat_props.
+ * May be called at most once.
+ */
+void object_set_accelerator_compat_props(GPtrArray *compat_props)
+{
+    assert(!object_compat_props[0]);
+    object_compat_props[0] = compat_props;
+}
+
+void object_apply_compat_props(Object *obj)
+{
+    int i;
+
+    for (i = 0; i < ARRAY_SIZE(object_compat_props); i++) {
+        object_apply_global_props(obj, object_compat_props[i],
+                                  i == 2 ? &error_fatal : &error_abort);
+    }
+}
+
+static void object_class_property_init_all(Object *obj)
+{
+    ObjectPropertyIterator iter;
+    ObjectProperty *prop;
+
+    object_class_property_iter_init(&iter, object_get_class(obj));
+    while ((prop = object_property_iter_next(&iter))) {
+        if (prop->init) {
+            prop->init(obj, prop);
+        }
+    }
+}
+
 static void object_initialize_with_type(void *data, size_t size, TypeImpl *type)
 {
     Object *obj = data;
 
-    g_assert(type != NULL);
     type_initialize(type);
 
-    g_assert_cmpint(type->instance_size, >=, sizeof(Object));
+    g_assert(type->instance_size >= sizeof(Object));
     g_assert(type->abstract == false);
-    g_assert_cmpint(size, >=, type->instance_size);
+    g_assert(size >= type->instance_size);
 
     memset(obj, 0, type->instance_size);
     obj->class = type->class;
     object_ref(obj);
+    object_class_property_init_all(obj);
     obj->properties = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             NULL, object_property_free);
     object_init_with_type(obj, type);
@@ -389,7 +521,68 @@ void object_initialize(void *data, size_t size, const char *typename)
 {
     TypeImpl *type = type_get_by_name(typename);
 
+    if (!type) {
+        error_report("missing object type '%s'", typename);
+        abort();
+    }
+
     object_initialize_with_type(data, size, type);
+}
+
+void object_initialize_child(Object *parentobj, const char *propname,
+                             void *childobj, size_t size, const char *type,
+                             Error **errp, ...)
+{
+    va_list vargs;
+
+    va_start(vargs, errp);
+    object_initialize_childv(parentobj, propname, childobj, size, type, errp,
+                             vargs);
+    va_end(vargs);
+}
+
+void object_initialize_childv(Object *parentobj, const char *propname,
+                              void *childobj, size_t size, const char *type,
+                              Error **errp, va_list vargs)
+{
+    Error *local_err = NULL;
+    Object *obj;
+    UserCreatable *uc;
+
+    object_initialize(childobj, size, type);
+    obj = OBJECT(childobj);
+
+    object_set_propv(obj, &local_err, vargs);
+    if (local_err) {
+        goto out;
+    }
+
+    object_property_add_child(parentobj, propname, obj, &local_err);
+    if (local_err) {
+        goto out;
+    }
+
+    uc = (UserCreatable *)object_dynamic_cast(obj, TYPE_USER_CREATABLE);
+    if (uc) {
+        user_creatable_complete(uc, &local_err);
+        if (local_err) {
+            object_unparent(obj);
+            goto out;
+        }
+    }
+
+    /*
+     * Since object_property_add_child added a reference to the child object,
+     * we can drop the reference added by object_initialize(), so the child
+     * property will own the only reference to the object.
+     */
+    object_unref(obj);
+
+out:
+    if (local_err) {
+        error_propagate(errp, local_err);
+        object_unref(obj);
+    }
 }
 
 static inline bool object_property_is_child(ObjectProperty *prop)
@@ -399,23 +592,22 @@ static inline bool object_property_is_child(ObjectProperty *prop)
 
 static void object_property_del_all(Object *obj)
 {
+    g_autoptr(GHashTable) done = g_hash_table_new(NULL, NULL);
     ObjectProperty *prop;
-    GHashTableIter iter;
-    gpointer key, value;
+    ObjectPropertyIterator iter;
     bool released;
 
     do {
         released = false;
-        g_hash_table_iter_init(&iter, obj->properties);
-        while (g_hash_table_iter_next(&iter, &key, &value)) {
-            prop = value;
-            if (prop->release) {
-                prop->release(obj, prop->name, prop->opaque);
-                prop->release = NULL;
-                released = true;
-                break;
+        object_property_iter_init(&iter, obj);
+        while ((prop = object_property_iter_next(&iter)) != NULL) {
+            if (g_hash_table_add(done, prop)) {
+                if (prop->release) {
+                    prop->release(obj, prop->name, prop->opaque);
+                    released = true;
+                    break;
+                }
             }
-            g_hash_table_iter_remove(&iter);
         }
     } while (released);
 
@@ -475,7 +667,7 @@ static void object_finalize(void *data)
     object_property_del_all(obj);
     object_deinit(obj, ti);
 
-    g_assert_cmpint(obj->ref, ==, 0);
+    g_assert(obj->ref == 0);
     if (obj->free) {
         obj->free(obj);
     }
@@ -493,6 +685,11 @@ static Object *object_new_with_type(Type type)
     obj->free = g_free;
 
     return obj;
+}
+
+Object *object_new_with_class(ObjectClass *klass)
+{
+    return object_new_with_type(klass->type);
 }
 
 Object *object_new(const char *typename)
@@ -529,6 +726,7 @@ Object *object_new_with_propv(const char *typename,
     Object *obj;
     ObjectClass *klass;
     Error *local_err = NULL;
+    UserCreatable *uc;
 
     klass = object_class_by_name(typename);
     if (!klass) {
@@ -540,21 +738,26 @@ Object *object_new_with_propv(const char *typename,
         error_setg(errp, "object type '%s' is abstract", typename);
         return NULL;
     }
-    obj = object_new(typename);
+    obj = object_new_with_type(klass->type);
 
     if (object_set_propv(obj, &local_err, vargs) < 0) {
         goto error;
     }
 
-    object_property_add_child(parent, id, obj, &local_err);
-    if (local_err) {
-        goto error;
+    if (id != NULL) {
+        object_property_add_child(parent, id, obj, &local_err);
+        if (local_err) {
+            goto error;
+        }
     }
 
-    if (object_dynamic_cast(obj, TYPE_USER_CREATABLE)) {
-        user_creatable_complete(obj, &local_err);
+    uc = (UserCreatable *)object_dynamic_cast(obj, TYPE_USER_CREATABLE);
+    if (uc) {
+        user_creatable_complete(uc, &local_err);
         if (local_err) {
-            object_unparent(obj);
+            if (id != NULL) {
+                object_unparent(obj);
+            }
             goto error;
         }
     }
@@ -904,12 +1107,13 @@ GSList *object_class_get_list_sorted(const char *implements_type,
                         object_class_cmp);
 }
 
-void object_ref(Object *obj)
+Object *object_ref(Object *obj)
 {
     if (!obj) {
-        return;
+        return NULL;
     }
     atomic_inc(&obj->ref);
+    return obj;
 }
 
 void object_unref(Object *obj)
@@ -917,7 +1121,7 @@ void object_unref(Object *obj)
     if (!obj) {
         return;
     }
-    g_assert_cmpint(obj->ref, >, 0);
+    g_assert(obj->ref > 0);
 
     /* parent always holds a reference to its children */
     if (atomic_fetch_dec(&obj->ref) == 1) {
@@ -956,9 +1160,8 @@ object_property_add(Object *obj, const char *name, const char *type,
     }
 
     if (object_property_find(obj, name, NULL) != NULL) {
-        error_setg(errp, "attempt to add duplicate property '%s'"
-                   " to object (type '%s')", name,
-                   object_get_typename(obj));
+        error_setg(errp, "attempt to add duplicate property '%s' to object (type '%s')",
+                   name, object_get_typename(obj));
         return NULL;
     }
 
@@ -989,9 +1192,8 @@ object_class_property_add(ObjectClass *klass,
     ObjectProperty *prop;
 
     if (object_class_property_find(klass, name, NULL) != NULL) {
-        error_setg(errp, "attempt to add duplicate property '%s'"
-                   " to object (type '%s')", name,
-                   object_class_get_name(klass));
+        error_setg(errp, "attempt to add duplicate property '%s' to class (type '%s')",
+                   name, object_class_get_name(klass));
         return NULL;
     }
 
@@ -1005,7 +1207,7 @@ object_class_property_add(ObjectClass *klass,
     prop->release = release;
     prop->opaque = opaque;
 
-    g_hash_table_insert(klass->properties, g_strdup(name), prop);
+    g_hash_table_insert(klass->properties, prop->name, prop);
 
     return prop;
 }
@@ -1054,7 +1256,7 @@ void object_class_property_iter_init(ObjectPropertyIterator *iter,
                                      ObjectClass *klass)
 {
     g_hash_table_iter_init(&iter->iter, klass->properties);
-    iter->nextclass = klass;
+    iter->nextclass = object_class_get_parent(klass);
 }
 
 ObjectProperty *object_class_property_find(ObjectClass *klass, const char *name,
@@ -1129,7 +1331,7 @@ void object_property_set_str(Object *obj, const char *value,
     QString *qstr = qstring_from_str(value);
     object_property_set_qobject(obj, QOBJECT(qstr), name, errp);
 
-    QDECREF(qstr);
+    qobject_unref(qstr);
 }
 
 char *object_property_get_str(Object *obj, const char *name,
@@ -1147,7 +1349,7 @@ char *object_property_get_str(Object *obj, const char *name,
         error_setg(errp, QERR_INVALID_PARAMETER_TYPE, name, "string");
     }
 
-    qobject_decref(ret);
+    qobject_unref(ret);
     return retval;
 }
 
@@ -1187,7 +1389,7 @@ void object_property_set_bool(Object *obj, bool value,
     QBool *qbool = qbool_from_bool(value);
     object_property_set_qobject(obj, QOBJECT(qbool), name, errp);
 
-    QDECREF(qbool);
+    qobject_unref(qbool);
 }
 
 bool object_property_get_bool(Object *obj, const char *name,
@@ -1208,7 +1410,7 @@ bool object_property_get_bool(Object *obj, const char *name,
         retval = qbool_get_bool(qbool);
     }
 
-    qobject_decref(ret);
+    qobject_unref(ret);
     return retval;
 }
 
@@ -1218,7 +1420,7 @@ void object_property_set_int(Object *obj, int64_t value,
     QNum *qnum = qnum_from_int(value);
     object_property_set_qobject(obj, QOBJECT(qnum), name, errp);
 
-    QDECREF(qnum);
+    qobject_unref(qnum);
 }
 
 int64_t object_property_get_int(Object *obj, const char *name,
@@ -1238,8 +1440,47 @@ int64_t object_property_get_int(Object *obj, const char *name,
         retval = -1;
     }
 
-    qobject_decref(ret);
+    qobject_unref(ret);
     return retval;
+}
+
+static void object_property_init_defval(Object *obj, ObjectProperty *prop)
+{
+    Visitor *v = qobject_input_visitor_new(prop->defval);
+
+    assert(prop->set != NULL);
+    prop->set(obj, v, prop->name, prop->opaque, &error_abort);
+
+    visit_free(v);
+}
+
+static void object_property_set_default(ObjectProperty *prop, QObject *defval)
+{
+    assert(!prop->defval);
+    assert(!prop->init);
+
+    prop->defval = defval;
+    prop->init = object_property_init_defval;
+}
+
+void object_property_set_default_bool(ObjectProperty *prop, bool value)
+{
+    object_property_set_default(prop, QOBJECT(qbool_from_bool(value)));
+}
+
+void object_property_set_default_str(ObjectProperty *prop, const char *value)
+{
+    object_property_set_default(prop, QOBJECT(qstring_from_str(value)));
+}
+
+void object_property_set_default_int(ObjectProperty *prop, int64_t value)
+{
+    object_property_set_default(prop, QOBJECT(qnum_from_int(value)));
+}
+
+void object_property_set_default_uint(ObjectProperty *prop, uint64_t value)
+{
+    object_property_set_default(prop, QOBJECT(qnum_from_uint(value)));
 }
 
 void object_property_set_uint(Object *obj, uint64_t value,
@@ -1248,7 +1489,7 @@ void object_property_set_uint(Object *obj, uint64_t value,
     QNum *qnum = qnum_from_uint(value);
 
     object_property_set_qobject(obj, QOBJECT(qnum), name, errp);
-    QDECREF(qnum);
+    qobject_unref(qnum);
 }
 
 uint64_t object_property_get_uint(Object *obj, const char *name,
@@ -1267,7 +1508,7 @@ uint64_t object_property_get_uint(Object *obj, const char *name,
         retval = 0;
     }
 
-    qobject_decref(ret);
+    qobject_unref(ret);
     return retval;
 }
 
@@ -1472,21 +1713,37 @@ void object_property_allow_set_link(const Object *obj, const char *name,
 }
 
 typedef struct {
-    Object **child;
+    union {
+        Object **targetp;
+        Object *target; /* if OBJ_PROP_LINK_DIRECT, when holding the pointer  */
+        ptrdiff_t offset; /* if OBJ_PROP_LINK_CLASS */
+    };
     void (*check)(const Object *, const char *, Object *, Error **);
     ObjectPropertyLinkFlags flags;
 } LinkProperty;
+
+static Object **
+object_link_get_targetp(Object *obj, LinkProperty *lprop)
+{
+    if (lprop->flags & OBJ_PROP_LINK_DIRECT) {
+        return &lprop->target;
+    } else if (lprop->flags & OBJ_PROP_LINK_CLASS) {
+        return (void *)obj + lprop->offset;
+    } else {
+        return lprop->targetp;
+    }
+}
 
 static void object_get_link_property(Object *obj, Visitor *v,
                                      const char *name, void *opaque,
                                      Error **errp)
 {
     LinkProperty *lprop = opaque;
-    Object **child = lprop->child;
+    Object **targetp = object_link_get_targetp(obj, lprop);
     gchar *path;
 
-    if (*child) {
-        path = object_get_canonical_path(*child);
+    if (*targetp) {
+        path = object_get_canonical_path(*targetp);
         visit_type_str(v, name, &path, errp);
         g_free(path);
     } else {
@@ -1541,8 +1798,8 @@ static void object_set_link_property(Object *obj, Visitor *v,
 {
     Error *local_err = NULL;
     LinkProperty *prop = opaque;
-    Object **child = prop->child;
-    Object *old_target = *child;
+    Object **targetp = object_link_get_targetp(obj, prop);
+    Object *old_target = *targetp;
     Object *new_target = NULL;
     char *path = NULL;
 
@@ -1564,42 +1821,51 @@ static void object_set_link_property(Object *obj, Visitor *v,
         return;
     }
 
-    object_ref(new_target);
-    *child = new_target;
-    object_unref(old_target);
+    *targetp = new_target;
+    if (prop->flags & OBJ_PROP_LINK_STRONG) {
+        object_ref(new_target);
+        object_unref(old_target);
+    }
 }
 
 static Object *object_resolve_link_property(Object *parent, void *opaque, const gchar *part)
 {
     LinkProperty *lprop = opaque;
 
-    return *lprop->child;
+    return *object_link_get_targetp(parent, lprop);
 }
 
 static void object_release_link_property(Object *obj, const char *name,
                                          void *opaque)
 {
     LinkProperty *prop = opaque;
+    Object **targetp = object_link_get_targetp(obj, prop);
 
-    if ((prop->flags & OBJ_PROP_LINK_UNREF_ON_RELEASE) && *prop->child) {
-        object_unref(*prop->child);
+    if ((prop->flags & OBJ_PROP_LINK_STRONG) && *targetp) {
+        object_unref(*targetp);
     }
-    g_free(prop);
+    if (!(prop->flags & OBJ_PROP_LINK_CLASS)) {
+        g_free(prop);
+    }
 }
 
-void object_property_add_link(Object *obj, const char *name,
-                              const char *type, Object **child,
-                              void (*check)(const Object *, const char *,
-                                            Object *, Error **),
-                              ObjectPropertyLinkFlags flags,
-                              Error **errp)
+static void object_add_link_prop(Object *obj, const char *name,
+                                 const char *type, void *ptr,
+                                 void (*check)(const Object *, const char *,
+                                               Object *, Error **),
+                                 ObjectPropertyLinkFlags flags,
+                                 Error **errp)
 {
     Error *local_err = NULL;
     LinkProperty *prop = g_malloc(sizeof(*prop));
     gchar *full_type;
     ObjectProperty *op;
 
-    prop->child = child;
+    if (flags & OBJ_PROP_LINK_DIRECT) {
+        prop->target = ptr;
+    } else {
+        prop->targetp = ptr;
+    }
     prop->check = check;
     prop->flags = flags;
 
@@ -1623,20 +1889,60 @@ out:
     g_free(full_type);
 }
 
+void object_property_add_link(Object *obj, const char *name,
+                              const char *type, Object **targetp,
+                              void (*check)(const Object *, const char *,
+                                            Object *, Error **),
+                              ObjectPropertyLinkFlags flags,
+                              Error **errp)
+{
+    object_add_link_prop(obj, name, type, targetp, check, flags, errp);
+}
+
+ObjectProperty *
+object_class_property_add_link(ObjectClass *oc,
+    const char *name,
+    const char *type, ptrdiff_t offset,
+    void (*check)(const Object *obj, const char *name,
+                  Object *val, Error **errp),
+    ObjectPropertyLinkFlags flags,
+    Error **errp)
+{
+    Error *local_err = NULL;
+    LinkProperty *prop = g_new0(LinkProperty, 1);
+    gchar *full_type;
+    ObjectProperty *op;
+
+    prop->offset = offset;
+    prop->check = check;
+    prop->flags = flags | OBJ_PROP_LINK_CLASS;
+
+    full_type = g_strdup_printf("link<%s>", type);
+
+    op = object_class_property_add(oc, name, full_type,
+                                   object_get_link_property,
+                                   check ? object_set_link_property : NULL,
+                                   object_release_link_property,
+                                   prop,
+                                   &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        g_free(prop);
+        goto out;
+    }
+
+    op->resolve = object_resolve_link_property;
+
+out:
+    g_free(full_type);
+    return op;
+}
+
 void object_property_add_const_link(Object *obj, const char *name,
                                     Object *target, Error **errp)
 {
-    char *link_type;
-    ObjectProperty *op;
-
-    link_type = g_strdup_printf("link<%s>", object_get_typename(target));
-    op = object_property_add(obj, name, link_type,
-                             object_get_child_property, NULL,
-                             NULL, target, errp);
-    if (op != NULL) {
-        op->resolve = object_resolve_child_property;
-    }
-    g_free(link_type);
+    object_add_link_prop(obj, name, object_get_typename(target), target,
+                         NULL, OBJ_PROP_LINK_DIRECT, errp);
 }
 
 gchar *object_get_canonical_path_component(Object *obj)
@@ -1644,8 +1950,9 @@ gchar *object_get_canonical_path_component(Object *obj)
     ObjectProperty *prop = NULL;
     GHashTableIter iter;
 
-    g_assert(obj);
-    g_assert(obj->parent != NULL);
+    if (obj->parent == NULL) {
+        return NULL;
+    }
 
     g_hash_table_iter_init(&iter, obj->parent->properties);
     while (g_hash_table_iter_next(&iter, NULL, (gpointer *)&prop)) {
@@ -1668,25 +1975,29 @@ gchar *object_get_canonical_path(Object *obj)
     Object *root = object_get_root();
     char *newpath, *path = NULL;
 
-    while (obj != root) {
-        char *component = object_get_canonical_path_component(obj);
-
-        if (path) {
-            newpath = g_strdup_printf("%s/%s", component, path);
-            g_free(component);
-            g_free(path);
-            path = newpath;
-        } else {
-            path = component;
-        }
-
-        obj = obj->parent;
+    if (obj == root) {
+        return g_strdup("/");
     }
 
-    newpath = g_strdup_printf("/%s", path ? path : "");
-    g_free(path);
+    do {
+        char *component = object_get_canonical_path_component(obj);
 
-    return newpath;
+        if (!component) {
+            /* A canonical path must be complete, so discard what was
+             * collected so far.
+             */
+            g_free(path);
+            return NULL;
+        }
+
+        newpath = g_strdup_printf("/%s%s", component, path ? path : "");
+        g_free(path);
+        g_free(component);
+        path = newpath;
+        obj = obj->parent;
+    } while (obj != root);
+
+    return path;
 }
 
 Object *object_resolve_path_component(Object *parent, const gchar *part)
@@ -1862,7 +2173,8 @@ void object_property_add_str(Object *obj, const char *name,
     }
 }
 
-void object_class_property_add_str(ObjectClass *klass, const char *name,
+ObjectProperty *
+object_class_property_add_str(ObjectClass *klass, const char *name,
                                    char *(*get)(Object *, Error **),
                                    void (*set)(Object *, const char *,
                                                Error **),
@@ -1870,19 +2182,22 @@ void object_class_property_add_str(ObjectClass *klass, const char *name,
 {
     Error *local_err = NULL;
     StringProperty *prop = g_malloc0(sizeof(*prop));
+    ObjectProperty *rv;
 
     prop->get = get;
     prop->set = set;
 
-    object_class_property_add(klass, name, "string",
+    rv = object_class_property_add(klass, name, "string",
                               get ? property_get_str : NULL,
                               set ? property_set_str : NULL,
-                              property_release_str,
+                              NULL,
                               prop, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         g_free(prop);
     }
+
+    return rv;
 }
 
 typedef struct BoolProperty
@@ -1952,26 +2267,30 @@ void object_property_add_bool(Object *obj, const char *name,
     }
 }
 
-void object_class_property_add_bool(ObjectClass *klass, const char *name,
+ObjectProperty *
+object_class_property_add_bool(ObjectClass *klass, const char *name,
                                     bool (*get)(Object *, Error **),
                                     void (*set)(Object *, bool, Error **),
                                     Error **errp)
 {
     Error *local_err = NULL;
     BoolProperty *prop = g_malloc0(sizeof(*prop));
+    ObjectProperty *rv;
 
     prop->get = get;
     prop->set = set;
 
-    object_class_property_add(klass, name, "bool",
+    rv = object_class_property_add(klass, name, "bool",
                               get ? property_get_bool : NULL,
                               set ? property_set_bool : NULL,
-                              property_release_bool,
+                              NULL,
                               prop, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         g_free(prop);
     }
+
+    return rv;
 }
 
 static void property_get_enum(Object *obj, Visitor *v, const char *name,
@@ -2037,7 +2356,8 @@ void object_property_add_enum(Object *obj, const char *name,
     }
 }
 
-void object_class_property_add_enum(ObjectClass *klass, const char *name,
+ObjectProperty *
+object_class_property_add_enum(ObjectClass *klass, const char *name,
                                     const char *typename,
                                     const QEnumLookup *lookup,
                                     int (*get)(Object *, Error **),
@@ -2046,20 +2366,23 @@ void object_class_property_add_enum(ObjectClass *klass, const char *name,
 {
     Error *local_err = NULL;
     EnumProperty *prop = g_malloc(sizeof(*prop));
+    ObjectProperty *rv;
 
     prop->lookup = lookup;
     prop->get = get;
     prop->set = set;
 
-    object_class_property_add(klass, name, typename,
+    rv = object_class_property_add(klass, name, typename,
                               get ? property_get_enum : NULL,
                               set ? property_set_enum : NULL,
-                              property_release_enum,
+                              NULL,
                               prop, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         g_free(prop);
     }
+
+    return rv;
 }
 
 typedef struct TMProperty {
@@ -2140,23 +2463,27 @@ void object_property_add_tm(Object *obj, const char *name,
     }
 }
 
-void object_class_property_add_tm(ObjectClass *klass, const char *name,
+ObjectProperty *
+object_class_property_add_tm(ObjectClass *klass, const char *name,
                                   void (*get)(Object *, struct tm *, Error **),
                                   Error **errp)
 {
     Error *local_err = NULL;
     TMProperty *prop = g_malloc0(sizeof(*prop));
+    ObjectProperty *rv;
 
     prop->get = get;
 
-    object_class_property_add(klass, name, "struct tm",
+    rv = object_class_property_add(klass, name, "struct tm",
                               get ? property_get_tm : NULL, NULL,
-                              property_release_tm,
+                              NULL,
                               prop, &local_err);
     if (local_err) {
         error_propagate(errp, local_err);
         g_free(prop);
     }
+
+    return rv;
 }
 
 static char *qdev_get_type(Object *obj, Error **errp)
@@ -2171,11 +2498,43 @@ static void property_get_uint8_ptr(Object *obj, Visitor *v, const char *name,
     visit_type_uint8(v, name, &value, errp);
 }
 
+static void property_set_uint8_ptr(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+    uint8_t *field = opaque;
+    uint8_t value;
+    Error *local_err = NULL;
+
+    visit_type_uint8(v, name, &value, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    *field = value;
+}
+
 static void property_get_uint16_ptr(Object *obj, Visitor *v, const char *name,
                                     void *opaque, Error **errp)
 {
     uint16_t value = *(uint16_t *)opaque;
     visit_type_uint16(v, name, &value, errp);
+}
+
+static void property_set_uint16_ptr(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    uint16_t *field = opaque;
+    uint16_t value;
+    Error *local_err = NULL;
+
+    visit_type_uint16(v, name, &value, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    *field = value;
 }
 
 static void property_get_uint32_ptr(Object *obj, Visitor *v, const char *name,
@@ -2185,6 +2544,22 @@ static void property_get_uint32_ptr(Object *obj, Visitor *v, const char *name,
     visit_type_uint32(v, name, &value, errp);
 }
 
+static void property_set_uint32_ptr(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    uint32_t *field = opaque;
+    uint32_t value;
+    Error *local_err = NULL;
+
+    visit_type_uint32(v, name, &value, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    *field = value;
+}
+
 static void property_get_uint64_ptr(Object *obj, Visitor *v, const char *name,
                                     void *opaque, Error **errp)
 {
@@ -2192,60 +2567,184 @@ static void property_get_uint64_ptr(Object *obj, Visitor *v, const char *name,
     visit_type_uint64(v, name, &value, errp);
 }
 
-void object_property_add_uint8_ptr(Object *obj, const char *name,
-                                   const uint8_t *v, Error **errp)
+static void property_set_uint64_ptr(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
 {
-    object_property_add(obj, name, "uint8", property_get_uint8_ptr,
-                        NULL, NULL, (void *)v, errp);
+    uint64_t *field = opaque;
+    uint64_t value;
+    Error *local_err = NULL;
+
+    visit_type_uint64(v, name, &value, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
+    *field = value;
 }
 
-void object_class_property_add_uint8_ptr(ObjectClass *klass, const char *name,
-                                         const uint8_t *v, Error **errp)
+void object_property_add_uint8_ptr(Object *obj, const char *name,
+                                   const uint8_t *v,
+                                   ObjectPropertyFlags flags,
+                                   Error **errp)
 {
-    object_class_property_add(klass, name, "uint8", property_get_uint8_ptr,
-                              NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint8_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint8_ptr;
+    }
+
+    object_property_add(obj, name, "uint8",
+                        getter, setter, NULL, (void *)v, errp);
+}
+
+ObjectProperty *
+object_class_property_add_uint8_ptr(ObjectClass *klass, const char *name,
+                                    const uint8_t *v,
+                                    ObjectPropertyFlags flags,
+                                    Error **errp)
+{
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint8_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint8_ptr;
+    }
+
+    return object_class_property_add(klass, name, "uint8",
+                                     getter, setter, NULL, (void *)v, errp);
 }
 
 void object_property_add_uint16_ptr(Object *obj, const char *name,
-                                    const uint16_t *v, Error **errp)
+                                    const uint16_t *v,
+                                    ObjectPropertyFlags flags,
+                                    Error **errp)
 {
-    object_property_add(obj, name, "uint16", property_get_uint16_ptr,
-                        NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint16_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint16_ptr;
+    }
+
+    object_property_add(obj, name, "uint16",
+                        getter, setter, NULL, (void *)v, errp);
 }
 
-void object_class_property_add_uint16_ptr(ObjectClass *klass, const char *name,
-                                          const uint16_t *v, Error **errp)
+ObjectProperty *
+object_class_property_add_uint16_ptr(ObjectClass *klass, const char *name,
+                                     const uint16_t *v,
+                                     ObjectPropertyFlags flags,
+                                     Error **errp)
 {
-    object_class_property_add(klass, name, "uint16", property_get_uint16_ptr,
-                              NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint16_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint16_ptr;
+    }
+
+    return object_class_property_add(klass, name, "uint16",
+                                     getter, setter, NULL, (void *)v, errp);
 }
 
 void object_property_add_uint32_ptr(Object *obj, const char *name,
-                                    const uint32_t *v, Error **errp)
+                                    const uint32_t *v,
+                                    ObjectPropertyFlags flags,
+                                    Error **errp)
 {
-    object_property_add(obj, name, "uint32", property_get_uint32_ptr,
-                        NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint32_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint32_ptr;
+    }
+
+    object_property_add(obj, name, "uint32",
+                        getter, setter, NULL, (void *)v, errp);
 }
 
-void object_class_property_add_uint32_ptr(ObjectClass *klass, const char *name,
-                                          const uint32_t *v, Error **errp)
+ObjectProperty *
+object_class_property_add_uint32_ptr(ObjectClass *klass, const char *name,
+                                     const uint32_t *v,
+                                     ObjectPropertyFlags flags,
+                                     Error **errp)
 {
-    object_class_property_add(klass, name, "uint32", property_get_uint32_ptr,
-                              NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint32_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint32_ptr;
+    }
+
+    return object_class_property_add(klass, name, "uint32",
+                                     getter, setter, NULL, (void *)v, errp);
 }
 
 void object_property_add_uint64_ptr(Object *obj, const char *name,
-                                    const uint64_t *v, Error **errp)
+                                    const uint64_t *v,
+                                    ObjectPropertyFlags flags,
+                                    Error **errp)
 {
-    object_property_add(obj, name, "uint64", property_get_uint64_ptr,
-                        NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint64_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint64_ptr;
+    }
+
+    object_property_add(obj, name, "uint64",
+                        getter, setter, NULL, (void *)v, errp);
 }
 
-void object_class_property_add_uint64_ptr(ObjectClass *klass, const char *name,
-                                          const uint64_t *v, Error **errp)
+ObjectProperty *
+object_class_property_add_uint64_ptr(ObjectClass *klass, const char *name,
+                                     const uint64_t *v,
+                                     ObjectPropertyFlags flags,
+                                     Error **errp)
 {
-    object_class_property_add(klass, name, "uint64", property_get_uint64_ptr,
-                              NULL, NULL, (void *)v, errp);
+    ObjectPropertyAccessor *getter = NULL;
+    ObjectPropertyAccessor *setter = NULL;
+
+    if ((flags & OBJ_PROP_FLAG_READ) == OBJ_PROP_FLAG_READ) {
+        getter = property_get_uint64_ptr;
+    }
+
+    if ((flags & OBJ_PROP_FLAG_WRITE) == OBJ_PROP_FLAG_WRITE) {
+        setter = property_set_uint64_ptr;
+    }
+
+    return object_class_property_add(klass, name, "uint64",
+                                     getter, setter, NULL, (void *)v, errp);
 }
 
 typedef struct {
@@ -2322,6 +2821,9 @@ void object_property_add_alias(Object *obj, const char *name,
         goto out;
     }
     op->resolve = property_resolve_alias;
+    if (target_prop->defval) {
+        op->defval = qobject_ref(target_prop->defval);
+    }
 
     object_property_set_description(obj, op->name,
                                     target_prop->description,
@@ -2362,9 +2864,10 @@ void object_class_property_set_description(ObjectClass *klass,
     op->description = g_strdup(description);
 }
 
-static void object_instance_init(Object *obj)
+static void object_class_init(ObjectClass *klass, void *data)
 {
-    object_property_add_str(obj, "type", qdev_get_type, NULL, NULL);
+    object_class_property_add_str(klass, "type", qdev_get_type,
+                                  NULL, &error_abort);
 }
 
 static void register_types(void)
@@ -2378,7 +2881,7 @@ static void register_types(void)
     static TypeInfo object_info = {
         .name = TYPE_OBJECT,
         .instance_size = sizeof(Object),
-        .instance_init = object_instance_init,
+        .class_init = object_class_init,
         .abstract = true,
     };
 

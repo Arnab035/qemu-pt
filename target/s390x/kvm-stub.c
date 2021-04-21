@@ -8,7 +8,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "kvm_s390x.h"
 
@@ -60,12 +59,12 @@ int kvm_s390_get_clock_ext(uint8_t *tod_high, uint64_t *tod_low)
     return -ENOSYS;
 }
 
-int kvm_s390_set_clock(uint8_t *tod_high, uint64_t *tod_low)
+int kvm_s390_set_clock(uint8_t tod_high, uint64_t tod_low)
 {
     return -ENOSYS;
 }
 
-int kvm_s390_set_clock_ext(uint8_t *tod_high, uint64_t *tod_low)
+int kvm_s390_set_clock_ext(uint8_t tod_high, uint64_t tod_low)
 {
     return -ENOSYS;
 }
@@ -84,13 +83,25 @@ void kvm_s390_cmma_reset(void)
 {
 }
 
-void kvm_s390_reset_vcpu(S390CPU *cpu)
+void kvm_s390_reset_vcpu_initial(S390CPU *cpu)
+{
+}
+
+void kvm_s390_reset_vcpu_clear(S390CPU *cpu)
+{
+}
+
+void kvm_s390_reset_vcpu_normal(S390CPU *cpu)
 {
 }
 
 int kvm_s390_set_mem_limit(uint64_t new_limit, uint64_t *hw_limit)
 {
     return 0;
+}
+
+void kvm_s390_set_max_pagesize(uint64_t pagesize, Error **errp)
+{
 }
 
 void kvm_s390_crypto_reset(void)

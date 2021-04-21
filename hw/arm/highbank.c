@@ -18,13 +18,15 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
-#include "hw/arm/arm.h"
-#include "hw/devices.h"
+#include "migration/vmstate.h"
+#include "hw/arm/boot.h"
 #include "hw/loader.h"
 #include "net/net.h"
 #include "sysemu/kvm.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "exec/address-spaces.h"
@@ -76,7 +78,8 @@ static void hb_write_secondary(ARMCPU *cpu, const struct arm_boot_info *info)
     for (n = 0; n < ARRAY_SIZE(smpboot); n++) {
         smpboot[n] = tswap32(smpboot[n]);
     }
-    rom_add_blob_fixed("smpboot", smpboot, sizeof(smpboot), SMP_BOOT_ADDR);
+    rom_add_blob_fixed_as("smpboot", smpboot, sizeof(smpboot), SMP_BOOT_ADDR,
+                          arm_boot_address_space(cpu, info));
 }
 
 static void hb_reset_secondary(ARMCPU *cpu, const struct arm_boot_info *info)
@@ -233,18 +236,16 @@ enum cxmachines {
  */
 static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
 {
-    ram_addr_t ram_size = machine->ram_size;
-    const char *kernel_filename = machine->kernel_filename;
-    const char *kernel_cmdline = machine->kernel_cmdline;
-    const char *initrd_filename = machine->initrd_filename;
     DeviceState *dev = NULL;
     SysBusDevice *busdev;
     qemu_irq pic[128];
     int n;
+    unsigned int smp_cpus = machine->smp.cpus;
     qemu_irq cpu_irq[4];
     qemu_irq cpu_fiq[4];
+    qemu_irq cpu_virq[4];
+    qemu_irq cpu_vfiq[4];
     MemoryRegion *sysram;
-    MemoryRegion *dram;
     MemoryRegion *sysmem;
     char *sysboot_filename;
 
@@ -282,16 +283,16 @@ static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
         object_property_set_bool(cpuobj, true, "realized", &error_fatal);
         cpu_irq[n] = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_IRQ);
         cpu_fiq[n] = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_FIQ);
+        cpu_virq[n] = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_VIRQ);
+        cpu_vfiq[n] = qdev_get_gpio_in(DEVICE(cpu), ARM_CPU_VFIQ);
     }
 
     sysmem = get_system_memory();
-    dram = g_new(MemoryRegion, 1);
-    memory_region_allocate_system_memory(dram, NULL, "highbank.dram", ram_size);
     /* SDRAM at address zero.  */
-    memory_region_add_subregion(sysmem, 0, dram);
+    memory_region_add_subregion(sysmem, 0, machine->ram);
 
     sysram = g_new(MemoryRegion, 1);
-    memory_region_init_ram_nomigrate(sysram, NULL, "highbank.sysram", 0x8000,
+    memory_region_init_ram(sysram, NULL, "highbank.sysram", 0x8000,
                            &error_fatal);
     memory_region_add_subregion(sysmem, 0xfff88000, sysram);
     if (bios_name != NULL) {
@@ -329,6 +330,8 @@ static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
     for (n = 0; n < smp_cpus; n++) {
         sysbus_connect_irq(busdev, n, cpu_irq[n]);
         sysbus_connect_irq(busdev, n + smp_cpus, cpu_fiq[n]);
+        sysbus_connect_irq(busdev, n + 2 * smp_cpus, cpu_virq[n]);
+        sysbus_connect_irq(busdev, n + 3 * smp_cpus, cpu_vfiq[n]);
     }
 
     for (n = 0; n < 128; n++) {
@@ -342,7 +345,7 @@ static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
     busdev = SYS_BUS_DEVICE(dev);
     sysbus_mmio_map(busdev, 0, 0xfff34000);
     sysbus_connect_irq(busdev, 0, pic[18]);
-    pl011_create(0xfff36000, pic[20], serial_hds[0]);
+    pl011_create(0xfff36000, pic[20], serial_hd(0));
 
     dev = qdev_create(NULL, TYPE_HIGHBANK_REGISTERS);
     qdev_init_nofail(dev);
@@ -380,10 +383,7 @@ static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
 
     /* TODO create and connect IDE devices for ide_drive_get() */
 
-    highbank_binfo.ram_size = ram_size;
-    highbank_binfo.kernel_filename = kernel_filename;
-    highbank_binfo.kernel_cmdline = kernel_cmdline;
-    highbank_binfo.initrd_filename = initrd_filename;
+    highbank_binfo.ram_size = machine->ram_size;
     /* highbank requires a dtb in order to boot, and the dtb will override
      * the board ID. The following value is ignored, so set it to -1 to be
      * clear that the value is meaningless.
@@ -403,7 +403,7 @@ static void calxeda_init(MachineState *machine, enum cxmachines machine_id)
                     "may not boot.");
     }
 
-    arm_load_kernel(ARM_CPU(first_cpu), &highbank_binfo);
+    arm_load_kernel(ARM_CPU(first_cpu), machine, &highbank_binfo);
 }
 
 static void highbank_init(MachineState *machine)
@@ -426,6 +426,7 @@ static void highbank_class_init(ObjectClass *oc, void *data)
     mc->units_per_default_bus = 1;
     mc->max_cpus = 4;
     mc->ignore_memory_transaction_failures = true;
+    mc->default_ram_id = "highbank.dram";
 }
 
 static const TypeInfo highbank_type = {
@@ -444,6 +445,7 @@ static void midway_class_init(ObjectClass *oc, void *data)
     mc->units_per_default_bus = 1;
     mc->max_cpus = 4;
     mc->ignore_memory_transaction_failures = true;
+    mc->default_ram_id = "highbank.dram";
 }
 
 static const TypeInfo midway_type = {

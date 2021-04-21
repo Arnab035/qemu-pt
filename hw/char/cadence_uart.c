@@ -23,11 +23,14 @@
 
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "chardev/char-fe.h"
 #include "chardev/char-serial.h"
 #include "qemu/timer.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "hw/char/cadence_uart.h"
+#include "hw/irq.h"
 
 #ifdef CADENCE_UART_ERR_DEBUG
 #define DB_PRINT(...) do { \
@@ -345,7 +348,7 @@ static void uart_receive(void *opaque, const uint8_t *buf, int size)
     }
 }
 
-static void uart_event(void *opaque, int event)
+static void uart_event(void *opaque, QEMUChrEvent event)
 {
     CadenceUARTState *s = opaque;
     uint8_t buf = '\0';
@@ -547,7 +550,7 @@ static void cadence_uart_class_init(ObjectClass *klass, void *data)
     dc->realize = cadence_uart_realize;
     dc->vmsd = &vmstate_cadence_uart;
     dc->reset = cadence_uart_reset;
-    dc->props = cadence_uart_properties;
+    device_class_set_props(dc, cadence_uart_properties);
   }
 
 static const TypeInfo cadence_uart_info = {

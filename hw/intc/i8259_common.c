@@ -22,9 +22,12 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
-#include "hw/i386/pc.h"
+#include "hw/intc/i8259.h"
 #include "hw/isa/i8259_internal.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "monitor/monitor.h"
 
 static int irq_level[16];
@@ -181,7 +184,7 @@ static void pic_common_class_init(ObjectClass *klass, void *data)
     InterruptStatsProviderClass *ic = INTERRUPT_STATS_PROVIDER_CLASS(klass);
 
     dc->vmsd = &vmstate_pic_common;
-    dc->props = pic_properties_common;
+    device_class_set_props(dc, pic_properties_common);
     dc->realize = pic_common_realize;
     /*
      * Reason: unlike ordinary ISA devices, the PICs need additional

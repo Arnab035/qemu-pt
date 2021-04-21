@@ -12,7 +12,6 @@
 
 #include "qemu/osdep.h"
 #include "qapi/qmp/qstring.h"
-#include "qemu-common.h"
 
 /**
  * qstring_new(): Create a new empty QString
@@ -37,20 +36,22 @@ size_t qstring_get_length(const QString *qstring)
  *
  * Return string reference
  */
-QString *qstring_from_substr(const char *str, int start, int end)
+QString *qstring_from_substr(const char *str, size_t start, size_t end)
 {
     QString *qstring;
+
+    assert(start <= end);
 
     qstring = g_malloc(sizeof(*qstring));
     qobject_init(QOBJECT(qstring), QTYPE_QSTRING);
 
-    qstring->length = end - start + 1;
+    qstring->length = end - start;
     qstring->capacity = qstring->length;
 
+    assert(qstring->capacity < SIZE_MAX);
     qstring->string = g_malloc(qstring->capacity + 1);
     memcpy(qstring->string, str + start, qstring->length);
     qstring->string[qstring->length] = 0;
-
 
     return qstring;
 }
@@ -62,13 +63,15 @@ QString *qstring_from_substr(const char *str, int start, int end)
  */
 QString *qstring_from_str(const char *str)
 {
-    return qstring_from_substr(str, 0, strlen(str) - 1);
+    return qstring_from_substr(str, 0, strlen(str));
 }
 
 static void capacity_increase(QString *qstring, size_t len)
 {
     if (qstring->capacity < (qstring->length + len)) {
+        assert(len <= SIZE_MAX - qstring->capacity);
         qstring->capacity += len;
+        assert(qstring->capacity <= SIZE_MAX / 2);
         qstring->capacity *= 2; /* use exponential growth */
 
         qstring->string = g_realloc(qstring->string, qstring->capacity + 1);
@@ -147,15 +150,32 @@ bool qstring_is_equal(const QObject *x, const QObject *y)
 }
 
 /**
+ * qstring_free(): Free the memory allocated by a QString object
+ *
+ * Return: if @return_str, return the underlying string, to be
+ * g_free(), otherwise NULL is returned.
+ */
+char *qstring_free(QString *qstring, bool return_str)
+{
+    char *rv = NULL;
+
+    if (return_str) {
+        rv = qstring->string;
+    } else {
+        g_free(qstring->string);
+    }
+
+    g_free(qstring);
+
+    return rv;
+}
+
+/**
  * qstring_destroy_obj(): Free all memory allocated by a QString
  * object
  */
 void qstring_destroy_obj(QObject *obj)
 {
-    QString *qs;
-
     assert(obj != NULL);
-    qs = qobject_to(QString, obj);
-    g_free(qs->string);
-    g_free(qs);
+    qstring_free(qobject_to(QString, obj), FALSE);
 }

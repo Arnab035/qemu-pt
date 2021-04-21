@@ -28,18 +28,23 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/block/fdc.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/timer.h"
+#include "hw/irq.h"
 #include "hw/isa/isa.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/block/block.h"
 #include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "sysemu/sysemu.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
+#include "qemu/module.h"
+#include "trace.h"
 
 /********************************************************/
 /* debug Floppy devices */
@@ -396,16 +401,9 @@ static int pick_geometry(FDrive *drv)
                            nb_sectors,
                            FloppyDriveType_str(parse->drive));
         }
+        assert(type_match != -1 && "misconfigured fd_format");
         match = type_match;
     }
-
-    /* No match of any kind found -- fd_format is misconfigured, abort. */
-    if (match == -1) {
-        error_setg(&error_abort, "No candidate geometries present in table "
-                   " for floppy drive type '%s'",
-                   FloppyDriveType_str(drv->drive));
-    }
-
     parse = &(fd_formats[match]);
 
  out:
@@ -519,6 +517,7 @@ static void floppy_drive_realize(DeviceState *qdev, Error **errp)
     FloppyDrive *dev = FLOPPY_DRIVE(qdev);
     FloppyBus *bus = FLOPPY_BUS(qdev->parent_bus);
     FDrive *drive;
+    bool read_only;
     int ret;
 
     if (dev->unit == -1) {
@@ -544,9 +543,15 @@ static void floppy_drive_realize(DeviceState *qdev, Error **errp)
 
     if (!dev->conf.blk) {
         /* Anonymous BlockBackend for an empty drive */
-        dev->conf.blk = blk_new(0, BLK_PERM_ALL);
+        dev->conf.blk = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
         ret = blk_attach_dev(dev->conf.blk, qdev);
         assert(ret == 0);
+
+        /* Don't take write permissions on an empty drive to allow attaching a
+         * read-only node later */
+        read_only = true;
+    } else {
+        read_only = !blk_bs(dev->conf.blk) || blk_is_read_only(dev->conf.blk);
     }
 
     blkconf_blocksizes(&dev->conf);
@@ -564,9 +569,7 @@ static void floppy_drive_realize(DeviceState *qdev, Error **errp)
     dev->conf.rerror = BLOCKDEV_ON_ERROR_AUTO;
     dev->conf.werror = BLOCKDEV_ON_ERROR_AUTO;
 
-    if (!blkconf_apply_backend_options(&dev->conf,
-                                       blk_is_read_only(dev->conf.blk),
-                                       false, errp)) {
+    if (!blkconf_apply_backend_options(&dev->conf, read_only, false, errp)) {
         return;
     }
 
@@ -603,7 +606,7 @@ static void floppy_drive_class_init(ObjectClass *klass, void *data)
     k->realize = floppy_drive_realize;
     set_bit(DEVICE_CATEGORY_STORAGE, k->categories);
     k->bus_type = TYPE_FLOPPY_BUS;
-    k->props = floppy_drive_properties;
+    device_class_set_props(k, floppy_drive_properties);
     k->desc = "virtual floppy drive";
 }
 
@@ -934,7 +937,7 @@ static uint32_t fdctrl_read (void *opaque, uint32_t reg)
         retval = (uint32_t)(-1);
         break;
     }
-    FLOPPY_DPRINTF("read reg%d: 0x%02x\n", reg & 7, retval);
+    trace_fdc_ioport_read(reg, retval);
 
     return retval;
 }
@@ -943,9 +946,8 @@ static void fdctrl_write (void *opaque, uint32_t reg, uint32_t value)
 {
     FDCtrl *fdctrl = opaque;
 
-    FLOPPY_DPRINTF("write reg%d: 0x%02x\n", reg & 7, value);
-
     reg &= 7;
+    trace_fdc_ioport_write(reg, value);
     switch (reg) {
     case FD_REG_DOR:
         fdctrl_write_dor(fdctrl, value);
@@ -1624,7 +1626,7 @@ static void fdctrl_stop_transfer(FDCtrl *fdctrl, uint8_t status0,
     fdctrl->fifo[5] = cur_drv->sect;
     fdctrl->fifo[6] = FD_SECTOR_SC;
     fdctrl->data_dir = FD_DIR_READ;
-    if (!(fdctrl->msr & FD_MSR_NONDMA)) {
+    if (fdctrl->dma_chann != -1 && !(fdctrl->msr & FD_MSR_NONDMA)) {
         IsaDmaClass *k = ISADMA_GET_CLASS(fdctrl->dma);
         k->release_DREQ(fdctrl->dma, fdctrl->dma_chann);
     }
@@ -1712,53 +1714,28 @@ static void fdctrl_start_transfer(FDCtrl *fdctrl, int direction)
     }
     fdctrl->eot = fdctrl->fifo[6];
     if (fdctrl->dor & FD_DOR_DMAEN) {
-        IsaDmaTransferMode dma_mode;
+        /* DMA transfer is enabled. */
         IsaDmaClass *k = ISADMA_GET_CLASS(fdctrl->dma);
-        bool dma_mode_ok;
-        /* DMA transfer are enabled. Check if DMA channel is well programmed */
-        dma_mode = k->get_transfer_mode(fdctrl->dma, fdctrl->dma_chann);
-        FLOPPY_DPRINTF("dma_mode=%d direction=%d (%d - %d)\n",
-                       dma_mode, direction,
-                       (128 << fdctrl->fifo[5]) *
+
+        FLOPPY_DPRINTF("direction=%d (%d - %d)\n",
+                       direction, (128 << fdctrl->fifo[5]) *
                        (cur_drv->last_sect - ks + 1), fdctrl->data_len);
-        switch (direction) {
-        case FD_DIR_SCANE:
-        case FD_DIR_SCANL:
-        case FD_DIR_SCANH:
-            dma_mode_ok = (dma_mode == ISADMA_TRANSFER_VERIFY);
-            break;
-        case FD_DIR_WRITE:
-            dma_mode_ok = (dma_mode == ISADMA_TRANSFER_WRITE);
-            break;
-        case FD_DIR_READ:
-            dma_mode_ok = (dma_mode == ISADMA_TRANSFER_READ);
-            break;
-        case FD_DIR_VERIFY:
-            dma_mode_ok = true;
-            break;
-        default:
-            dma_mode_ok = false;
-            break;
-        }
-        if (dma_mode_ok) {
-            /* No access is allowed until DMA transfer has completed */
-            fdctrl->msr &= ~FD_MSR_RQM;
-            if (direction != FD_DIR_VERIFY) {
-                /* Now, we just have to wait for the DMA controller to
-                 * recall us...
-                 */
-                k->hold_DREQ(fdctrl->dma, fdctrl->dma_chann);
-                k->schedule(fdctrl->dma);
-            } else {
-                /* Start transfer */
-                fdctrl_transfer_handler(fdctrl, fdctrl->dma_chann, 0,
-                                        fdctrl->data_len);
-            }
-            return;
+
+        /* No access is allowed until DMA transfer has completed */
+        fdctrl->msr &= ~FD_MSR_RQM;
+        if (direction != FD_DIR_VERIFY) {
+            /*
+             * Now, we just have to wait for the DMA controller to
+             * recall us...
+             */
+            k->hold_DREQ(fdctrl->dma, fdctrl->dma_chann);
+            k->schedule(fdctrl->dma);
         } else {
-            FLOPPY_DPRINTF("bad dma_mode=%d direction=%d\n", dma_mode,
-                           direction);
+            /* Start transfer */
+            fdctrl_transfer_handler(fdctrl, fdctrl->dma_chann, 0,
+                    fdctrl->data_len);
         }
+        return;
     }
     FLOPPY_DPRINTF("start non-DMA transfer\n");
     fdctrl->msr |= FD_MSR_NONDMA | FD_MSR_RQM;
@@ -2654,6 +2631,7 @@ static void fdctrl_realize_common(DeviceState *dev, FDCtrl *fdctrl,
 
     FLOPPY_DPRINTF("init controller\n");
     fdctrl->fifo = qemu_memalign(512, FD_SECTOR_LEN);
+    memset(fdctrl->fifo, 0, FD_SECTOR_LEN);
     fdctrl->fifo_size = 512;
     fdctrl->result_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                              fdctrl_result_timer, fdctrl);
@@ -2824,7 +2802,7 @@ static void isabus_fdc_class_init(ObjectClass *klass, void *data)
     dc->fw_name = "fdc";
     dc->reset = fdctrl_external_reset_isa;
     dc->vmsd = &vmstate_isa_fdc;
-    dc->props = isa_fdc_properties;
+    device_class_set_props(dc, isa_fdc_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
@@ -2877,7 +2855,7 @@ static void sysbus_fdc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = sysbus_fdc_properties;
+    device_class_set_props(dc, sysbus_fdc_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 
@@ -2903,7 +2881,7 @@ static void sun4m_fdc_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = sun4m_fdc_properties;
+    device_class_set_props(dc, sun4m_fdc_properties);
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 }
 

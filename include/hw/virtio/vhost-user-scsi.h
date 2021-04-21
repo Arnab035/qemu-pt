@@ -17,10 +17,9 @@
 #ifndef VHOST_USER_SCSI_H
 #define VHOST_USER_SCSI_H
 
-#include "qemu-common.h"
-#include "hw/qdev.h"
 #include "hw/virtio/virtio-scsi.h"
 #include "hw/virtio/vhost.h"
+#include "hw/virtio/vhost-user.h"
 #include "hw/virtio/vhost-scsi-common.h"
 
 #define TYPE_VHOST_USER_SCSI "vhost-user-scsi"
@@ -29,7 +28,7 @@
 
 typedef struct VHostUserSCSI {
     VHostSCSICommon parent_obj;
-    uint64_t host_features;
+    VhostUserState vhost_user;
 } VHostUserSCSI;
 
 #endif /* VHOST_USER_SCSI_H */

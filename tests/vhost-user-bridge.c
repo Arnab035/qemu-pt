@@ -30,6 +30,8 @@
 #define _FILE_OFFSET_BITS 64
 
 #include "qemu/osdep.h"
+#include "qemu/atomic.h"
+#include "qemu/ctype.h"
 #include "qemu/iov.h"
 #include "standard-headers/linux/virtio_net.h"
 #include "contrib/libvhost-user/libvhost-user.h"
@@ -42,6 +44,10 @@
             printf(__VA_ARGS__); \
         } \
     } while (0)
+
+enum {
+    VHOST_USER_BRIDGE_MAX_QUEUES = 8,
+};
 
 typedef void (*CallbackFunc)(int sock, void *ctx);
 
@@ -65,6 +71,11 @@ typedef struct VubrDev {
     int sock;
     int ready;
     int quit;
+    struct {
+        int fd;
+        void *addr;
+        pthread_t thread;
+    } notifier;
 } VubrDev;
 
 static void
@@ -317,7 +328,7 @@ vubr_backend_recv_cb(int sock, void *ctx)
             .msg_name = (struct sockaddr *) &vubr->backend_udp_dest,
             .msg_namelen = sizeof(struct sockaddr_in),
             .msg_iov = sg,
-            .msg_iovlen = elem->in_num,
+            .msg_iovlen = num,
             .msg_flags = MSG_DONTWAIT,
         };
         do {
@@ -445,13 +456,21 @@ static uint64_t
 vubr_get_features(VuDev *dev)
 {
     return 1ULL << VIRTIO_NET_F_GUEST_ANNOUNCE |
-        1ULL << VIRTIO_NET_F_MRG_RXBUF;
+        1ULL << VIRTIO_NET_F_MRG_RXBUF |
+        1ULL << VIRTIO_F_VERSION_1;
 }
 
 static void
 vubr_queue_set_started(VuDev *dev, int qidx, bool started)
 {
+    VubrDev *vubr = container_of(dev, VubrDev, vudev);
     VuVirtq *vq = vu_get_queue(dev, qidx);
+
+    if (started && vubr->notifier.fd >= 0) {
+        vu_set_queue_host_notifier(dev, vq, vubr->notifier.fd,
+                                   qemu_real_host_page_size,
+                                   qidx * qemu_real_host_page_size);
+    }
 
     if (qidx % 2 == 1) {
         vu_set_queue_handler(dev, vq, started ? vubr_handle_tx : NULL);
@@ -497,12 +516,16 @@ vubr_accept_cb(int sock, void *ctx)
     }
     DPRINT("Got connection from remote peer on sock %d\n", conn_fd);
 
-    vu_init(&dev->vudev,
-            conn_fd,
-            vubr_panic,
-            vubr_set_watch,
-            vubr_remove_watch,
-            &vuiface);
+    if (!vu_init(&dev->vudev,
+                 VHOST_USER_BRIDGE_MAX_QUEUES,
+                 conn_fd,
+                 vubr_panic,
+                 vubr_set_watch,
+                 vubr_remove_watch,
+                 &vuiface)) {
+        fprintf(stderr, "Failed to initialize libvhost-user\n");
+        exit(1);
+    }
 
     dispatcher_add(&dev->dispatcher, conn_fd, ctx, vubr_receive_cb);
     dispatcher_remove(&dev->dispatcher, sock);
@@ -521,6 +544,8 @@ vubr_new(const char *path, bool client)
     if (dev->sock == -1) {
         vubr_die("socket");
     }
+
+    dev->notifier.fd = -1;
 
     un.sun_family = AF_UNIX;
     strcpy(un.sun_path, path);
@@ -543,12 +568,18 @@ vubr_new(const char *path, bool client)
         if (connect(dev->sock, (struct sockaddr *)&un, len) == -1) {
             vubr_die("connect");
         }
-        vu_init(&dev->vudev,
-                dev->sock,
-                vubr_panic,
-                vubr_set_watch,
-                vubr_remove_watch,
-                &vuiface);
+
+        if (!vu_init(&dev->vudev,
+                     VHOST_USER_BRIDGE_MAX_QUEUES,
+                     dev->sock,
+                     vubr_panic,
+                     vubr_set_watch,
+                     vubr_remove_watch,
+                     &vuiface)) {
+            fprintf(stderr, "Failed to initialize libvhost-user\n");
+            exit(1);
+        }
+
         cb = vubr_receive_cb;
     }
 
@@ -559,10 +590,77 @@ vubr_new(const char *path, bool client)
     return dev;
 }
 
+static void *notifier_thread(void *arg)
+{
+    VuDev *dev = (VuDev *)arg;
+    VubrDev *vubr = container_of(dev, VubrDev, vudev);
+    int pagesize = qemu_real_host_page_size;
+    int qidx;
+
+    while (true) {
+        for (qidx = 0; qidx < VHOST_USER_BRIDGE_MAX_QUEUES; qidx++) {
+            uint16_t *n = vubr->notifier.addr + pagesize * qidx;
+
+            if (*n == qidx) {
+                *n = 0xffff;
+                /* We won't miss notifications if we reset
+                 * the memory first. */
+                smp_mb();
+
+                DPRINT("Got a notification for queue%d via host notifier.\n",
+                       qidx);
+
+                if (qidx % 2 == 1) {
+                    vubr_handle_tx(dev, qidx);
+                }
+            }
+            usleep(1000);
+        }
+    }
+
+    return NULL;
+}
+
+static void
+vubr_host_notifier_setup(VubrDev *dev)
+{
+    char template[] = "/tmp/vubr-XXXXXX";
+    pthread_t thread;
+    size_t length;
+    void *addr;
+    int fd;
+
+    length = qemu_real_host_page_size * VHOST_USER_BRIDGE_MAX_QUEUES;
+
+    fd = mkstemp(template);
+    if (fd < 0) {
+        vubr_die("mkstemp()");
+    }
+
+    if (posix_fallocate(fd, 0, length) != 0) {
+        vubr_die("posix_fallocate()");
+    }
+
+    addr = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (addr == MAP_FAILED) {
+        vubr_die("mmap()");
+    }
+
+    memset(addr, 0xff, length);
+
+    if (pthread_create(&thread, NULL, notifier_thread, &dev->vudev) != 0) {
+        vubr_die("pthread_create()");
+    }
+
+    dev->notifier.fd = fd;
+    dev->notifier.addr = addr;
+    dev->notifier.thread = thread;
+}
+
 static void
 vubr_set_host(struct sockaddr_in *saddr, const char *host)
 {
-    if (isdigit(host[0])) {
+    if (qemu_isdigit(host[0])) {
         if (!inet_aton(host, &saddr->sin_addr)) {
             fprintf(stderr, "inet_aton() failed.\n");
             exit(1);
@@ -673,8 +771,9 @@ main(int argc, char *argv[])
     VubrDev *dev;
     int opt;
     bool client = false;
+    bool host_notifier = false;
 
-    while ((opt = getopt(argc, argv, "l:r:u:c")) != -1) {
+    while ((opt = getopt(argc, argv, "l:r:u:cH")) != -1) {
 
         switch (opt) {
         case 'l':
@@ -693,6 +792,9 @@ main(int argc, char *argv[])
         case 'c':
             client = true;
             break;
+        case 'H':
+            host_notifier = true;
+            break;
         default:
             goto out;
         }
@@ -708,6 +810,10 @@ main(int argc, char *argv[])
         return 1;
     }
 
+    if (host_notifier) {
+        vubr_host_notifier_setup(dev);
+    }
+
     vubr_backend_udp_setup(dev, lhost, lport, rhost, rport);
     vubr_run(dev);
 
@@ -717,7 +823,7 @@ main(int argc, char *argv[])
 
 out:
     fprintf(stderr, "Usage: %s ", argv[0]);
-    fprintf(stderr, "[-c] [-u ud_socket_path] [-l lhost:lport] [-r rhost:rport]\n");
+    fprintf(stderr, "[-c] [-H] [-u ud_socket_path] [-l lhost:lport] [-r rhost:rport]\n");
     fprintf(stderr, "\t-u path to unix doman socket. default: %s\n",
             DEFAULT_UD_SOCKET);
     fprintf(stderr, "\t-l local host and port. default: %s:%s\n",
@@ -725,6 +831,7 @@ out:
     fprintf(stderr, "\t-r remote host and port. default: %s:%s\n",
             DEFAULT_RHOST, DEFAULT_RPORT);
     fprintf(stderr, "\t-c client mode\n");
+    fprintf(stderr, "\t-H use host notifier\n");
 
     return 1;
 }

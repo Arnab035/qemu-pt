@@ -373,6 +373,8 @@ enum {
     CPU_POWERPC_POWER9_BASE        = 0x004E0000,
     CPU_POWERPC_POWER9_DD1         = 0x004E0100,
     CPU_POWERPC_POWER9_DD20        = 0x004E1200,
+    CPU_POWERPC_POWER10_BASE       = 0x00800000,
+    CPU_POWERPC_POWER10_DD1        = 0x00800100,
     CPU_POWERPC_970_v22            = 0x00390202,
     CPU_POWERPC_970FX_v10          = 0x00391100,
     CPU_POWERPC_970FX_v20          = 0x003C0200,
@@ -393,7 +395,8 @@ enum {
     CPU_POWERPC_RS64IV             = 0x00370000,
 #endif /* defined(TARGET_PPC64) */
     /* Original POWER */
-    /* XXX: should be POWER (RIOS), RSC3308, RSC4608,
+    /*
+     * XXX: should be POWER (RIOS), RSC3308, RSC4608,
      * POWER2 (RIOS2) & RSC2 (P2SC) here
      */
     /* PA Semi core */
@@ -408,6 +411,7 @@ enum {
     CPU_POWERPC_LOGICAL_2_06_PLUS  = 0x0F100003,
     CPU_POWERPC_LOGICAL_2_07       = 0x0F000004,
     CPU_POWERPC_LOGICAL_3_00       = 0x0F000005,
+    CPU_POWERPC_LOGICAL_3_10       = 0x0F000006,
 };
 
 /* System version register (used on MPC 8xxx)                                */

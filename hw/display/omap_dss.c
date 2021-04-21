@@ -17,8 +17,10 @@
  * You should have received a copy of the GNU General Public License along
  * with this program; if not, see <http://www.gnu.org/licenses/>.
  */
+
 #include "qemu/osdep.h"
 #include "hw/hw.h"
+#include "hw/irq.h"
 #include "ui/console.h"
 #include "hw/arm/omap.h"
 
@@ -630,7 +632,7 @@ static void omap_rfbi_transfer_start(struct omap_dss_s *s)
     len = s->rfbi.pixels * 2;
 
     data_addr = s->dispc.l[0].addr[0];
-    data = cpu_physical_memory_map(data_addr, &len, 0);
+    data = cpu_physical_memory_map(data_addr, &len, false);
     if (data && len != s->rfbi.pixels * 2) {
         cpu_physical_memory_unmap(data, len, 0, 0);
         data = NULL;

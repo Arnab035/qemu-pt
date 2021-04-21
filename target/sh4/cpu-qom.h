@@ -20,7 +20,7 @@
 #ifndef QEMU_SUPERH_CPU_QOM_H
 #define QEMU_SUPERH_CPU_QOM_H
 
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_SUPERH_CPU "superh-cpu"
 
@@ -51,7 +51,7 @@ typedef struct SuperHCPUClass {
     /*< public >*/
 
     DeviceRealize parent_realize;
-    void (*parent_reset)(CPUState *cpu);
+    DeviceReset parent_reset;
 
     uint32_t pvr;
     uint32_t prr;

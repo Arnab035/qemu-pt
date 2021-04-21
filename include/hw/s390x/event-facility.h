@@ -15,8 +15,8 @@
 #ifndef HW_S390_SCLP_EVENT_FACILITY_H
 #define HW_S390_SCLP_EVENT_FACILITY_H
 
-#include "hw/qdev.h"
 #include "qemu/thread.h"
+#include "hw/qdev-core.h"
 #include "hw/s390x/sclp.h"
 
 /* SCLP event types */
@@ -73,7 +73,7 @@ typedef struct WriteEventMask {
 #define WEM_RECEIVE_MASK(wem, mask_len) ((wem)->masks + 2 * (mask_len))
 #define WEM_SEND_MASK(wem, mask_len) ((wem)->masks + 3 * (mask_len))
 
-typedef uint32_t sccb_mask_t;
+typedef uint64_t sccb_mask_t;
 
 typedef struct EventBufferHeader {
     uint16_t length;
@@ -122,7 +122,7 @@ typedef struct MDBO {
 
 typedef struct MDB {
     MdbHeader header;
-    MDBO mdbo[0];
+    MDBO mdbo[];
 } QEMU_PACKED MDB;
 
 typedef struct SclpMsg {
@@ -209,5 +209,7 @@ typedef struct SCLPEventFacilityClass {
     void (*command_handler)(SCLPEventFacility *ef, SCCB *sccb, uint64_t code);
     bool (*event_pending)(SCLPEventFacility *ef);
 } SCLPEventFacilityClass;
+
+BusState *sclp_get_event_facility_bus(void);
 
 #endif

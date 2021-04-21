@@ -5,16 +5,16 @@
  *
  * This code is licensed under the GPL
  */
+
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/m68k/mcf.h"
 #include "qemu/timer.h"
 #include "hw/ptimer.h"
 #include "sysemu/sysemu.h"
-#include "exec/address-spaces.h"
 
 /* General purpose timer module.  */
 typedef struct {
@@ -56,10 +56,12 @@ static void m5206_timer_recalibrate(m5206_timer_state *s)
     int prescale;
     int mode;
 
+    ptimer_transaction_begin(s->timer);
     ptimer_stop(s->timer);
 
-    if ((s->tmr & TMR_RST) == 0)
-        return;
+    if ((s->tmr & TMR_RST) == 0) {
+        goto exit;
+    }
 
     prescale = (s->tmr >> 8) + 1;
     mode = (s->tmr >> 1) & 3;
@@ -77,6 +79,8 @@ static void m5206_timer_recalibrate(m5206_timer_state *s)
     ptimer_set_limit(s->timer, s->trr, 0);
 
     ptimer_run(s->timer, 0);
+exit:
+    ptimer_transaction_commit(s->timer);
 }
 
 static void m5206_timer_trigger(void *opaque)
@@ -122,7 +126,9 @@ static void m5206_timer_write(m5206_timer_state *s, uint32_t addr, uint32_t val)
         s->tcr = val;
         break;
     case 0xc:
+        ptimer_transaction_begin(s->timer);
         ptimer_set_count(s->timer, val);
+        ptimer_transaction_commit(s->timer);
         break;
     case 0x11:
         s->ter &= ~val;
@@ -136,11 +142,9 @@ static void m5206_timer_write(m5206_timer_state *s, uint32_t addr, uint32_t val)
 static m5206_timer_state *m5206_timer_init(qemu_irq irq)
 {
     m5206_timer_state *s;
-    QEMUBH *bh;
 
     s = g_new0(m5206_timer_state, 1);
-    bh = qemu_bh_new(m5206_timer_trigger, s);
-    s->timer = ptimer_init(bh, PTIMER_POLICY_DEFAULT);
+    s->timer = ptimer_init(m5206_timer_trigger, s, PTIMER_POLICY_DEFAULT);
     s->irq = irq;
     m5206_timer_reset(s);
     return s;
@@ -513,19 +517,43 @@ static void m5206_mbar_writel(void *opaque, hwaddr offset,
     m5206_mbar_write(s, offset, value, 4);
 }
 
+static uint64_t m5206_mbar_readfn(void *opaque, hwaddr addr, unsigned size)
+{
+    switch (size) {
+    case 1:
+        return m5206_mbar_readb(opaque, addr);
+    case 2:
+        return m5206_mbar_readw(opaque, addr);
+    case 4:
+        return m5206_mbar_readl(opaque, addr);
+    default:
+        g_assert_not_reached();
+    }
+}
+
+static void m5206_mbar_writefn(void *opaque, hwaddr addr,
+                               uint64_t value, unsigned size)
+{
+    switch (size) {
+    case 1:
+        m5206_mbar_writeb(opaque, addr, value);
+        break;
+    case 2:
+        m5206_mbar_writew(opaque, addr, value);
+        break;
+    case 4:
+        m5206_mbar_writel(opaque, addr, value);
+        break;
+    default:
+        g_assert_not_reached();
+    }
+}
+
 static const MemoryRegionOps m5206_mbar_ops = {
-    .old_mmio = {
-        .read = {
-            m5206_mbar_readb,
-            m5206_mbar_readw,
-            m5206_mbar_readl,
-        },
-        .write = {
-            m5206_mbar_writeb,
-            m5206_mbar_writew,
-            m5206_mbar_writel,
-        },
-    },
+    .read = m5206_mbar_readfn,
+    .write = m5206_mbar_writefn,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
     .endianness = DEVICE_NATIVE_ENDIAN,
 };
 
@@ -543,8 +571,8 @@ qemu_irq *mcf5206_init(MemoryRegion *sysmem, uint32_t base, M68kCPU *cpu)
     pic = qemu_allocate_irqs(m5206_mbar_set_irq, s, 14);
     s->timer[0] = m5206_timer_init(pic[9]);
     s->timer[1] = m5206_timer_init(pic[10]);
-    s->uart[0] = mcf_uart_init(pic[12], serial_hds[0]);
-    s->uart[1] = mcf_uart_init(pic[13], serial_hds[1]);
+    s->uart[0] = mcf_uart_init(pic[12], serial_hd(0));
+    s->uart[1] = mcf_uart_init(pic[13], serial_hd(1));
     s->cpu = cpu;
 
     m5206_mbar_reset(s);

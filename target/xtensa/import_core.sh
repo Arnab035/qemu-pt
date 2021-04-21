@@ -19,15 +19,16 @@ exit
 
 [ $# -ge 3 ] && FREQ="$3"
 mkdir -p "$TARGET"
-tar -xf "$OVERLAY" -C "$TARGET" --strip-components=1 \
-    --xform='s/core/core-isa/' config/core.h
+tar -xf "$OVERLAY" -C "$TARGET" --strip-components=2 \
+    xtensa/config/core-isa.h \
+    xtensa/config/core-matmap.h
 tar -xf "$OVERLAY" -O gdb/xtensa-config.c | \
     sed -n '1,/*\//p;/XTREG/,/XTREG_END/p' > "$TARGET"/gdb-config.inc.c
 #
 # Fix up known issues in the xtensa-modules.c
 #
 tar -xf "$OVERLAY" -O binutils/xtensa-modules.c | \
-    sed -e 's/\(xtensa_opcode_encode_fn.*\[\] =\)/static \1/' \
+    sed -e 's/^\(xtensa_opcode_encode_fn.*\[\] =\)/static \1/' \
         -e '/^int num_bypass_groups()/,/}/d' \
         -e '/^int num_bypass_group_chunks()/,/}/d' \
         -e '/^uint32 \*bypass_entry(int i)/,/}/d' \
@@ -39,12 +40,12 @@ tar -xf "$OVERLAY" -O binutils/xtensa-modules.c | \
 cat <<EOF > "${TARGET}.c"
 #include "qemu/osdep.h"
 #include "cpu.h"
-#include "exec/exec-all.h"
 #include "exec/gdbstub.h"
 #include "qemu-common.h"
 #include "qemu/host-utils.h"
 
 #include "core-$NAME/core-isa.h"
+#include "core-$NAME/core-matmap.h"
 #include "overlay_tool.h"
 
 #define xtensa_modules xtensa_modules_$NAME

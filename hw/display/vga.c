@@ -21,9 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
+#include "qemu/units.h"
+#include "sysemu/reset.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
 #include "hw/display/vga.h"
 #include "hw/pci/pci.h"
 #include "vga_int.h"
@@ -31,6 +33,7 @@
 #include "ui/pixel_ops.h"
 #include "qemu/timer.h"
 #include "hw/xen/xen.h"
+#include "migration/vmstate.h"
 #include "trace.h"
 
 //#define DEBUG_VGA_MEM
@@ -84,10 +87,10 @@ const uint8_t gr_mask[16] = {
 
 #define cbswap_32(__x) \
 ((uint32_t)( \
-		(((uint32_t)(__x) & (uint32_t)0x000000ffUL) << 24) | \
-		(((uint32_t)(__x) & (uint32_t)0x0000ff00UL) <<  8) | \
-		(((uint32_t)(__x) & (uint32_t)0x00ff0000UL) >>  8) | \
-		(((uint32_t)(__x) & (uint32_t)0xff000000UL) >> 24) ))
+                (((uint32_t)(__x) & (uint32_t)0x000000ffUL) << 24) | \
+                (((uint32_t)(__x) & (uint32_t)0x0000ff00UL) <<  8) | \
+                (((uint32_t)(__x) & (uint32_t)0x00ff0000UL) >>  8) | \
+                (((uint32_t)(__x) & (uint32_t)0xff000000UL) >> 24) ))
 
 #ifdef HOST_WORDS_BIGENDIAN
 #define PAT(x) cbswap_32(x)
@@ -721,7 +724,7 @@ uint32_t vbe_ioport_read_data(void *opaque, uint32_t addr)
             val = s->vbe_regs[s->vbe_index];
         }
     } else if (s->vbe_index == VBE_DISPI_INDEX_VIDEO_MEMORY_64K) {
-        val = s->vbe_size / (64 * 1024);
+        val = s->vbe_size / (64 * KiB);
     } else {
         val = 0;
     }
@@ -1006,6 +1009,7 @@ void vga_mem_writeb(VGACommonState *s, hwaddr addr, uint32_t val)
 typedef void vga_draw_line_func(VGACommonState *s1, uint8_t *d,
                                 uint32_t srcaddr, int width);
 
+#include "vga-access.h"
 #include "vga-helpers.h"
 
 /* return true if the palette was modified */
@@ -1480,13 +1484,28 @@ static void vga_draw_graphic(VGACommonState *s, int full_update)
 
     s->get_resolution(s, &width, &height);
     disp_width = width;
+    depth = s->get_bpp(s);
 
     region_start = (s->start_addr * 4);
     region_end = region_start + (ram_addr_t)s->line_offset * height;
-    region_end += width * s->get_bpp(s) / 8; /* scanline length */
+    region_end += width * depth / 8; /* scanline length */
     region_end -= s->line_offset;
-    if (region_end > s->vbe_size) {
-        /* wraps around (can happen with cirrus vbe modes) */
+    if (region_end > s->vbe_size || depth == 0 || depth == 15) {
+        /*
+         * We land here on:
+         *  - wraps around (can happen with cirrus vbe modes)
+         *  - depth == 0 (256 color palette video mode)
+         *  - depth == 15
+         *
+         * Take the safe and slow route:
+         *   - create a dirty bitmap snapshot for all vga memory.
+         *   - force shadowing (so all vga memory access goes
+         *     through vga_read_*() helpers).
+         *
+         * Given this affects only vga features which are pretty much
+         * unused by modern guests there should be no performance
+         * impact.
+         */
         region_start = 0;
         region_end = s->vbe_size;
         force_shadow = true;
@@ -1520,8 +1539,6 @@ static void vga_draw_graphic(VGACommonState *s, int full_update)
         }
     }
 
-    depth = s->get_bpp(s);
-
     /*
      * Check whether we can share the surface with the backend
      * or whether we need a shadow surface. We share native
@@ -1535,12 +1552,31 @@ static void vga_draw_graphic(VGACommonState *s, int full_update)
     } else {
         share_surface = false;
     }
+
     if (s->line_offset != s->last_line_offset ||
         disp_width != s->last_width ||
         height != s->last_height ||
         s->last_depth != depth ||
         s->last_byteswap != byteswap ||
         share_surface != is_buffer_shared(surface)) {
+        /* display parameters changed -> need new display surface */
+        s->last_scr_width = disp_width;
+        s->last_scr_height = height;
+        s->last_width = disp_width;
+        s->last_height = height;
+        s->last_line_offset = s->line_offset;
+        s->last_depth = depth;
+        s->last_byteswap = byteswap;
+        full_update = 1;
+    }
+    if (surface_data(surface) != s->vram_ptr + (s->start_addr * 4)
+        && is_buffer_shared(surface)) {
+        /* base address changed (page flip) -> shared display surfaces
+         * must be updated with the new base address */
+        full_update = 1;
+    }
+
+    if (full_update) {
         if (share_surface) {
             surface = qemu_create_displaysurface_from(disp_width,
                     height, format, s->line_offset,
@@ -1550,23 +1586,6 @@ static void vga_draw_graphic(VGACommonState *s, int full_update)
             qemu_console_resize(s->con, disp_width, height);
             surface = qemu_console_surface(s->con);
         }
-        s->last_scr_width = disp_width;
-        s->last_scr_height = height;
-        s->last_width = disp_width;
-        s->last_height = height;
-        s->last_line_offset = s->line_offset;
-        s->last_depth = depth;
-        s->last_byteswap = byteswap;
-        full_update = 1;
-    } else if (is_buffer_shared(surface) &&
-               (full_update || surface_data(surface) != s->vram_ptr
-                + (s->start_addr * 4))) {
-        pixman_format_code_t format =
-            qemu_default_pixman_format(depth, !byteswap);
-        surface = qemu_create_displaysurface_from(disp_width,
-                height, format, s->line_offset,
-                s->vram_ptr + (s->start_addr * 4));
-        dpy_gfx_replace_surface(s->con, surface);
     }
 
     if (shift_control == 0) {
@@ -1729,8 +1748,7 @@ static void vga_draw_blank(VGACommonState *s, int full_update)
         memset(d, 0, w);
         d += surface_stride(surface);
     }
-    dpy_gfx_update(s->con, 0, 0,
-                   s->last_scr_width, s->last_scr_height);
+    dpy_gfx_update_full(s->con);
 }
 
 #define GMODE_TEXT     0
@@ -2148,7 +2166,7 @@ static inline uint32_t uint_clamp(uint32_t val, uint32_t vmin, uint32_t vmax)
     return val;
 }
 
-void vga_common_init(VGACommonState *s, Object *obj, bool global_vmstate)
+void vga_common_init(VGACommonState *s, Object *obj)
 {
     int i, j, v, b;
 
@@ -2177,7 +2195,7 @@ void vga_common_init(VGACommonState *s, Object *obj, bool global_vmstate)
 
     s->vram_size_mb = uint_clamp(s->vram_size_mb, 1, 512);
     s->vram_size_mb = pow2ceil(s->vram_size_mb);
-    s->vram_size = s->vram_size_mb << 20;
+    s->vram_size = s->vram_size_mb * MiB;
 
     if (!s->vbe_size) {
         s->vbe_size = s->vram_size;
@@ -2187,7 +2205,7 @@ void vga_common_init(VGACommonState *s, Object *obj, bool global_vmstate)
     s->is_vbe_vmstate = 1;
     memory_region_init_ram_nomigrate(&s->vram, obj, "vga.vram", s->vram_size,
                            &error_fatal);
-    vmstate_register_ram(&s->vram, global_vmstate ? NULL : DEVICE(obj));
+    vmstate_register_ram(&s->vram, s->global_vmstate ? NULL : DEVICE(obj));
     xen_register_framebuffer(&s->vram);
     s->vram_ptr = memory_region_get_ram_ptr(&s->vram);
     s->get_bpp = vga_get_bpp;
@@ -2282,18 +2300,4 @@ void vga_init(VGACommonState *s, Object *obj, MemoryRegion *address_space,
         portio_list_init(&s->vbe_port_list, obj, vbe_ports, s, "vbe");
         portio_list_add(&s->vbe_port_list, address_space_io, 0x1ce);
     }
-}
-
-void vga_init_vbe(VGACommonState *s, Object *obj, MemoryRegion *system_memory)
-{
-    /* With pc-0.12 and below we map both the PCI BAR and the fixed VBE region,
-     * so use an alias to avoid double-mapping the same region.
-     */
-    memory_region_init_alias(&s->vram_vbe, obj, "vram.vbe",
-                             &s->vram, 0, memory_region_size(&s->vram));
-    /* XXX: use optimized standard vga accesses */
-    memory_region_add_subregion(system_memory,
-                                VBE_DISPI_LFB_PHYSICAL_ADDRESS,
-                                &s->vram_vbe);
-    s->vbe_mapped = 1;
 }

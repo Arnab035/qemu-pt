@@ -28,9 +28,12 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "hw/sysbus.h"
+#include "hw/irq.h"
 #include "hw/pci/msi.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/kvm.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 #define TYPE_ARM_GICV2M "arm-gicv2m"
 #define ARM_GICV2M(obj) OBJECT_CHECK(ARMGICv2mState, (obj), TYPE_ARM_GICV2M)
@@ -176,7 +179,7 @@ static void gicv2m_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = gicv2m_properties;
+    device_class_set_props(dc, gicv2m_properties);
     dc->realize = gicv2m_realize;
 }
 

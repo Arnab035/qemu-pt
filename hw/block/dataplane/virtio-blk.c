@@ -16,10 +16,10 @@
 #include "qapi/error.h"
 #include "trace.h"
 #include "qemu/iov.h"
+#include "qemu/main-loop.h"
 #include "qemu/thread.h"
 #include "qemu/error-report.h"
 #include "hw/virtio/virtio-access.h"
-#include "sysemu/block-backend.h"
 #include "hw/virtio/virtio-blk.h"
 #include "virtio-blk.h"
 #include "block/aio.h"
@@ -67,7 +67,7 @@ static void notify_guest_bh(void *opaque)
     memset(s->batch_notify_vqs, 0, sizeof(bitmap));
 
     for (j = 0; j < nvqs; j += BITS_PER_LONG) {
-        unsigned long bits = bitmap[j];
+        unsigned long bits = bitmap[j / BITS_PER_LONG];
 
         while (bits != 0) {
             unsigned i = j + ctzl(bits);
@@ -174,6 +174,7 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
     unsigned i;
     unsigned nvqs = s->conf->num_queues;
+    Error *local_err = NULL;
     int r;
 
     if (vblk->dataplane_started || s->starting) {
@@ -191,8 +192,8 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     /* Set up guest notifier (irq) */
     r = k->set_guest_notifiers(qbus->parent, nvqs, true);
     if (r != 0) {
-        fprintf(stderr, "virtio-blk failed to set guest notifier (%d), "
-                "ensure -enable-kvm is set\n", r);
+        error_report("virtio-blk failed to set guest notifier (%d), "
+                     "ensure -accel kvm is set.", r);
         goto fail_guest_notifiers;
     }
 
@@ -213,7 +214,11 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     vblk->dataplane_started = true;
     trace_virtio_blk_data_plane_start(s);
 
-    blk_set_aio_context(s->conf->conf.blk, s->ctx);
+    r = blk_set_aio_context(s->conf->conf.blk, s->ctx, &local_err);
+    if (r < 0) {
+        error_report_err(local_err);
+        goto fail_guest_notifiers;
+    }
 
     /* Kick right away to begin processing requests already in vring */
     for (i = 0; i < nvqs; i++) {
@@ -282,8 +287,9 @@ void virtio_blk_data_plane_stop(VirtIODevice *vdev)
     aio_context_acquire(s->ctx);
     aio_wait_bh_oneshot(s->ctx, virtio_blk_data_plane_stop_bh, s);
 
-    /* Drain and switch bs back to the QEMU main loop */
-    blk_set_aio_context(s->conf->conf.blk, qemu_get_aio_context());
+    /* Drain and try to switch bs back to the QEMU main loop. If other users
+     * keep the BlockBackend in the iothread, that's ok */
+    blk_set_aio_context(s->conf->conf.blk, qemu_get_aio_context(), NULL);
 
     aio_context_release(s->ctx);
 
@@ -291,6 +297,9 @@ void virtio_blk_data_plane_stop(VirtIODevice *vdev)
         virtio_bus_set_host_notifier(VIRTIO_BUS(qbus), i, false);
         virtio_bus_cleanup_host_notifier(VIRTIO_BUS(qbus), i);
     }
+
+    qemu_bh_cancel(s->bh);
+    notify_guest_bh(s); /* final chance to notify guest */
 
     /* Clean up guest notifier (irq) */
     k->set_guest_notifiers(qbus->parent, nvqs, false);

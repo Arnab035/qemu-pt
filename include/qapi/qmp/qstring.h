@@ -16,7 +16,7 @@
 #include "qapi/qmp/qobject.h"
 
 struct QString {
-    QObject base;
+    struct QObjectBase_ base;
     char *string;
     size_t length;
     size_t capacity;
@@ -24,7 +24,7 @@ struct QString {
 
 QString *qstring_new(void);
 QString *qstring_from_str(const char *str);
-QString *qstring_from_substr(const char *str, int start, int end);
+QString *qstring_from_substr(const char *str, size_t start, size_t end);
 size_t qstring_get_length(const QString *qstring);
 const char *qstring_get_str(const QString *qstring);
 const char *qstring_get_try_str(const QString *qstring);
@@ -33,6 +33,7 @@ void qstring_append_int(QString *qstring, int64_t value);
 void qstring_append(QString *qstring, const char *str);
 void qstring_append_chr(QString *qstring, int c);
 bool qstring_is_equal(const QObject *x, const QObject *y);
+char *qstring_free(QString *qstring, bool return_str);
 void qstring_destroy_obj(QObject *obj);
 
 #endif /* QSTRING_H */

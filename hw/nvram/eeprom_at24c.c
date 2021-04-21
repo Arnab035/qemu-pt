@@ -10,8 +10,9 @@
 #include "qemu/osdep.h"
 
 #include "qapi/error.h"
-#include "hw/hw.h"
+#include "qemu/module.h"
 #include "hw/i2c/i2c.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/block-backend.h"
 
 /* #define DEBUG_AT24C */
@@ -74,10 +75,10 @@ int at24c_eeprom_event(I2CSlave *s, enum i2c_event event)
 }
 
 static
-int at24c_eeprom_recv(I2CSlave *s)
+uint8_t at24c_eeprom_recv(I2CSlave *s)
 {
     EEPROMState *ee = AT24C_EE(s);
-    int ret;
+    uint8_t ret;
 
     ret = ee->mem[ee->cur];
 
@@ -116,31 +117,29 @@ int at24c_eeprom_send(I2CSlave *s, uint8_t data)
     return 0;
 }
 
-static
-int at24c_eeprom_init(I2CSlave *i2c)
+static void at24c_eeprom_realize(DeviceState *dev, Error **errp)
 {
-    EEPROMState *ee = AT24C_EE(i2c);
-
-    ee->mem = g_malloc0(ee->rsize);
+    EEPROMState *ee = AT24C_EE(dev);
 
     if (ee->blk) {
         int64_t len = blk_getlength(ee->blk);
 
         if (len != ee->rsize) {
-            ERR(TYPE_AT24C_EE " : Backing file size %lu != %u\n",
-                    (unsigned long)len, (unsigned)ee->rsize);
-            exit(1);
+            error_setg(errp, "%s: Backing file size %" PRId64 " != %u",
+                       TYPE_AT24C_EE, len, ee->rsize);
+            return;
         }
 
         if (blk_set_perm(ee->blk, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
                          BLK_PERM_ALL, &error_fatal) < 0)
         {
-            ERR(TYPE_AT24C_EE
-                    " : Backing file incorrect permission\n");
-            exit(1);
+            error_setg(errp, "%s: Backing file incorrect permission",
+                       TYPE_AT24C_EE);
+            return;
         }
     }
-    return 0;
+
+    ee->mem = g_malloc0(ee->rsize);
 }
 
 static
@@ -178,12 +177,12 @@ void at24c_eeprom_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     I2CSlaveClass *k = I2C_SLAVE_CLASS(klass);
 
-    k->init = &at24c_eeprom_init;
+    dc->realize = &at24c_eeprom_realize;
     k->event = &at24c_eeprom_event;
     k->recv = &at24c_eeprom_recv;
     k->send = &at24c_eeprom_send;
 
-    dc->props = at24c_eeprom_props;
+    device_class_set_props(dc, at24c_eeprom_props);
     dc->reset = at24c_eeprom_reset;
 }
 

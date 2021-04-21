@@ -10,7 +10,6 @@
 #include "net/filter.h"
 #include "net/queue.h"
 #include "qapi/error.h"
-#include "qemu-common.h"
 #include "qemu/timer.h"
 #include "qemu/iov.h"
 #include "qapi/qapi-builtin-visit.h"
@@ -75,7 +74,7 @@ static ssize_t filter_buffer_receive_iov(NetFilterState *nf,
      * the filter can still accept packets until its internal queue is full.
      * For example:
      *   For some reason, receiver could not receive more packets
-     * (.can_receive() returns zero). Without a filter, at most one packet
+     * (.can_receive() returns false). Without a filter, at most one packet
      * will be queued in incoming queue and sender's poll will be disabled
      * unit its sent_cb() was called. With a filter, it will keep receiving
      * the packets without caring about the receiver. This is suboptimal.

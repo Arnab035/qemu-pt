@@ -10,9 +10,13 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "hw/hw.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/arm/pxa.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 #define PXA2XX_GPIO_BANKS	4
 
@@ -343,7 +347,7 @@ static void pxa2xx_gpio_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->desc = "PXA2xx GPIO controller";
-    dc->props = pxa2xx_gpio_properties;
+    device_class_set_props(dc, pxa2xx_gpio_properties);
     dc->vmsd = &vmstate_pxa2xx_gpio_regs;
     dc->realize = pxa2xx_gpio_realize;
 }

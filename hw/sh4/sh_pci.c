@@ -21,12 +21,15 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
 #include "hw/sysbus.h"
 #include "hw/sh4/sh.h"
+#include "hw/irq.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "qemu/bswap.h"
+#include "qemu/module.h"
 #include "exec/address-spaces.h"
 
 #define TYPE_SH_PCI_HOST_BRIDGE "sh_pci"
@@ -64,12 +67,8 @@ static void sh_pci_reg_write (void *p, hwaddr addr, uint64_t val,
         pcic->mbr = val & 0xff000001;
         break;
     case 0x1c8:
-        if ((val & 0xfffc0000) != (pcic->iobr & 0xfffc0000)) {
-            memory_region_del_subregion(get_system_memory(), &pcic->isa);
-            pcic->iobr = val & 0xfffc0001;
-            memory_region_add_subregion(get_system_memory(),
-                                        pcic->iobr & 0xfffc0000, &pcic->isa);
-        }
+        pcic->iobr = val & 0xfffc0001;
+        memory_region_set_alias_offset(&pcic->isa, val & 0xfffc0000);
         break;
     case 0x220:
         pci_data_write(phb->bus, pcic->par, val, 4);
@@ -120,16 +119,15 @@ static void sh_pci_set_irq(void *opaque, int irq_num, int level)
     qemu_set_irq(pic[irq_num], level);
 }
 
-static int sh_pci_device_init(SysBusDevice *dev)
+static void sh_pci_device_realize(DeviceState *dev, Error **errp)
 {
-    PCIHostState *phb;
-    SHPCIState *s;
+    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
+    SHPCIState *s = SH_PCI_HOST_BRIDGE(dev);
+    PCIHostState *phb = PCI_HOST_BRIDGE(s);
     int i;
 
-    s = SH_PCI_HOST_BRIDGE(dev);
-    phb = PCI_HOST_BRIDGE(s);
     for (i = 0; i < 4; i++) {
-        sysbus_init_irq(dev, &s->irq[i]);
+        sysbus_init_irq(sbd, &s->irq[i]);
     }
     phb->bus = pci_register_root_bus(DEVICE(dev), "pci",
                                      sh_pci_set_irq, sh_pci_map_irq,
@@ -143,13 +141,11 @@ static int sh_pci_device_init(SysBusDevice *dev)
                              &s->memconfig_p4, 0, 0x224);
     memory_region_init_alias(&s->isa, OBJECT(s), "sh_pci.isa",
                              get_system_io(), 0, 0x40000);
-    sysbus_init_mmio(dev, &s->memconfig_p4);
-    sysbus_init_mmio(dev, &s->memconfig_a7);
-    s->iobr = 0xfe240000;
-    memory_region_add_subregion(get_system_memory(), s->iobr, &s->isa);
+    sysbus_init_mmio(sbd, &s->memconfig_p4);
+    sysbus_init_mmio(sbd, &s->memconfig_a7);
+    memory_region_add_subregion(get_system_memory(), 0xfe240000, &s->isa);
 
     s->dev = pci_create_simple(phb->bus, PCI_DEVFN(0, 0), "sh_pci_host");
-    return 0;
 }
 
 static void sh_pci_host_realize(PCIDevice *d, Error **errp)
@@ -187,9 +183,9 @@ static const TypeInfo sh_pci_host_info = {
 
 static void sh_pci_device_class_init(ObjectClass *klass, void *data)
 {
-    SysBusDeviceClass *sdc = SYS_BUS_DEVICE_CLASS(klass);
+    DeviceClass *dc = DEVICE_CLASS(klass);
 
-    sdc->init = sh_pci_device_init;
+    dc->realize = sh_pci_device_realize;
 }
 
 static const TypeInfo sh_pci_device_info = {

@@ -11,20 +11,18 @@
 #include "qemu/osdep.h"
 #include "cpu.h"
 #include "exec/address-spaces.h"
-#include "exec/exec-all.h"
 #include "exec/ioport.h"
 #include "qemu-common.h"
-#include "strings.h"
 #include "sysemu/accel.h"
 #include "sysemu/whpx.h"
-#include "sysemu/sysemu.h"
 #include "sysemu/cpus.h"
+#include "sysemu/runstate.h"
 #include "qemu/main-loop.h"
 #include "hw/boards.h"
 #include "qemu/error-report.h"
-#include "qemu/queue.h"
 #include "qapi/error.h"
 #include "migration/blocker.h"
+#include "whp-dispatch.h"
 
 #include <WinHvPlatform.h>
 #include <WinHvEmulation.h>
@@ -116,7 +114,6 @@ static const WHV_REGISTER_NAME whpx_register_names[] = {
     WHvX64RegisterXmmControlStatus,
 
     /* X64 MSRs */
-    WHvX64RegisterTsc,
     WHvX64RegisterEfer,
 #ifdef TARGET_X86_64
     WHvX64RegisterKernelGsBase,
@@ -160,8 +157,11 @@ struct whpx_vcpu {
 };
 
 static bool whpx_allowed;
+static bool whp_dispatch_initialized;
+static HMODULE hWinHvPlatform, hWinHvEmulation;
 
 struct whpx_state whpx_global;
+struct WHPDispatch whp_dispatch;
 
 
 /*
@@ -214,19 +214,67 @@ static SegmentCache whpx_seg_h2q(const WHV_X64_SEGMENT_REGISTER *hs)
     return qs;
 }
 
-static void whpx_set_registers(CPUState *cpu)
+static int whpx_set_tsc(CPUState *cpu)
+{
+    struct CPUX86State *env = (CPUArchState *)(cpu->env_ptr);
+    WHV_REGISTER_NAME tsc_reg = WHvX64RegisterTsc;
+    WHV_REGISTER_VALUE tsc_val;
+    HRESULT hr;
+    struct whpx_state *whpx = &whpx_global;
+
+    /*
+     * Suspend the partition prior to setting the TSC to reduce the variance
+     * in TSC across vCPUs. When the first vCPU runs post suspend, the
+     * partition is automatically resumed.
+     */
+    if (whp_dispatch.WHvSuspendPartitionTime) {
+
+        /*
+         * Unable to suspend partition while setting TSC is not a fatal
+         * error. It just increases the likelihood of TSC variance between
+         * vCPUs and some guest OS are able to handle that just fine.
+         */
+        hr = whp_dispatch.WHvSuspendPartitionTime(whpx->partition);
+        if (FAILED(hr)) {
+            warn_report("WHPX: Failed to suspend partition, hr=%08lx", hr);
+        }
+    }
+
+    tsc_val.Reg64 = env->tsc;
+    hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index, &tsc_reg, 1, &tsc_val);
+    if (FAILED(hr)) {
+        error_report("WHPX: Failed to set TSC, hr=%08lx", hr);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void whpx_set_registers(CPUState *cpu, int level)
 {
     struct whpx_state *whpx = &whpx_global;
     struct whpx_vcpu *vcpu = get_whpx_vcpu(cpu);
     struct CPUX86State *env = (CPUArchState *)(cpu->env_ptr);
     X86CPU *x86_cpu = X86_CPU(cpu);
-    struct whpx_register_set vcxt = {0};
+    struct whpx_register_set vcxt;
     HRESULT hr;
-    int idx = 0;
+    int idx;
+    int idx_next;
     int i;
     int v86, r86;
 
     assert(cpu_is_stopped(cpu) || qemu_cpu_is_self(cpu));
+
+    /*
+     * Following MSRs have side effects on the guest or are too heavy for
+     * runtime. Limit them to full state update.
+     */
+    if (level >= WHPX_SET_RESET_STATE) {
+        whpx_set_tsc(cpu);
+    }
+
+    memset(&vcxt, 0, sizeof(struct whpx_register_set));
 
     v86 = (env->eflags & VM_MASK);
     r86 = !(env->cr[0] & CR0_PE_MASK);
@@ -234,10 +282,14 @@ static void whpx_set_registers(CPUState *cpu)
     vcpu->tpr = cpu_get_apic_tpr(x86_cpu->apic_state);
     vcpu->apic_base = cpu_get_apic_base(x86_cpu->apic_state);
 
+    idx = 0;
+
     /* Indexes for first 16 registers match between HV and QEMU definitions */
-    for (idx = 0; idx < CPU_NB_REGS64; idx += 1) {
-        vcxt.values[idx].Reg64 = env->regs[idx];
+    idx_next = 16;
+    for (idx = 0; idx < CPU_NB_REGS; idx += 1) {
+        vcxt.values[idx].Reg64 = (uint64_t)env->regs[idx];
     }
+    idx = idx_next;
 
     /* Same goes for RIP and RFLAGS */
     assert(whpx_register_names[idx] == WHvX64RegisterRip);
@@ -284,10 +336,12 @@ static void whpx_set_registers(CPUState *cpu)
 
     /* 16 XMM registers */
     assert(whpx_register_names[idx] == WHvX64RegisterXmm0);
-    for (i = 0; i < 16; i += 1, idx += 1) {
+    idx_next = idx + 16;
+    for (i = 0; i < sizeof(env->xmm_regs) / sizeof(ZMMReg); i += 1, idx += 1) {
         vcxt.values[idx].Reg128.Low64 = env->xmm_regs[i].ZMM_Q(0);
         vcxt.values[idx].Reg128.High64 = env->xmm_regs[i].ZMM_Q(1);
     }
+    idx = idx_next;
 
     /* 8 FP registers */
     assert(whpx_register_names[idx] == WHvX64RegisterFpMmx0);
@@ -320,8 +374,6 @@ static void whpx_set_registers(CPUState *cpu)
     idx += 1;
 
     /* MSRs */
-    assert(whpx_register_names[idx] == WHvX64RegisterTsc);
-    vcxt.values[idx++].Reg64 = env->tsc;
     assert(whpx_register_names[idx] == WHvX64RegisterEfer);
     vcxt.values[idx++].Reg64 = env->efer;
 #ifdef TARGET_X86_64
@@ -355,10 +407,11 @@ static void whpx_set_registers(CPUState *cpu)
 
     assert(idx == RTL_NUMBER_OF(whpx_register_names));
 
-    hr = WHvSetVirtualProcessorRegisters(whpx->partition, cpu->cpu_index,
-                                         whpx_register_names,
-                                         RTL_NUMBER_OF(whpx_register_names),
-                                         &vcxt.values[0]);
+    hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index,
+        whpx_register_names,
+        RTL_NUMBER_OF(whpx_register_names),
+        &vcxt.values[0]);
 
     if (FAILED(hr)) {
         error_report("WHPX: Failed to set virtual processor context, hr=%08lx",
@@ -366,6 +419,25 @@ static void whpx_set_registers(CPUState *cpu)
     }
 
     return;
+}
+
+static int whpx_get_tsc(CPUState *cpu)
+{
+    struct CPUX86State *env = (CPUArchState *)(cpu->env_ptr);
+    WHV_REGISTER_NAME tsc_reg = WHvX64RegisterTsc;
+    WHV_REGISTER_VALUE tsc_val;
+    HRESULT hr;
+    struct whpx_state *whpx = &whpx_global;
+
+    hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index, &tsc_reg, 1, &tsc_val);
+    if (FAILED(hr)) {
+        error_report("WHPX: Failed to get TSC, hr=%08lx", hr);
+        return -1;
+    }
+
+    env->tsc = tsc_val.Reg64;
+    return 0;
 }
 
 static void whpx_get_registers(CPUState *cpu)
@@ -377,24 +449,35 @@ static void whpx_get_registers(CPUState *cpu)
     struct whpx_register_set vcxt;
     uint64_t tpr, apic_base;
     HRESULT hr;
-    int idx = 0;
+    int idx;
+    int idx_next;
     int i;
 
     assert(cpu_is_stopped(cpu) || qemu_cpu_is_self(cpu));
 
-    hr = WHvGetVirtualProcessorRegisters(whpx->partition, cpu->cpu_index,
-                                         whpx_register_names,
-                                         RTL_NUMBER_OF(whpx_register_names),
-                                         &vcxt.values[0]);
+    if (!env->tsc_valid) {
+        whpx_get_tsc(cpu);
+        env->tsc_valid = !runstate_is_running();
+    }
+
+    hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index,
+        whpx_register_names,
+        RTL_NUMBER_OF(whpx_register_names),
+        &vcxt.values[0]);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to get virtual processor context, hr=%08lx",
                      hr);
     }
 
+    idx = 0;
+
     /* Indexes for first 16 registers match between HV and QEMU definitions */
-    for (idx = 0; idx < CPU_NB_REGS64; idx += 1) {
+    idx_next = 16;
+    for (idx = 0; idx < CPU_NB_REGS; idx += 1) {
         env->regs[idx] = vcxt.values[idx].Reg64;
     }
+    idx = idx_next;
 
     /* Same goes for RIP and RFLAGS */
     assert(whpx_register_names[idx] == WHvX64RegisterRip);
@@ -441,10 +524,12 @@ static void whpx_get_registers(CPUState *cpu)
 
     /* 16 XMM registers */
     assert(whpx_register_names[idx] == WHvX64RegisterXmm0);
-    for (i = 0; i < 16; i += 1, idx += 1) {
+    idx_next = idx + 16;
+    for (i = 0; i < sizeof(env->xmm_regs) / sizeof(ZMMReg); i += 1, idx += 1) {
         env->xmm_regs[i].ZMM_Q(0) = vcxt.values[idx].Reg128.Low64;
         env->xmm_regs[i].ZMM_Q(1) = vcxt.values[idx].Reg128.High64;
     }
+    idx = idx_next;
 
     /* 8 FP registers */
     assert(whpx_register_names[idx] == WHvX64RegisterFpMmx0);
@@ -473,8 +558,6 @@ static void whpx_get_registers(CPUState *cpu)
     idx += 1;
 
     /* MSRs */
-    assert(whpx_register_names[idx] == WHvX64RegisterTsc);
-    env->tsc = vcxt.values[idx++].Reg64;
     assert(whpx_register_names[idx] == WHvX64RegisterEfer);
     env->efer = vcxt.values[idx++].Reg64;
 #ifdef TARGET_X86_64
@@ -492,7 +575,7 @@ static void whpx_get_registers(CPUState *cpu)
     /* WHvX64RegisterPat - Skipped */
 
     assert(whpx_register_names[idx] == WHvX64RegisterSysenterCs);
-    env->sysenter_cs = vcxt.values[idx++].Reg64;;
+    env->sysenter_cs = vcxt.values[idx++].Reg64;
     assert(whpx_register_names[idx] == WHvX64RegisterSysenterEip);
     env->sysenter_eip = vcxt.values[idx++].Reg64;
     assert(whpx_register_names[idx] == WHvX64RegisterSysenterEsp);
@@ -521,7 +604,7 @@ static HRESULT CALLBACK whpx_emu_ioport_callback(
 {
     MemTxAttrs attrs = { 0 };
     address_space_rw(&address_space_io, IoAccess->Port, attrs,
-                     (uint8_t *)&IoAccess->Data, IoAccess->AccessSize,
+                     &IoAccess->Data, IoAccess->AccessSize,
                      IoAccess->Direction);
     return S_OK;
 }
@@ -545,9 +628,10 @@ static HRESULT CALLBACK whpx_emu_getreg_callback(
     struct whpx_state *whpx = &whpx_global;
     CPUState *cpu = (CPUState *)ctx;
 
-    hr = WHvGetVirtualProcessorRegisters(whpx->partition, cpu->cpu_index,
-                                         RegisterNames, RegisterCount,
-                                         RegisterValues);
+    hr = whp_dispatch.WHvGetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index,
+        RegisterNames, RegisterCount,
+        RegisterValues);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to get virtual processor registers,"
                      " hr=%08lx", hr);
@@ -566,9 +650,10 @@ static HRESULT CALLBACK whpx_emu_setreg_callback(
     struct whpx_state *whpx = &whpx_global;
     CPUState *cpu = (CPUState *)ctx;
 
-    hr = WHvSetVirtualProcessorRegisters(whpx->partition, cpu->cpu_index,
-                                         RegisterNames, RegisterCount,
-                                         RegisterValues);
+    hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+        whpx->partition, cpu->cpu_index,
+        RegisterNames, RegisterCount,
+        RegisterValues);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to set virtual processor registers,"
                      " hr=%08lx", hr);
@@ -595,8 +680,8 @@ static HRESULT CALLBACK whpx_emu_translate_callback(
     CPUState *cpu = (CPUState *)ctx;
     WHV_TRANSLATE_GVA_RESULT res;
 
-    hr = WHvTranslateGva(whpx->partition, cpu->cpu_index,
-                         Gva, TranslateFlags, &res, Gpa);
+    hr = whp_dispatch.WHvTranslateGva(whpx->partition, cpu->cpu_index,
+                                      Gva, TranslateFlags, &res, Gpa);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to translate GVA, hr=%08lx", hr);
     } else {
@@ -621,16 +706,18 @@ static int whpx_handle_mmio(CPUState *cpu, WHV_MEMORY_ACCESS_CONTEXT *ctx)
     struct whpx_vcpu *vcpu = get_whpx_vcpu(cpu);
     WHV_EMULATOR_STATUS emu_status;
 
-    hr = WHvEmulatorTryMmioEmulation(vcpu->emulator, cpu,
-                                     &vcpu->exit_ctx.VpContext, ctx,
-                                     &emu_status);
+    hr = whp_dispatch.WHvEmulatorTryMmioEmulation(
+        vcpu->emulator, cpu,
+        &vcpu->exit_ctx.VpContext, ctx,
+        &emu_status);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to parse MMIO access, hr=%08lx", hr);
         return -1;
     }
 
     if (!emu_status.EmulationSuccessful) {
-        error_report("WHPX: Failed to emulate MMIO access");
+        error_report("WHPX: Failed to emulate MMIO access with"
+                     " EmulatorReturnStatus: %u", emu_status.AsUINT32);
         return -1;
     }
 
@@ -644,16 +731,18 @@ static int whpx_handle_portio(CPUState *cpu,
     struct whpx_vcpu *vcpu = get_whpx_vcpu(cpu);
     WHV_EMULATOR_STATUS emu_status;
 
-    hr = WHvEmulatorTryIoEmulation(vcpu->emulator, cpu,
-                                   &vcpu->exit_ctx.VpContext, ctx,
-                                   &emu_status);
+    hr = whp_dispatch.WHvEmulatorTryIoEmulation(
+        vcpu->emulator, cpu,
+        &vcpu->exit_ctx.VpContext, ctx,
+        &emu_status);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to parse PortIO access, hr=%08lx", hr);
         return -1;
     }
 
     if (!emu_status.EmulationSuccessful) {
-        error_report("WHPX: Failed to emulate PortMMIO access");
+        error_report("WHPX: Failed to emulate PortIO access with"
+                     " EmulatorReturnStatus: %u", emu_status.AsUINT32);
         return -1;
     }
 
@@ -687,10 +776,13 @@ static void whpx_vcpu_pre_run(CPUState *cpu)
     X86CPU *x86_cpu = X86_CPU(cpu);
     int irq;
     uint8_t tpr;
-    WHV_X64_PENDING_INTERRUPTION_REGISTER new_int = {0};
+    WHV_X64_PENDING_INTERRUPTION_REGISTER new_int;
     UINT32 reg_count = 0;
-    WHV_REGISTER_VALUE reg_values[3] = {0};
+    WHV_REGISTER_VALUE reg_values[3];
     WHV_REGISTER_NAME reg_names[3];
+
+    memset(&new_int, 0, sizeof(new_int));
+    memset(reg_values, 0, sizeof(reg_values));
 
     qemu_mutex_lock_iothread();
 
@@ -768,8 +860,9 @@ static void whpx_vcpu_pre_run(CPUState *cpu)
     qemu_mutex_unlock_iothread();
 
     if (reg_count) {
-        hr = WHvSetVirtualProcessorRegisters(whpx->partition, cpu->cpu_index,
-                                             reg_names, reg_count, reg_values);
+        hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+            whpx->partition, cpu->cpu_index,
+            reg_names, reg_count, reg_values);
         if (FAILED(hr)) {
             error_report("WHPX: Failed to set interrupt state registers,"
                          " hr=%08lx", hr);
@@ -812,9 +905,8 @@ static void whpx_vcpu_process_async_events(CPUState *cpu)
 
     if ((cpu->interrupt_request & CPU_INTERRUPT_INIT) &&
         !(env->hflags & HF_SMM_MASK)) {
-
+        whpx_cpu_synchronize_state(cpu);
         do_cpu_init(x86_cpu);
-        cpu->vcpu_dirty = true;
         vcpu->interruptable = true;
     }
 
@@ -830,17 +922,13 @@ static void whpx_vcpu_process_async_events(CPUState *cpu)
     }
 
     if (cpu->interrupt_request & CPU_INTERRUPT_SIPI) {
-        if (!cpu->vcpu_dirty) {
-            whpx_get_registers(cpu);
-        }
+        whpx_cpu_synchronize_state(cpu);
         do_cpu_sipi(x86_cpu);
     }
 
     if (cpu->interrupt_request & CPU_INTERRUPT_TPR) {
         cpu->interrupt_request &= ~CPU_INTERRUPT_TPR;
-        if (!cpu->vcpu_dirty) {
-            whpx_get_registers(cpu);
-        }
+        whpx_cpu_synchronize_state(cpu);
         apic_handle_tpr_access_report(x86_cpu->apic_state, env->eip,
                                       env->tpr_access_type);
     }
@@ -867,7 +955,7 @@ static int whpx_vcpu_run(CPUState *cpu)
 
     do {
         if (cpu->vcpu_dirty) {
-            whpx_set_registers(cpu);
+            whpx_set_registers(cpu, WHPX_SET_RUNTIME_STATE);
             cpu->vcpu_dirty = false;
         }
 
@@ -877,8 +965,9 @@ static int whpx_vcpu_run(CPUState *cpu)
             whpx_vcpu_kick(cpu);
         }
 
-        hr = WHvRunVirtualProcessor(whpx->partition, cpu->cpu_index,
-                                    &vcpu->exit_ctx, sizeof(vcpu->exit_ctx));
+        hr = whp_dispatch.WHvRunVirtualProcessor(
+            whpx->partition, cpu->cpu_index,
+            &vcpu->exit_ctx, sizeof(vcpu->exit_ctx));
 
         if (FAILED(hr)) {
             error_report("WHPX: Failed to exec a virtual processor,"
@@ -900,6 +989,7 @@ static int whpx_vcpu_run(CPUState *cpu)
 
         case WHvRunVpExitReasonX64InterruptWindow:
             vcpu->window_registered = 0;
+            ret = 0;
             break;
 
         case WHvRunVpExitReasonX64Halt:
@@ -911,12 +1001,101 @@ static int whpx_vcpu_run(CPUState *cpu)
             ret = 1;
             break;
 
+        case WHvRunVpExitReasonX64MsrAccess: {
+            WHV_REGISTER_VALUE reg_values[3] = {0};
+            WHV_REGISTER_NAME reg_names[3];
+            UINT32 reg_count;
+
+            reg_names[0] = WHvX64RegisterRip;
+            reg_names[1] = WHvX64RegisterRax;
+            reg_names[2] = WHvX64RegisterRdx;
+
+            reg_values[0].Reg64 =
+                vcpu->exit_ctx.VpContext.Rip +
+                vcpu->exit_ctx.VpContext.InstructionLength;
+
+            /*
+             * For all unsupported MSR access we:
+             *     ignore writes
+             *     return 0 on read.
+             */
+            reg_count = vcpu->exit_ctx.MsrAccess.AccessInfo.IsWrite ?
+                        1 : 3;
+
+            hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+                whpx->partition,
+                cpu->cpu_index,
+                reg_names, reg_count,
+                reg_values);
+
+            if (FAILED(hr)) {
+                error_report("WHPX: Failed to set MsrAccess state "
+                             " registers, hr=%08lx", hr);
+            }
+            ret = 0;
+            break;
+        }
+        case WHvRunVpExitReasonX64Cpuid: {
+            WHV_REGISTER_VALUE reg_values[5];
+            WHV_REGISTER_NAME reg_names[5];
+            UINT32 reg_count = 5;
+            UINT64 cpuid_fn, rip = 0, rax = 0, rcx = 0, rdx = 0, rbx = 0;
+            X86CPU *x86_cpu = X86_CPU(cpu);
+            CPUX86State *env = &x86_cpu->env;
+
+            memset(reg_values, 0, sizeof(reg_values));
+
+            rip = vcpu->exit_ctx.VpContext.Rip +
+                  vcpu->exit_ctx.VpContext.InstructionLength;
+            cpuid_fn = vcpu->exit_ctx.CpuidAccess.Rax;
+
+            /*
+             * Ideally, these should be supplied to the hypervisor during VCPU
+             * initialization and it should be able to satisfy this request.
+             * But, currently, WHPX doesn't support setting CPUID values in the
+             * hypervisor once the partition has been setup, which is too late
+             * since VCPUs are realized later. For now, use the values from
+             * QEMU to satisfy these requests, until WHPX adds support for
+             * being able to set these values in the hypervisor at runtime.
+             */
+            cpu_x86_cpuid(env, cpuid_fn, 0, (UINT32 *)&rax, (UINT32 *)&rbx,
+                (UINT32 *)&rcx, (UINT32 *)&rdx);
+            switch (cpuid_fn) {
+            case 0x80000001:
+                /* Remove any support of OSVW */
+                rcx &= ~CPUID_EXT3_OSVW;
+                break;
+            }
+
+            reg_names[0] = WHvX64RegisterRip;
+            reg_names[1] = WHvX64RegisterRax;
+            reg_names[2] = WHvX64RegisterRcx;
+            reg_names[3] = WHvX64RegisterRdx;
+            reg_names[4] = WHvX64RegisterRbx;
+
+            reg_values[0].Reg64 = rip;
+            reg_values[1].Reg64 = rax;
+            reg_values[2].Reg64 = rcx;
+            reg_values[3].Reg64 = rdx;
+            reg_values[4].Reg64 = rbx;
+
+            hr = whp_dispatch.WHvSetVirtualProcessorRegisters(
+                whpx->partition, cpu->cpu_index,
+                reg_names,
+                reg_count,
+                reg_values);
+
+            if (FAILED(hr)) {
+                error_report("WHPX: Failed to set CpuidAccess state registers,"
+                             " hr=%08lx", hr);
+            }
+            ret = 0;
+            break;
+        }
         case WHvRunVpExitReasonNone:
         case WHvRunVpExitReasonUnrecoverableException:
         case WHvRunVpExitReasonInvalidVpRegisterValue:
         case WHvRunVpExitReasonUnsupportedFeature:
-        case WHvRunVpExitReasonX64MsrAccess:
-        case WHvRunVpExitReasonX64Cpuid:
         case WHvRunVpExitReasonException:
         default:
             error_report("WHPX: Unexpected VP exit code %d",
@@ -941,21 +1120,23 @@ static int whpx_vcpu_run(CPUState *cpu)
 
 static void do_whpx_cpu_synchronize_state(CPUState *cpu, run_on_cpu_data arg)
 {
-    whpx_get_registers(cpu);
-    cpu->vcpu_dirty = true;
+    if (!cpu->vcpu_dirty) {
+        whpx_get_registers(cpu);
+        cpu->vcpu_dirty = true;
+    }
 }
 
 static void do_whpx_cpu_synchronize_post_reset(CPUState *cpu,
                                                run_on_cpu_data arg)
 {
-    whpx_set_registers(cpu);
+    whpx_set_registers(cpu, WHPX_SET_RESET_STATE);
     cpu->vcpu_dirty = false;
 }
 
 static void do_whpx_cpu_synchronize_post_init(CPUState *cpu,
                                               run_on_cpu_data arg)
 {
-    whpx_set_registers(cpu);
+    whpx_set_registers(cpu, WHPX_SET_FULL_STATE);
     cpu->vcpu_dirty = false;
 }
 
@@ -997,6 +1178,15 @@ void whpx_cpu_synchronize_pre_loadvm(CPUState *cpu)
 
 static Error *whpx_migration_blocker;
 
+static void whpx_cpu_update_state(void *opaque, int running, RunState state)
+{
+    CPUX86State *env = opaque;
+
+    if (running) {
+        env->tsc_valid = false;
+    }
+}
+
 int whpx_init_vcpu(CPUState *cpu)
 {
     HRESULT hr;
@@ -1015,8 +1205,8 @@ int whpx_init_vcpu(CPUState *cpu)
         (void)migrate_add_blocker(whpx_migration_blocker, &local_error);
         if (local_error) {
             error_report_err(local_error);
-            error_free(whpx_migration_blocker);
             migrate_del_blocker(whpx_migration_blocker);
+            error_free(whpx_migration_blocker);
             return -EINVAL;
         }
     }
@@ -1028,7 +1218,9 @@ int whpx_init_vcpu(CPUState *cpu)
         return -ENOMEM;
     }
 
-    hr = WHvEmulatorCreateEmulator(&whpx_emu_callbacks, &vcpu->emulator);
+    hr = whp_dispatch.WHvEmulatorCreateEmulator(
+        &whpx_emu_callbacks,
+        &vcpu->emulator);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to setup instruction completion support,"
                      " hr=%08lx", hr);
@@ -1036,11 +1228,12 @@ int whpx_init_vcpu(CPUState *cpu)
         return -EINVAL;
     }
 
-    hr = WHvCreateVirtualProcessor(whpx->partition, cpu->cpu_index, 0);
+    hr = whp_dispatch.WHvCreateVirtualProcessor(
+        whpx->partition, cpu->cpu_index, 0);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to create a virtual processor,"
                      " hr=%08lx", hr);
-        WHvEmulatorDestroyEmulator(vcpu->emulator);
+        whp_dispatch.WHvEmulatorDestroyEmulator(vcpu->emulator);
         g_free(vcpu);
         return -EINVAL;
     }
@@ -1049,6 +1242,7 @@ int whpx_init_vcpu(CPUState *cpu)
 
     cpu->vcpu_dirty = true;
     cpu->hax_vcpu = (struct hax_vcpu_state *)vcpu;
+    qemu_add_vm_change_state_handler(whpx_cpu_update_state, cpu->env_ptr);
 
     return 0;
 }
@@ -1081,8 +1275,8 @@ void whpx_destroy_vcpu(CPUState *cpu)
     struct whpx_state *whpx = &whpx_global;
     struct whpx_vcpu *vcpu = get_whpx_vcpu(cpu);
 
-    WHvDeleteVirtualProcessor(whpx->partition, cpu->cpu_index);
-    WHvEmulatorDestroyEmulator(vcpu->emulator);
+    whp_dispatch.WHvDeleteVirtualProcessor(whpx->partition, cpu->cpu_index);
+    whp_dispatch.WHvEmulatorDestroyEmulator(vcpu->emulator);
     g_free(cpu->hax_vcpu);
     return;
 }
@@ -1090,7 +1284,8 @@ void whpx_destroy_vcpu(CPUState *cpu)
 void whpx_vcpu_kick(CPUState *cpu)
 {
     struct whpx_state *whpx = &whpx_global;
-    WHvCancelRunVirtualProcessor(whpx->partition, cpu->cpu_index, 0);
+    whp_dispatch.WHvCancelRunVirtualProcessor(
+        whpx->partition, cpu->cpu_index, 0);
 }
 
 /*
@@ -1116,24 +1311,24 @@ static void whpx_update_mapping(hwaddr start_pa, ram_addr_t size,
     */
 
     if (add) {
-        hr = WHvMapGpaRange(whpx->partition,
-                            host_va,
-                            start_pa,
-                            size,
-                            (WHvMapGpaRangeFlagRead |
-                             WHvMapGpaRangeFlagExecute |
-                             (rom ? 0 : WHvMapGpaRangeFlagWrite)));
+        hr = whp_dispatch.WHvMapGpaRange(whpx->partition,
+                                         host_va,
+                                         start_pa,
+                                         size,
+                                         (WHvMapGpaRangeFlagRead |
+                                          WHvMapGpaRangeFlagExecute |
+                                          (rom ? 0 : WHvMapGpaRangeFlagWrite)));
     } else {
-        hr = WHvUnmapGpaRange(whpx->partition,
-                              start_pa,
-                              size);
+        hr = whp_dispatch.WHvUnmapGpaRange(whpx->partition,
+                                           start_pa,
+                                           size);
     }
 
     if (FAILED(hr)) {
         error_report("WHPX: Failed to %s GPA range '%s' PA:%p, Size:%p bytes,"
                      " Host:%p, hr=%08lx",
                      (add ? "MAP" : "UNMAP"), name,
-                     (void *)start_pa, (void *)size, host_va, hr);
+                     (void *)(uintptr_t)start_pa, (void *)size, host_va, hr);
     }
 }
 
@@ -1164,8 +1359,8 @@ static void whpx_process_section(MemoryRegionSection *section, int add)
     host_va = (uintptr_t)memory_region_get_ram_ptr(mr)
             + section->offset_within_region + delta;
 
-    whpx_update_mapping(start_pa, size, (void *)host_va, add,
-                       memory_region_is_rom(mr), mr->name);
+    whpx_update_mapping(start_pa, size, (void *)(uintptr_t)host_va, add,
+                        memory_region_is_rom(mr), mr->name);
 }
 
 static void whpx_region_add(MemoryListener *listener,
@@ -1226,6 +1421,67 @@ static void whpx_handle_interrupt(CPUState *cpu, int mask)
 }
 
 /*
+ * Load the functions from the given library, using the given handle. If a
+ * handle is provided, it is used, otherwise the library is opened. The
+ * handle will be updated on return with the opened one.
+ */
+static bool load_whp_dispatch_fns(HMODULE *handle,
+    WHPFunctionList function_list)
+{
+    HMODULE hLib = *handle;
+
+    #define WINHV_PLATFORM_DLL "WinHvPlatform.dll"
+    #define WINHV_EMULATION_DLL "WinHvEmulation.dll"
+    #define WHP_LOAD_FIELD_OPTIONAL(return_type, function_name, signature) \
+        whp_dispatch.function_name = \
+            (function_name ## _t)GetProcAddress(hLib, #function_name); \
+
+    #define WHP_LOAD_FIELD(return_type, function_name, signature) \
+        whp_dispatch.function_name = \
+            (function_name ## _t)GetProcAddress(hLib, #function_name); \
+        if (!whp_dispatch.function_name) { \
+            error_report("Could not load function %s", #function_name); \
+            goto error; \
+        } \
+
+    #define WHP_LOAD_LIB(lib_name, handle_lib) \
+    if (!handle_lib) { \
+        handle_lib = LoadLibrary(lib_name); \
+        if (!handle_lib) { \
+            error_report("Could not load library %s.", lib_name); \
+            goto error; \
+        } \
+    } \
+
+    switch (function_list) {
+    case WINHV_PLATFORM_FNS_DEFAULT:
+        WHP_LOAD_LIB(WINHV_PLATFORM_DLL, hLib)
+        LIST_WINHVPLATFORM_FUNCTIONS(WHP_LOAD_FIELD)
+        break;
+
+    case WINHV_EMULATION_FNS_DEFAULT:
+        WHP_LOAD_LIB(WINHV_EMULATION_DLL, hLib)
+        LIST_WINHVEMULATION_FUNCTIONS(WHP_LOAD_FIELD)
+        break;
+
+    case WINHV_PLATFORM_FNS_SUPPLEMENTAL:
+        WHP_LOAD_LIB(WINHV_PLATFORM_DLL, hLib)
+        LIST_WINHVPLATFORM_FUNCTIONS_SUPPLEMENTAL(WHP_LOAD_FIELD_OPTIONAL)
+        break;
+    }
+
+    *handle = hLib;
+    return true;
+
+error:
+    if (hLib) {
+        FreeLibrary(hLib);
+    }
+
+    return false;
+}
+
+/*
  * Partition support
  */
 
@@ -1240,18 +1496,24 @@ static int whpx_accel_init(MachineState *ms)
 
     whpx = &whpx_global;
 
+    if (!init_whp_dispatch()) {
+        ret = -ENOSYS;
+        goto error;
+    }
+
     memset(whpx, 0, sizeof(struct whpx_state));
     whpx->mem_quota = ms->ram_size;
 
-    hr = WHvGetCapability(WHvCapabilityCodeHypervisorPresent, &whpx_cap,
-                          sizeof(whpx_cap), &whpx_cap_size);
+    hr = whp_dispatch.WHvGetCapability(
+        WHvCapabilityCodeHypervisorPresent, &whpx_cap,
+        sizeof(whpx_cap), &whpx_cap_size);
     if (FAILED(hr) || !whpx_cap.HypervisorPresent) {
         error_report("WHPX: No accelerator found, hr=%08lx", hr);
         ret = -ENOSPC;
         goto error;
     }
 
-    hr = WHvCreatePartition(&whpx->partition);
+    hr = whp_dispatch.WHvCreatePartition(&whpx->partition);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to create partition, hr=%08lx", hr);
         ret = -EINVAL;
@@ -1259,20 +1521,51 @@ static int whpx_accel_init(MachineState *ms)
     }
 
     memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
-    prop.ProcessorCount = smp_cpus;
-    hr = WHvSetPartitionProperty(whpx->partition,
-                                 WHvPartitionPropertyCodeProcessorCount,
-                                 &prop,
-                                 sizeof(WHV_PARTITION_PROPERTY));
+    prop.ProcessorCount = ms->smp.cpus;
+    hr = whp_dispatch.WHvSetPartitionProperty(
+        whpx->partition,
+        WHvPartitionPropertyCodeProcessorCount,
+        &prop,
+        sizeof(WHV_PARTITION_PROPERTY));
 
     if (FAILED(hr)) {
         error_report("WHPX: Failed to set partition core count to %d,"
-                     " hr=%08lx", smp_cores, hr);
+                     " hr=%08lx", ms->smp.cores, hr);
         ret = -EINVAL;
         goto error;
     }
 
-    hr = WHvSetupPartition(whpx->partition);
+    memset(&prop, 0, sizeof(WHV_PARTITION_PROPERTY));
+    prop.ExtendedVmExits.X64MsrExit = 1;
+    prop.ExtendedVmExits.X64CpuidExit = 1;
+    hr = whp_dispatch.WHvSetPartitionProperty(
+        whpx->partition,
+        WHvPartitionPropertyCodeExtendedVmExits,
+        &prop,
+        sizeof(WHV_PARTITION_PROPERTY));
+
+    if (FAILED(hr)) {
+        error_report("WHPX: Failed to enable partition extended X64MsrExit and"
+                     " X64CpuidExit hr=%08lx", hr);
+        ret = -EINVAL;
+        goto error;
+    }
+
+    UINT32 cpuidExitList[] = {1, 0x80000001};
+    hr = whp_dispatch.WHvSetPartitionProperty(
+        whpx->partition,
+        WHvPartitionPropertyCodeCpuidExitList,
+        cpuidExitList,
+        RTL_NUMBER_OF(cpuidExitList) * sizeof(UINT32));
+
+    if (FAILED(hr)) {
+        error_report("WHPX: Failed to set partition CpuidExitList hr=%08lx",
+                     hr);
+        ret = -EINVAL;
+        goto error;
+    }
+
+    hr = whp_dispatch.WHvSetupPartition(whpx->partition);
     if (FAILED(hr)) {
         error_report("WHPX: Failed to setup partition, hr=%08lx", hr);
         ret = -EINVAL;
@@ -1289,7 +1582,7 @@ static int whpx_accel_init(MachineState *ms)
   error:
 
     if (NULL != whpx->partition) {
-        WHvDeletePartition(whpx->partition);
+        whp_dispatch.WHvDeletePartition(whpx->partition);
         whpx->partition = NULL;
     }
 
@@ -1319,6 +1612,37 @@ static const TypeInfo whpx_accel_type = {
 static void whpx_type_init(void)
 {
     type_register_static(&whpx_accel_type);
+}
+
+bool init_whp_dispatch(void)
+{
+    if (whp_dispatch_initialized) {
+        return true;
+    }
+
+    if (!load_whp_dispatch_fns(&hWinHvPlatform, WINHV_PLATFORM_FNS_DEFAULT)) {
+        goto error;
+    }
+
+    if (!load_whp_dispatch_fns(&hWinHvEmulation, WINHV_EMULATION_FNS_DEFAULT)) {
+        goto error;
+    }
+
+    assert(load_whp_dispatch_fns(&hWinHvPlatform,
+        WINHV_PLATFORM_FNS_SUPPLEMENTAL));
+    whp_dispatch_initialized = true;
+
+    return true;
+error:
+    if (hWinHvPlatform) {
+        FreeLibrary(hWinHvPlatform);
+    }
+
+    if (hWinHvEmulation) {
+        FreeLibrary(hWinHvEmulation);
+    }
+
+    return false;
 }
 
 type_init(whpx_type_init);

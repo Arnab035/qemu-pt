@@ -23,6 +23,7 @@ typedef enum QmpCommandOptions
     QCO_NO_OPTIONS            =  0x0,
     QCO_NO_SUCCESS_RESP       =  (1U << 0),
     QCO_ALLOW_OOB             =  (1U << 1),
+    QCO_ALLOW_PRECONFIG       =  (1U << 2),
 } QmpCommandOptions;
 
 typedef struct QmpCommand
@@ -38,22 +39,22 @@ typedef QTAILQ_HEAD(QmpCommandList, QmpCommand) QmpCommandList;
 
 void qmp_register_command(QmpCommandList *cmds, const char *name,
                           QmpCommandFunc *fn, QmpCommandOptions options);
-void qmp_unregister_command(QmpCommandList *cmds, const char *name);
-QmpCommand *qmp_find_command(QmpCommandList *cmds, const char *name);
-QObject *qmp_dispatch(QmpCommandList *cmds, QObject *request);
+const QmpCommand *qmp_find_command(const QmpCommandList *cmds,
+                                   const char *name);
 void qmp_disable_command(QmpCommandList *cmds, const char *name);
 void qmp_enable_command(QmpCommandList *cmds, const char *name);
 
 bool qmp_command_is_enabled(const QmpCommand *cmd);
 const char *qmp_command_name(const QmpCommand *cmd);
 bool qmp_has_success_response(const QmpCommand *cmd);
-QObject *qmp_build_error_object(Error *err);
-QDict *qmp_dispatch_check_obj(const QObject *request, Error **errp);
-bool qmp_is_oob(QDict *dict);
+QDict *qmp_error_response(Error *err);
+QDict *qmp_dispatch(const QmpCommandList *cmds, QObject *request,
+                    bool allow_oob);
+bool qmp_is_oob(const QDict *dict);
 
-typedef void (*qmp_cmd_callback_fn)(QmpCommand *cmd, void *opaque);
+typedef void (*qmp_cmd_callback_fn)(const QmpCommand *cmd, void *opaque);
 
-void qmp_for_each_command(QmpCommandList *cmds, qmp_cmd_callback_fn fn,
+void qmp_for_each_command(const QmpCommandList *cmds, qmp_cmd_callback_fn fn,
                           void *opaque);
 
 #endif

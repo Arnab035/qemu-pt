@@ -30,7 +30,7 @@
 #ifndef HW_SD_H
 #define HW_SD_H
 
-#include "hw/qdev.h"
+#include "hw/qdev-core.h"
 
 #define OUT_OF_RANGE		(1 << 31)
 #define ADDRESS_ERROR		(1 << 30)
@@ -53,6 +53,12 @@
 #define READY_FOR_DATA		(1 << 8)
 #define APP_CMD			(1 << 5)
 #define AKE_SEQ_ERROR		(1 << 3)
+
+enum SDPhySpecificationVersion {
+    SD_PHY_SPECv1_10_VERS     = 1,
+    SD_PHY_SPECv2_00_VERS     = 2,
+    SD_PHY_SPECv3_01_VERS     = 3,
+};
 
 typedef enum {
     SD_VOLTAGE_0_4V     = 400,  /* currently not supported */

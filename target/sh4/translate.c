@@ -6,7 +6,7 @@
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
+ * version 2.1 of the License, or (at your option) any later version.
  *
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
@@ -23,13 +23,14 @@
 #include "cpu.h"
 #include "disas/disas.h"
 #include "exec/exec-all.h"
-#include "tcg-op.h"
+#include "tcg/tcg-op.h"
 #include "exec/cpu_ldst.h"
 #include "exec/helper-proto.h"
 #include "exec/helper-gen.h"
 #include "exec/translator.h"
 #include "trace-tcg.h"
 #include "exec/log.h"
+#include "qemu/qemu-print.h"
 
 
 typedef struct DisasContext {
@@ -156,32 +157,32 @@ void sh4_translate_init(void)
                                               fregnames[i]);
 }
 
-void superh_cpu_dump_state(CPUState *cs, FILE *f,
-                           fprintf_function cpu_fprintf, int flags)
+void superh_cpu_dump_state(CPUState *cs, FILE *f, int flags)
 {
     SuperHCPU *cpu = SUPERH_CPU(cs);
     CPUSH4State *env = &cpu->env;
     int i;
-    cpu_fprintf(f, "pc=0x%08x sr=0x%08x pr=0x%08x fpscr=0x%08x\n",
-                env->pc, cpu_read_sr(env), env->pr, env->fpscr);
-    cpu_fprintf(f, "spc=0x%08x ssr=0x%08x gbr=0x%08x vbr=0x%08x\n",
-		env->spc, env->ssr, env->gbr, env->vbr);
-    cpu_fprintf(f, "sgr=0x%08x dbr=0x%08x delayed_pc=0x%08x fpul=0x%08x\n",
-		env->sgr, env->dbr, env->delayed_pc, env->fpul);
+
+    qemu_fprintf(f, "pc=0x%08x sr=0x%08x pr=0x%08x fpscr=0x%08x\n",
+                 env->pc, cpu_read_sr(env), env->pr, env->fpscr);
+    qemu_fprintf(f, "spc=0x%08x ssr=0x%08x gbr=0x%08x vbr=0x%08x\n",
+                 env->spc, env->ssr, env->gbr, env->vbr);
+    qemu_fprintf(f, "sgr=0x%08x dbr=0x%08x delayed_pc=0x%08x fpul=0x%08x\n",
+                 env->sgr, env->dbr, env->delayed_pc, env->fpul);
     for (i = 0; i < 24; i += 4) {
-	cpu_fprintf(f, "r%d=0x%08x r%d=0x%08x r%d=0x%08x r%d=0x%08x\n",
+        qemu_printf("r%d=0x%08x r%d=0x%08x r%d=0x%08x r%d=0x%08x\n",
 		    i, env->gregs[i], i + 1, env->gregs[i + 1],
 		    i + 2, env->gregs[i + 2], i + 3, env->gregs[i + 3]);
     }
     if (env->flags & DELAY_SLOT) {
-	cpu_fprintf(f, "in delay slot (delayed_pc=0x%08x)\n",
+        qemu_printf("in delay slot (delayed_pc=0x%08x)\n",
 		    env->delayed_pc);
     } else if (env->flags & DELAY_SLOT_CONDITIONAL) {
-	cpu_fprintf(f, "in conditional delay slot (delayed_pc=0x%08x)\n",
+        qemu_printf("in conditional delay slot (delayed_pc=0x%08x)\n",
 		    env->delayed_pc);
     } else if (env->flags & DELAY_SLOT_RTE) {
-        cpu_fprintf(f, "in rte delay slot (delayed_pc=0x%08x)\n",
-                    env->delayed_pc);
+        qemu_fprintf(f, "in rte delay slot (delayed_pc=0x%08x)\n",
+                     env->delayed_pc);
     }
 }
 
@@ -242,13 +243,13 @@ static void gen_goto_tb(DisasContext *ctx, int n, target_ulong dest)
     if (use_goto_tb(ctx, dest)) {
         tcg_gen_goto_tb(n);
         tcg_gen_movi_i32(cpu_pc, dest);
-        tcg_gen_exit_tb((uintptr_t)ctx->base.tb + n);
+        tcg_gen_exit_tb(ctx->base.tb, n);
     } else {
         tcg_gen_movi_i32(cpu_pc, dest);
         if (ctx->base.singlestep_enabled) {
             gen_helper_debug(cpu_env);
         } else if (use_exit_tb(ctx)) {
-            tcg_gen_exit_tb(0);
+            tcg_gen_exit_tb(NULL, 0);
         } else {
             tcg_gen_lookup_and_goto_ptr();
         }
@@ -266,7 +267,7 @@ static void gen_jump(DisasContext * ctx)
         if (ctx->base.singlestep_enabled) {
             gen_helper_debug(cpu_env);
         } else if (use_exit_tb(ctx)) {
-            tcg_gen_exit_tb(0);
+            tcg_gen_exit_tb(NULL, 0);
         } else {
             tcg_gen_lookup_and_goto_ptr();
         }
@@ -293,6 +294,7 @@ static void gen_conditional_jump(DisasContext *ctx, target_ulong dest,
            disallow it in use_goto_tb, but it handles exit + singlestep.  */
         gen_goto_tb(ctx, 0, dest);
         gen_set_label(l1);
+        ctx->base.is_jmp = DISAS_NEXT;
         return;
     }
 
@@ -1895,34 +1897,17 @@ static void decode_opc(DisasContext * ctx)
    any sequence via cpu_exec_step_atomic, we can recognize the "normal"
    sequences and transform them into atomic operations as seen by the host.
 */
-static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
+static void decode_gusa(DisasContext *ctx, CPUSH4State *env)
 {
     uint16_t insns[5];
     int ld_adr, ld_dst, ld_mop;
     int op_dst, op_src, op_opc;
     int mv_src, mt_dst, st_src, st_mop;
     TCGv op_arg;
-
     uint32_t pc = ctx->base.pc_next;
     uint32_t pc_end = ctx->base.tb->cs_base;
-    int backup = sextract32(ctx->tbflags, GUSA_SHIFT, 8);
     int max_insns = (pc_end - pc) / 2;
     int i;
-
-    if (pc != pc_end + backup || max_insns < 2) {
-        /* This is a malformed gUSA region.  Don't do anything special,
-           since the interpreter is likely to get confused.  */
-        ctx->envflags &= ~GUSA_MASK;
-        return 0;
-    }
-
-    if (ctx->tbflags & GUSA_EXCLUSIVE) {
-        /* Regardless of single-stepping or the end of the page,
-           we must complete execution of the gUSA region while
-           holding the exclusive lock.  */
-        *pmax_insns = max_insns;
-        return 0;
-    }
 
     /* The state machine below will consume only a few insns.
        If there are more than that in a region, fail now.  */
@@ -1932,7 +1917,7 @@ static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
 
     /* Read all of the insns for the region.  */
     for (i = 0; i < max_insns; ++i) {
-        insns[i] = cpu_lduw_code(env, pc + i * 2);
+        insns[i] = translator_lduw(env, pc + i * 2);
     }
 
     ld_adr = ld_dst = ld_mop = -1;
@@ -2140,7 +2125,6 @@ static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
     /*
      * Emit the operation.
      */
-    tcg_gen_insn_start(pc, ctx->envflags);
     switch (op_opc) {
     case -1:
         /* No operation found.  Look for exchange pattern.  */
@@ -2235,7 +2219,8 @@ static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
     /* The entire region has been translated.  */
     ctx->envflags &= ~GUSA_MASK;
     ctx->base.pc_next = pc_end;
-    return max_insns;
+    ctx->base.num_insns += max_insns - 1;
+    return;
 
  fail:
     qemu_log_mask(LOG_UNIMP, "Unrecognized gUSA sequence %08x-%08x\n",
@@ -2243,7 +2228,6 @@ static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
 
     /* Restart with the EXCLUSIVE bit set, within a TB run via
        cpu_exec_step_atomic holding the exclusive lock.  */
-    tcg_gen_insn_start(pc, ctx->envflags);
     ctx->envflags |= GUSA_EXCLUSIVE;
     gen_save_cpu_state(ctx, false);
     gen_helper_exclusive(cpu_env);
@@ -2254,130 +2238,156 @@ static int decode_gusa(DisasContext *ctx, CPUSH4State *env, int *pmax_insns)
        entire region consumed via ctx->base.pc_next so that it's immediately
        available in the disassembly dump.  */
     ctx->base.pc_next = pc_end;
-    return 1;
+    ctx->base.num_insns += max_insns - 1;
 }
 #endif
 
-void gen_intermediate_code(CPUState *cs, struct TranslationBlock *tb)
+static void sh4_tr_init_disas_context(DisasContextBase *dcbase, CPUState *cs)
 {
+    DisasContext *ctx = container_of(dcbase, DisasContext, base);
     CPUSH4State *env = cs->env_ptr;
-    DisasContext ctx;
-    target_ulong pc_start;
-    int num_insns;
-    int max_insns;
+    uint32_t tbflags;
+    int bound;
 
-    pc_start = tb->pc;
-    ctx.base.pc_next = pc_start;
-    ctx.tbflags = (uint32_t)tb->flags;
-    ctx.envflags = tb->flags & TB_FLAG_ENVFLAGS_MASK;
-    ctx.base.is_jmp = DISAS_NEXT;
-    ctx.memidx = (ctx.tbflags & (1u << SR_MD)) == 0 ? 1 : 0;
+    ctx->tbflags = tbflags = ctx->base.tb->flags;
+    ctx->envflags = tbflags & TB_FLAG_ENVFLAGS_MASK;
+    ctx->memidx = (tbflags & (1u << SR_MD)) == 0 ? 1 : 0;
     /* We don't know if the delayed pc came from a dynamic or static branch,
        so assume it is a dynamic branch.  */
-    ctx.delayed_pc = -1; /* use delayed pc from env pointer */
-    ctx.base.tb = tb;
-    ctx.base.singlestep_enabled = cs->singlestep_enabled;
-    ctx.features = env->features;
-    ctx.has_movcal = (ctx.tbflags & TB_FLAG_PENDING_MOVCA);
-    ctx.gbank = ((ctx.tbflags & (1 << SR_MD)) &&
-                 (ctx.tbflags & (1 << SR_RB))) * 0x10;
-    ctx.fbank = ctx.tbflags & FPSCR_FR ? 0x10 : 0;
+    ctx->delayed_pc = -1; /* use delayed pc from env pointer */
+    ctx->features = env->features;
+    ctx->has_movcal = (tbflags & TB_FLAG_PENDING_MOVCA);
+    ctx->gbank = ((tbflags & (1 << SR_MD)) &&
+                  (tbflags & (1 << SR_RB))) * 0x10;
+    ctx->fbank = tbflags & FPSCR_FR ? 0x10 : 0;
 
-    max_insns = tb_cflags(tb) & CF_COUNT_MASK;
-    if (max_insns == 0) {
-        max_insns = CF_COUNT_MASK;
+    if (tbflags & GUSA_MASK) {
+        uint32_t pc = ctx->base.pc_next;
+        uint32_t pc_end = ctx->base.tb->cs_base;
+        int backup = sextract32(ctx->tbflags, GUSA_SHIFT, 8);
+        int max_insns = (pc_end - pc) / 2;
+
+        if (pc != pc_end + backup || max_insns < 2) {
+            /* This is a malformed gUSA region.  Don't do anything special,
+               since the interpreter is likely to get confused.  */
+            ctx->envflags &= ~GUSA_MASK;
+        } else if (tbflags & GUSA_EXCLUSIVE) {
+            /* Regardless of single-stepping or the end of the page,
+               we must complete execution of the gUSA region while
+               holding the exclusive lock.  */
+            ctx->base.max_insns = max_insns;
+            return;
+        }
     }
-    max_insns = MIN(max_insns, TCG_MAX_INSNS);
 
     /* Since the ISA is fixed-width, we can bound by the number
        of instructions remaining on the page.  */
-    num_insns = -(ctx.base.pc_next | TARGET_PAGE_MASK) / 2;
-    max_insns = MIN(max_insns, num_insns);
+    bound = -(ctx->base.pc_next | TARGET_PAGE_MASK) / 2;
+    ctx->base.max_insns = MIN(ctx->base.max_insns, bound);
+}
 
-    /* Single stepping means just that.  */
-    if (ctx.base.singlestep_enabled || singlestep) {
-        max_insns = 1;
-    }
+static void sh4_tr_tb_start(DisasContextBase *dcbase, CPUState *cs)
+{
+}
 
-    gen_tb_start(tb);
-    num_insns = 0;
+static void sh4_tr_insn_start(DisasContextBase *dcbase, CPUState *cs)
+{
+    DisasContext *ctx = container_of(dcbase, DisasContext, base);
+
+    tcg_gen_insn_start(ctx->base.pc_next, ctx->envflags);
+}
+
+static bool sh4_tr_breakpoint_check(DisasContextBase *dcbase, CPUState *cs,
+                                    const CPUBreakpoint *bp)
+{
+    DisasContext *ctx = container_of(dcbase, DisasContext, base);
+
+    /* We have hit a breakpoint - make sure PC is up-to-date */
+    gen_save_cpu_state(ctx, true);
+    gen_helper_debug(cpu_env);
+    ctx->base.is_jmp = DISAS_NORETURN;
+    /* The address covered by the breakpoint must be included in
+       [tb->pc, tb->pc + tb->size) in order to for it to be
+       properly cleared -- thus we increment the PC here so that
+       the logic setting tb->size below does the right thing.  */
+    ctx->base.pc_next += 2;
+    return true;
+}
+
+static void sh4_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
+{
+    CPUSH4State *env = cs->env_ptr;
+    DisasContext *ctx = container_of(dcbase, DisasContext, base);
 
 #ifdef CONFIG_USER_ONLY
-    if (ctx.tbflags & GUSA_MASK) {
-        num_insns = decode_gusa(&ctx, env, &max_insns);
+    if (unlikely(ctx->envflags & GUSA_MASK)
+        && !(ctx->envflags & GUSA_EXCLUSIVE)) {
+        /* We're in an gUSA region, and we have not already fallen
+           back on using an exclusive region.  Attempt to parse the
+           region into a single supported atomic operation.  Failure
+           is handled within the parser by raising an exception to
+           retry using an exclusive region.  */
+        decode_gusa(ctx, env);
+        return;
     }
 #endif
 
-    while (ctx.base.is_jmp == DISAS_NEXT
-           && num_insns < max_insns
-           && !tcg_op_buf_full()) {
-        tcg_gen_insn_start(ctx.base.pc_next, ctx.envflags);
-        num_insns++;
+    ctx->opcode = translator_lduw(env, ctx->base.pc_next);
+    decode_opc(ctx);
+    ctx->base.pc_next += 2;
+}
 
-        if (unlikely(cpu_breakpoint_test(cs, ctx.base.pc_next, BP_ANY))) {
-            /* We have hit a breakpoint - make sure PC is up-to-date */
-            gen_save_cpu_state(&ctx, true);
-            gen_helper_debug(cpu_env);
-            ctx.base.is_jmp = DISAS_NORETURN;
-            /* The address covered by the breakpoint must be included in
-               [tb->pc, tb->pc + tb->size) in order to for it to be
-               properly cleared -- thus we increment the PC here so that
-               the logic setting tb->size below does the right thing.  */
-            ctx.base.pc_next += 2;
-            break;
-        }
+static void sh4_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs)
+{
+    DisasContext *ctx = container_of(dcbase, DisasContext, base);
 
-        if (num_insns == max_insns && (tb_cflags(tb) & CF_LAST_IO)) {
-            gen_io_start();
-        }
-
-        ctx.opcode = cpu_lduw_code(env, ctx.base.pc_next);
-	decode_opc(&ctx);
-        ctx.base.pc_next += 2;
-    }
-    if (tb_cflags(tb) & CF_LAST_IO) {
-        gen_io_end();
-    }
-
-    if (ctx.tbflags & GUSA_EXCLUSIVE) {
+    if (ctx->tbflags & GUSA_EXCLUSIVE) {
         /* Ending the region of exclusivity.  Clear the bits.  */
-        ctx.envflags &= ~GUSA_MASK;
+        ctx->envflags &= ~GUSA_MASK;
     }
 
-    switch (ctx.base.is_jmp) {
+    switch (ctx->base.is_jmp) {
     case DISAS_STOP:
-        gen_save_cpu_state(&ctx, true);
-        if (ctx.base.singlestep_enabled) {
+        gen_save_cpu_state(ctx, true);
+        if (ctx->base.singlestep_enabled) {
             gen_helper_debug(cpu_env);
         } else {
-            tcg_gen_exit_tb(0);
+            tcg_gen_exit_tb(NULL, 0);
         }
         break;
     case DISAS_NEXT:
-        gen_save_cpu_state(&ctx, false);
-        gen_goto_tb(&ctx, 0, ctx.base.pc_next);
+    case DISAS_TOO_MANY:
+        gen_save_cpu_state(ctx, false);
+        gen_goto_tb(ctx, 0, ctx->base.pc_next);
         break;
     case DISAS_NORETURN:
         break;
     default:
         g_assert_not_reached();
     }
+}
 
-    gen_tb_end(tb, num_insns);
+static void sh4_tr_disas_log(const DisasContextBase *dcbase, CPUState *cs)
+{
+    qemu_log("IN:\n");  /* , lookup_symbol(dcbase->pc_first)); */
+    log_target_disas(cs, dcbase->pc_first, dcbase->tb->size);
+}
 
-    tb->size = ctx.base.pc_next - pc_start;
-    tb->icount = num_insns;
+static const TranslatorOps sh4_tr_ops = {
+    .init_disas_context = sh4_tr_init_disas_context,
+    .tb_start           = sh4_tr_tb_start,
+    .insn_start         = sh4_tr_insn_start,
+    .breakpoint_check   = sh4_tr_breakpoint_check,
+    .translate_insn     = sh4_tr_translate_insn,
+    .tb_stop            = sh4_tr_tb_stop,
+    .disas_log          = sh4_tr_disas_log,
+};
 
-#ifdef DEBUG_DISAS
-    if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)
-        && qemu_log_in_addr_range(pc_start)) {
-        qemu_log_lock();
-	qemu_log("IN:\n");	/* , lookup_symbol(pc_start)); */
-        log_target_disas(cs, pc_start, ctx.base.pc_next - pc_start);
-	qemu_log("\n");
-        qemu_log_unlock();
-    }
-#endif
+void gen_intermediate_code(CPUState *cs, TranslationBlock *tb, int max_insns)
+{
+    DisasContext ctx;
+
+    translator_loop(&sh4_tr_ops, &ctx.base, cs, tb, max_insns);
 }
 
 void restore_state_to_opc(CPUSH4State *env, TranslationBlock *tb,

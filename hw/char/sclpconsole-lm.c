@@ -14,13 +14,15 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/qdev.h"
 #include "qemu/thread.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "chardev/char-fe.h"
 
 #include "hw/s390x/sclp.h"
+#include "migration/vmstate.h"
 #include "hw/s390x/event-facility.h"
+#include "hw/qdev-properties.h"
 #include "hw/s390x/ebcdic.h"
 
 #define SIZE_BUFFER 4096
@@ -29,7 +31,7 @@
 typedef struct OprtnsCommand {
     EventBufferHeader header;
     MDMSU message_unit;
-    char data[0];
+    char data[];
 } QEMU_PACKED OprtnsCommand;
 
 /* max size for line-mode data in 4K SCCB page */
@@ -340,7 +342,7 @@ static void console_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
     SCLPEventClass *ec = SCLP_EVENT_CLASS(klass);
 
-    dc->props = console_properties;
+    device_class_set_props(dc, console_properties);
     dc->reset = console_reset;
     dc->vmsd = &vmstate_sclplmconsole;
     ec->init = console_init;

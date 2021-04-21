@@ -16,6 +16,11 @@
 #include "hw/sysbus.h"
 #include "net/net.h"
 
+/*
+ * Max frame size for the receiving buffer
+ */
+#define FTGMAC100_MAX_FRAME_SIZE    9220
+
 typedef struct FTGMAC100State {
     /*< private >*/
     SysBusDevice parent_obj;
@@ -26,7 +31,7 @@ typedef struct FTGMAC100State {
     qemu_irq irq;
     MemoryRegion iomem;
 
-    uint8_t *frame;
+    uint8_t frame[FTGMAC100_MAX_FRAME_SIZE];
 
     uint32_t irq_state;
     uint32_t isr;
@@ -60,5 +65,22 @@ typedef struct FTGMAC100State {
     uint32_t txdes0_edotr;
     uint32_t rxdes0_edorr;
 } FTGMAC100State;
+
+#define TYPE_ASPEED_MII "aspeed-mmi"
+#define ASPEED_MII(obj) OBJECT_CHECK(AspeedMiiState, (obj), TYPE_ASPEED_MII)
+
+/*
+ * AST2600 MII controller
+ */
+typedef struct AspeedMiiState {
+    /*< private >*/
+    SysBusDevice parent_obj;
+
+    FTGMAC100State *nic;
+
+    MemoryRegion iomem;
+    uint32_t phycr;
+    uint32_t phydata;
+} AspeedMiiState;
 
 #endif

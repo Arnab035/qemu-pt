@@ -19,8 +19,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 /* L2C-310 r3p2 */
 #define CACHE_ID 0x410000c8
@@ -179,7 +182,7 @@ static void l2x0_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_l2x0;
-    dc->props = l2x0_properties;
+    device_class_set_props(dc, l2x0_properties);
     dc->reset = l2x0_priv_reset;
 }
 

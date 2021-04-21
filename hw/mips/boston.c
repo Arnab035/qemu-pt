@@ -18,12 +18,11 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/units.h"
 
 #include "exec/address-spaces.h"
 #include "hw/boards.h"
 #include "hw/char/serial.h"
-#include "hw/hw.h"
 #include "hw/ide/pci.h"
 #include "hw/ide/ahci.h"
 #include "hw/loader.h"
@@ -31,14 +30,15 @@
 #include "hw/mips/cps.h"
 #include "hw/mips/cpudevs.h"
 #include "hw/pci-host/xilinx-pcie.h"
+#include "hw/qdev-properties.h"
 #include "qapi/error.h"
-#include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "chardev/char.h"
 #include "sysemu/device_tree.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/qtest.h"
+#include "sysemu/runstate.h"
 
 #include <libfdt.h>
 
@@ -49,8 +49,8 @@ typedef struct {
     SysBusDevice parent_obj;
 
     MachineState *mach;
-    MIPSCPSState *cps;
-    SerialState *uart;
+    MIPSCPSState cps;
+    SerialMM *uart;
 
     CharBackend lcd_display;
     char lcd_content[8];
@@ -98,7 +98,7 @@ enum boston_plat_reg {
     PLAT_SYS_CTL        = 0x48,
 };
 
-static void boston_lcd_event(void *opaque, int event)
+static void boston_lcd_event(void *opaque, QEMUChrEvent event)
 {
     BostonState *s = opaque;
     if (event == CHR_EVENT_OPENED && !s->lcd_inited) {
@@ -176,7 +176,7 @@ static uint64_t boston_platreg_read(void *opaque, hwaddr addr,
     uint32_t gic_freq, val;
 
     if (size != 4) {
-        qemu_log_mask(LOG_UNIMP, "%uB platform register read", size);
+        qemu_log_mask(LOG_UNIMP, "%uB platform register read\n", size);
         return 0;
     }
 
@@ -188,7 +188,7 @@ static uint64_t boston_platreg_read(void *opaque, hwaddr addr,
     case PLAT_DDR3_STATUS:
         return PLAT_DDR3_STATUS_LOCKED | PLAT_DDR3_STATUS_CALIBRATED;
     case PLAT_MMCM_DIV:
-        gic_freq = mips_gictimer_get_freq(s->cps->gic.gic_timer) / 1000000;
+        gic_freq = mips_gictimer_get_freq(s->cps.gic.gic_timer) / 1000000;
         val = gic_freq << PLAT_MMCM_DIV_INPUT_SHIFT;
         val |= 1 << PLAT_MMCM_DIV_MUL_SHIFT;
         val |= 1 << PLAT_MMCM_DIV_CLK0DIV_SHIFT;
@@ -200,12 +200,12 @@ static uint64_t boston_platreg_read(void *opaque, hwaddr addr,
         val |= PLAT_BUILD_CFG_PCIE2_EN;
         return val;
     case PLAT_DDR_CFG:
-        val = s->mach->ram_size / G_BYTE;
+        val = s->mach->ram_size / GiB;
         assert(!(val & ~PLAT_DDR_CFG_SIZE));
         val |= PLAT_DDR_CFG_MHZ;
         return val;
     default:
-        qemu_log_mask(LOG_UNIMP, "Read platform register 0x%" HWADDR_PRIx,
+        qemu_log_mask(LOG_UNIMP, "Read platform register 0x%" HWADDR_PRIx "\n",
                       addr & 0xffff);
         return 0;
     }
@@ -215,7 +215,7 @@ static void boston_platreg_write(void *opaque, hwaddr addr,
                                  uint64_t val, unsigned size)
 {
     if (size != 4) {
-        qemu_log_mask(LOG_UNIMP, "%uB platform register write", size);
+        qemu_log_mask(LOG_UNIMP, "%uB platform register write\n", size);
         return;
     }
 
@@ -237,7 +237,7 @@ static void boston_platreg_write(void *opaque, hwaddr addr,
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "Write platform register 0x%" HWADDR_PRIx
-                      " = 0x%" PRIx64, addr & 0xffff, val);
+                      " = 0x%" PRIx64 "\n", addr & 0xffff, val);
         break;
     }
 }
@@ -355,7 +355,7 @@ static const void *boston_fdt_filter(void *opaque, const void *fdt_orig,
         return NULL;
     }
 
-    ram_low_sz = MIN(256 * M_BYTE, machine->ram_size);
+    ram_low_sz = MIN(256 * MiB, machine->ram_size);
     ram_high_sz = machine->ram_size - ram_low_sz;
     qemu_fdt_setprop_sized_cells(fdt, "/memory@0", "reg",
                                  1, 0x00000000, 1, ram_low_sz,
@@ -427,7 +427,7 @@ static void boston_mach_init(MachineState *machine)
     DeviceState *dev;
     BostonState *s;
     Error *err = NULL;
-    MemoryRegion *flash, *ddr, *ddr_low_alias, *lcd, *platreg;
+    MemoryRegion *flash, *ddr_low_alias, *lcd, *platreg;
     MemoryRegion *sys_mem = get_system_memory();
     XilinxPCIEHost *pcie2;
     PCIDevice *ahci;
@@ -436,8 +436,8 @@ static void boston_mach_init(MachineState *machine)
     int fw_size, fit_err;
     bool is_64b;
 
-    if ((machine->ram_size % G_BYTE) ||
-        (machine->ram_size > (2 * G_BYTE))) {
+    if ((machine->ram_size % GiB) ||
+        (machine->ram_size > (2 * GiB))) {
         error_report("Memory size must be 1GB or 2GB");
         exit(1);
     }
@@ -455,69 +455,61 @@ static void boston_mach_init(MachineState *machine)
 
     is_64b = cpu_supports_isa(machine->cpu_type, ISA_MIPS64);
 
-    s->cps = MIPS_CPS(object_new(TYPE_MIPS_CPS));
-    qdev_set_parent_bus(DEVICE(s->cps), sysbus_get_default());
-
-    object_property_set_str(OBJECT(s->cps), machine->cpu_type, "cpu-type",
+    sysbus_init_child_obj(OBJECT(machine), "cps", OBJECT(&s->cps),
+                          sizeof(s->cps), TYPE_MIPS_CPS);
+    object_property_set_str(OBJECT(&s->cps), machine->cpu_type, "cpu-type",
                             &err);
-    object_property_set_int(OBJECT(s->cps), smp_cpus, "num-vp", &err);
-    object_property_set_bool(OBJECT(s->cps), true, "realized", &err);
+    object_property_set_int(OBJECT(&s->cps), machine->smp.cpus, "num-vp", &err);
+    object_property_set_bool(OBJECT(&s->cps), true, "realized", &err);
 
     if (err != NULL) {
         error_report("%s", error_get_pretty(err));
         exit(1);
     }
 
-    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(s->cps), 0, 0, 1);
+    sysbus_mmio_map_overlap(SYS_BUS_DEVICE(&s->cps), 0, 0, 1);
 
     flash =  g_new(MemoryRegion, 1);
-    memory_region_init_rom_nomigrate(flash, NULL,
-                                     "boston.flash", 128 * M_BYTE, &err);
+    memory_region_init_rom(flash, NULL, "boston.flash", 128 * MiB, &err);
     memory_region_add_subregion_overlap(sys_mem, 0x18000000, flash, 0);
 
-    ddr = g_new(MemoryRegion, 1);
-    memory_region_allocate_system_memory(ddr, NULL, "boston.ddr",
-                                         machine->ram_size);
-    memory_region_add_subregion_overlap(sys_mem, 0x80000000, ddr, 0);
+    memory_region_add_subregion_overlap(sys_mem, 0x80000000, machine->ram, 0);
 
     ddr_low_alias = g_new(MemoryRegion, 1);
     memory_region_init_alias(ddr_low_alias, NULL, "boston_low.ddr",
-                             ddr, 0, MIN(machine->ram_size, (256 * M_BYTE)));
+                             machine->ram, 0,
+                             MIN(machine->ram_size, (256 * MiB)));
     memory_region_add_subregion_overlap(sys_mem, 0, ddr_low_alias, 0);
 
     xilinx_pcie_init(sys_mem, 0,
-                     0x10000000, 32 * M_BYTE,
-                     0x40000000, 1 * G_BYTE,
-                     get_cps_irq(s->cps, 2), false);
+                     0x10000000, 32 * MiB,
+                     0x40000000, 1 * GiB,
+                     get_cps_irq(&s->cps, 2), false);
 
     xilinx_pcie_init(sys_mem, 1,
-                     0x12000000, 32 * M_BYTE,
-                     0x20000000, 512 * M_BYTE,
-                     get_cps_irq(s->cps, 1), false);
+                     0x12000000, 32 * MiB,
+                     0x20000000, 512 * MiB,
+                     get_cps_irq(&s->cps, 1), false);
 
     pcie2 = xilinx_pcie_init(sys_mem, 2,
-                             0x14000000, 32 * M_BYTE,
-                             0x16000000, 1 * M_BYTE,
-                             get_cps_irq(s->cps, 0), true);
+                             0x14000000, 32 * MiB,
+                             0x16000000, 1 * MiB,
+                             get_cps_irq(&s->cps, 0), true);
 
     platreg = g_new(MemoryRegion, 1);
     memory_region_init_io(platreg, NULL, &boston_platreg_ops, s,
                           "boston-platregs", 0x1000);
     memory_region_add_subregion_overlap(sys_mem, 0x17ffd000, platreg, 0);
 
-    if (!serial_hds[0]) {
-        serial_hds[0] = qemu_chr_new("serial0", "null");
-    }
-
     s->uart = serial_mm_init(sys_mem, 0x17ffe000, 2,
-                             get_cps_irq(s->cps, 3), 10000000,
-                             serial_hds[0], DEVICE_NATIVE_ENDIAN);
+                             get_cps_irq(&s->cps, 3), 10000000,
+                             serial_hd(0), DEVICE_NATIVE_ENDIAN);
 
     lcd = g_new(MemoryRegion, 1);
     memory_region_init_io(lcd, NULL, &boston_lcd_ops, s, "boston-lcd", 0x8);
     memory_region_add_subregion_overlap(sys_mem, 0x17fff000, lcd, 0);
 
-    chr = qemu_chr_new("lcd", "vc:320x240");
+    chr = qemu_chr_new("lcd", "vc:320x240", NULL);
     qemu_chr_fe_init(&s->lcd_display, chr, NULL);
     qemu_chr_fe_set_handlers(&s->lcd_display, NULL, NULL,
                              boston_lcd_event, NULL, s, NULL, true);
@@ -531,23 +523,23 @@ static void boston_mach_init(MachineState *machine)
 
     if (machine->firmware) {
         fw_size = load_image_targphys(machine->firmware,
-                                      0x1fc00000, 4 * M_BYTE);
+                                      0x1fc00000, 4 * MiB);
         if (fw_size == -1) {
-            error_printf("unable to load firmware image '%s'\n",
+            error_report("unable to load firmware image '%s'",
                           machine->firmware);
             exit(1);
         }
     } else if (machine->kernel_filename) {
         fit_err = load_fit(&boston_fit_loader, machine->kernel_filename, s);
         if (fit_err) {
-            error_printf("unable to load FIT image\n");
+            error_report("unable to load FIT image");
             exit(1);
         }
 
         gen_firmware(memory_region_get_ram_ptr(flash) + 0x7c00000,
                      s->kernel_entry, s->fdt_base, is_64b);
     } else if (!qtest_enabled()) {
-        error_printf("Please provide either a -kernel or -bios argument\n");
+        error_report("Please provide either a -kernel or -bios argument");
         exit(1);
     }
 }
@@ -557,7 +549,8 @@ static void boston_mach_class_init(MachineClass *mc)
     mc->desc = "MIPS Boston";
     mc->init = boston_mach_init;
     mc->block_default_type = IF_IDE;
-    mc->default_ram_size = 1 * G_BYTE;
+    mc->default_ram_size = 1 * GiB;
+    mc->default_ram_id = "boston.ddr";
     mc->max_cpus = 16;
     mc->default_cpu_type = MIPS_CPU_TYPE_NAME("I6400");
 }

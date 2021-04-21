@@ -6,21 +6,18 @@
  * Copyright (c) 2012 SUSE LINUX Products GmbH
  * Copyright (c) 2012 IBM Corp.
  *
- * This library is free software; you can redistribute it and/or
- * modify it under the terms of the GNU Lesser General Public
- * License as published by the Free Software Foundation; either
- * version 2.1 of the License, or (at your option) any later version.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful,
+ * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Lesser General Public License for more details.
+ * General Public License for more details.
  *
- * You should have received a copy of the GNU Lesser General Public
- * License along with this library; if not, see
- * <http://www.gnu.org/licenses/lgpl-2.1.html>
- * Contributions after 2012-12-11 are licensed under the terms of the
- * GNU GPL, version 2 or (at your option) any later version.
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "qemu/osdep.h"
@@ -29,23 +26,23 @@
 #include "internal.h"
 #include "kvm_s390x.h"
 #include "sysemu/kvm.h"
-#include "qemu-common.h"
-#include "qemu/cutils.h"
+#include "sysemu/reset.h"
 #include "qemu/timer.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "trace.h"
 #include "qapi/visitor.h"
-#include "qapi/qapi-visit-misc.h"
+#include "qapi/qapi-types-machine.h"
 #include "qapi/qapi-visit-run-state.h"
 #include "sysemu/hw_accel.h"
-#include "exec/exec-all.h"
 #include "hw/qdev-properties.h"
 #ifndef CONFIG_USER_ONLY
-#include "hw/hw.h"
+#include "hw/boards.h"
 #include "sysemu/arch_init.h"
 #include "sysemu/sysemu.h"
+#include "sysemu/tcg.h"
 #endif
-#include "fpu/softfloat.h"
+#include "fpu/softfloat-helpers.h"
 
 #define CR0_RESET       0xE0UL
 #define CR14_RESET      0xC2000000UL;
@@ -79,86 +76,87 @@ static bool s390_cpu_has_work(CPUState *cs)
 static void s390_cpu_load_normal(CPUState *s)
 {
     S390CPU *cpu = S390_CPU(s);
-    cpu->env.psw.addr = ldl_phys(s->as, 4) & PSW_MASK_ESA_ADDR;
-    cpu->env.psw.mask = PSW_MASK_32 | PSW_MASK_64;
+    uint64_t spsw = ldq_phys(s->as, 0);
+
+    cpu->env.psw.mask = spsw & PSW_MASK_SHORT_CTRL;
+    /*
+     * Invert short psw indication, so SIE will report a specification
+     * exception if it was not set.
+     */
+    cpu->env.psw.mask ^= PSW_MASK_SHORTPSW;
+    cpu->env.psw.addr = spsw & PSW_MASK_SHORT_ADDR;
+
     s390_cpu_set_state(S390_CPU_STATE_OPERATING, cpu);
 }
 #endif
 
-/* S390CPUClass::cpu_reset() */
-static void s390_cpu_reset(CPUState *s)
+/* S390CPUClass::reset() */
+static void s390_cpu_reset(CPUState *s, cpu_reset_type type)
 {
     S390CPU *cpu = S390_CPU(s);
     S390CPUClass *scc = S390_CPU_GET_CLASS(cpu);
     CPUS390XState *env = &cpu->env;
+    DeviceState *dev = DEVICE(s);
 
-    env->pfault_token = -1UL;
-    env->bpbc = false;
-    scc->parent_reset(s);
+    scc->parent_reset(dev);
     cpu->env.sigp_order = 0;
     s390_cpu_set_state(S390_CPU_STATE_STOPPED, cpu);
-}
 
-/* S390CPUClass::initial_reset() */
-static void s390_cpu_initial_reset(CPUState *s)
-{
-    S390CPU *cpu = S390_CPU(s);
-    CPUS390XState *env = &cpu->env;
+    switch (type) {
+    case S390_CPU_RESET_CLEAR:
+        memset(env, 0, offsetof(CPUS390XState, start_initial_reset_fields));
+        /* fall through */
+    case S390_CPU_RESET_INITIAL:
+        /* initial reset does not clear everything! */
+        memset(&env->start_initial_reset_fields, 0,
+               offsetof(CPUS390XState, start_normal_reset_fields) -
+               offsetof(CPUS390XState, start_initial_reset_fields));
 
-    s390_cpu_reset(s);
-    /* initial reset does not clear everything! */
-    memset(&env->start_initial_reset_fields, 0,
-        offsetof(CPUS390XState, end_reset_fields) -
-        offsetof(CPUS390XState, start_initial_reset_fields));
+        /* architectured initial value for Breaking-Event-Address register */
+        env->gbea = 1;
 
-    /* architectured initial values for CR 0 and 14 */
-    env->cregs[0] = CR0_RESET;
-    env->cregs[14] = CR14_RESET;
+        /* architectured initial values for CR 0 and 14 */
+        env->cregs[0] = CR0_RESET;
+        env->cregs[14] = CR14_RESET;
 
-    /* architectured initial value for Breaking-Event-Address register */
-    env->gbea = 1;
+#if defined(CONFIG_USER_ONLY)
+        /* user mode should always be allowed to use the full FPU */
+        env->cregs[0] |= CR0_AFP;
+        if (s390_has_feat(S390_FEAT_VECTOR)) {
+            env->cregs[0] |= CR0_VECTOR;
+        }
+#endif
 
-    env->pfault_token = -1UL;
+        /* tininess for underflow is detected before rounding */
+        set_float_detect_tininess(float_tininess_before_rounding,
+                                  &env->fpu_status);
+       /* fall through */
+    case S390_CPU_RESET_NORMAL:
+        env->psw.mask &= ~PSW_MASK_RI;
+        memset(&env->start_normal_reset_fields, 0,
+               offsetof(CPUS390XState, end_reset_fields) -
+               offsetof(CPUS390XState, start_normal_reset_fields));
 
-    /* tininess for underflow is detected before rounding */
-    set_float_detect_tininess(float_tininess_before_rounding,
-                              &env->fpu_status);
-
-    /* Reset state inside the kernel that we cannot access yet from QEMU. */
-    if (kvm_enabled()) {
-        kvm_s390_reset_vcpu(cpu);
+        env->pfault_token = -1UL;
+        env->bpbc = false;
+        break;
+    default:
+        g_assert_not_reached();
     }
-}
-
-/* CPUClass:reset() */
-static void s390_cpu_full_reset(CPUState *s)
-{
-    S390CPU *cpu = S390_CPU(s);
-    S390CPUClass *scc = S390_CPU_GET_CLASS(cpu);
-    CPUS390XState *env = &cpu->env;
-
-    scc->parent_reset(s);
-    cpu->env.sigp_order = 0;
-    s390_cpu_set_state(S390_CPU_STATE_STOPPED, cpu);
-
-    memset(env, 0, offsetof(CPUS390XState, end_reset_fields));
-
-    /* architectured initial values for CR 0 and 14 */
-    env->cregs[0] = CR0_RESET;
-    env->cregs[14] = CR14_RESET;
-
-    /* architectured initial value for Breaking-Event-Address register */
-    env->gbea = 1;
-
-    env->pfault_token = -1UL;
-
-    /* tininess for underflow is detected before rounding */
-    set_float_detect_tininess(float_tininess_before_rounding,
-                              &env->fpu_status);
 
     /* Reset state inside the kernel that we cannot access yet from QEMU. */
     if (kvm_enabled()) {
-        kvm_s390_reset_vcpu(cpu);
+        switch (type) {
+        case S390_CPU_RESET_CLEAR:
+            kvm_s390_reset_vcpu_clear(cpu);
+            break;
+        case S390_CPU_RESET_INITIAL:
+            kvm_s390_reset_vcpu_initial(cpu);
+            break;
+        case S390_CPU_RESET_NORMAL:
+            kvm_s390_reset_vcpu_normal(cpu);
+            break;
+        }
     }
 }
 
@@ -193,6 +191,8 @@ static void s390_cpu_realizefn(DeviceState *dev, Error **errp)
     }
 
 #if !defined(CONFIG_USER_ONLY)
+    MachineState *ms = MACHINE(qdev_get_machine());
+    unsigned int max_cpus = ms->smp.max_cpus;
     if (cpu->env.core_id >= max_cpus) {
         error_setg(&err, "Unable to add CPU with core-id: %" PRIu32
                    ", maximum core-id: %d", cpu->env.core_id,
@@ -220,11 +220,18 @@ static void s390_cpu_realizefn(DeviceState *dev, Error **errp)
 #endif
     s390_cpu_gdb_init(cs);
     qemu_init_vcpu(cs);
-#if !defined(CONFIG_USER_ONLY)
-    run_on_cpu(cs, s390_do_cpu_full_reset, RUN_ON_CPU_NULL);
-#else
-    cpu_reset(cs);
-#endif
+
+    /*
+     * KVM requires the initial CPU reset ioctl to be executed on the target
+     * CPU thread. CPU hotplug under single-threaded TCG will not work with
+     * run_on_cpu(), as run_on_cpu() will not work properly if called while
+     * the main thread is already running but the CPU hasn't been realized.
+     */
+    if (kvm_enabled()) {
+        run_on_cpu(cs, s390_do_cpu_full_reset, RUN_ON_CPU_NULL);
+    } else {
+        cpu_reset(cs);
+    }
 
     scc->parent_realize(dev, &err);
 out:
@@ -275,24 +282,18 @@ static void s390_cpu_initfn(Object *obj)
 {
     CPUState *cs = CPU(obj);
     S390CPU *cpu = S390_CPU(obj);
-    CPUS390XState *env = &cpu->env;
-#if !defined(CONFIG_USER_ONLY)
-    struct tm tm;
-#endif
 
-    cs->env_ptr = env;
+    cpu_set_cpustate_pointers(cpu);
     cs->halted = 1;
     cs->exception_index = EXCP_HLT;
     object_property_add(obj, "crash-information", "GuestPanicInformation",
                         s390_cpu_get_crash_info_qom, NULL, NULL, NULL, NULL);
     s390_cpu_model_register_props(obj);
 #if !defined(CONFIG_USER_ONLY)
-    qemu_get_timedate(&tm, 0);
-    env->tod_offset = TOD_UNIX_EPOCH +
-                      (time2tod(mktimegm(&tm)) * 1000000000ULL);
-    env->tod_basetime = 0;
-    env->tod_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s390x_tod_timer, cpu);
-    env->cpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, s390x_cpu_timer, cpu);
+    cpu->env.tod_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, s390x_tod_timer, cpu);
+    cpu->env.cpu_timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, s390x_cpu_timer, cpu);
     s390_cpu_set_state(S390_CPU_STATE_STOPPED, cpu);
 #endif
 }
@@ -391,44 +392,19 @@ unsigned int s390_cpu_set_state(uint8_t cpu_state, S390CPU *cpu)
     return s390_count_running_cpus();
 }
 
-int s390_get_clock(uint8_t *tod_high, uint64_t *tod_low)
-{
-    int r = 0;
-
-    if (kvm_enabled()) {
-        r = kvm_s390_get_clock_ext(tod_high, tod_low);
-        if (r == -ENXIO) {
-            return kvm_s390_get_clock(tod_high, tod_low);
-        }
-    } else {
-        /* Fixme TCG */
-        *tod_high = 0;
-        *tod_low = 0;
-    }
-
-    return r;
-}
-
-int s390_set_clock(uint8_t *tod_high, uint64_t *tod_low)
-{
-    int r = 0;
-
-    if (kvm_enabled()) {
-        r = kvm_s390_set_clock_ext(tod_high, tod_low);
-        if (r == -ENXIO) {
-            return kvm_s390_set_clock(tod_high, tod_low);
-        }
-    }
-    /* Fixme TCG */
-    return r;
-}
-
 int s390_set_memory_limit(uint64_t new_limit, uint64_t *hw_limit)
 {
     if (kvm_enabled()) {
         return kvm_s390_set_mem_limit(new_limit, hw_limit);
     }
     return 0;
+}
+
+void s390_set_max_pagesize(uint64_t pagesize, Error **errp)
+{
+    if (kvm_enabled()) {
+        kvm_s390_set_max_pagesize(pagesize, errp);
+    }
 }
 
 void s390_cmma_reset(void)
@@ -455,16 +431,6 @@ void s390_crypto_reset(void)
     }
 }
 
-bool s390_get_squash_mcss(void)
-{
-    if (object_property_get_bool(OBJECT(qdev_get_machine()), "s390-squash-mcss",
-                                 NULL)) {
-        return true;
-    }
-
-    return false;
-}
-
 void s390_enable_css_support(S390CPU *cpu)
 {
     if (kvm_enabled()) {
@@ -485,6 +451,12 @@ static Property s390x_cpu_properties[] = {
     DEFINE_PROP_END_OF_LIST()
 };
 
+static void s390_cpu_reset_full(DeviceState *dev)
+{
+    CPUState *s = CPU(dev);
+    return s390_cpu_reset(s, S390_CPU_RESET_CLEAR);
+}
+
 static void s390_cpu_class_init(ObjectClass *oc, void *data)
 {
     S390CPUClass *scc = S390_CPU_CLASS(oc);
@@ -493,16 +465,14 @@ static void s390_cpu_class_init(ObjectClass *oc, void *data)
 
     device_class_set_parent_realize(dc, s390_cpu_realizefn,
                                     &scc->parent_realize);
-    dc->props = s390x_cpu_properties;
+    device_class_set_props(dc, s390x_cpu_properties);
     dc->user_creatable = true;
 
-    scc->parent_reset = cc->reset;
+    device_class_set_parent_reset(dc, s390_cpu_reset_full, &scc->parent_reset);
 #if !defined(CONFIG_USER_ONLY)
     scc->load_normal = s390_cpu_load_normal;
 #endif
-    scc->cpu_reset = s390_cpu_reset;
-    scc->initial_cpu_reset = s390_cpu_initial_reset;
-    cc->reset = s390_cpu_full_reset;
+    scc->reset = s390_cpu_reset;
     cc->class_by_name = s390_cpu_class_by_name,
     cc->has_work = s390_cpu_has_work;
 #ifdef CONFIG_TCG
@@ -513,9 +483,7 @@ static void s390_cpu_class_init(ObjectClass *oc, void *data)
     cc->set_pc = s390_cpu_set_pc;
     cc->gdb_read_register = s390_cpu_gdb_read_register;
     cc->gdb_write_register = s390_cpu_gdb_write_register;
-#ifdef CONFIG_USER_ONLY
-    cc->handle_mmu_fault = s390_cpu_handle_mmu_fault;
-#else
+#ifndef CONFIG_USER_ONLY
     cc->get_phys_page_debug = s390_cpu_get_phys_page_debug;
     cc->vmsd = &vmstate_s390_cpu;
     cc->write_elf64_note = s390_cpu_write_elf64_note;
@@ -528,6 +496,7 @@ static void s390_cpu_class_init(ObjectClass *oc, void *data)
     cc->disas_set_info = s390_cpu_disas_set_info;
 #ifdef CONFIG_TCG
     cc->tcg_initialize = s390x_translate_init;
+    cc->tlb_fill = s390_cpu_tlb_fill;
 #endif
 
     cc->gdb_num_core_regs = S390_NUM_CORE_REGS;

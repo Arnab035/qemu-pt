@@ -18,27 +18,29 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qemu/error-report.h"
 #include "qemu-common.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/block/flash.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/qtest.h"
-#include "hw/devices.h"
+#include "sysemu/reset.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
+#include "hw/qdev-properties.h"
 #include "elf.h"
-#include "sysemu/block-backend.h"
 #include "milkymist-hw.h"
+#include "hw/display/milkymist_tmu2.h"
 #include "lm32.h"
 #include "exec/address-spaces.h"
 #include "qemu/cutils.h"
 
 #define BIOS_FILENAME    "mmone-bios.bin"
 #define BIOS_OFFSET      0x00860000
-#define BIOS_SIZE        (512*1024)
+#define BIOS_SIZE        (512 * KiB)
 #define KERNEL_LOAD_ADDR 0x40000000
 
 typedef struct {
@@ -81,6 +83,7 @@ static void main_cpu_reset(void *opaque)
 static void
 milkymist_init(MachineState *machine)
 {
+    MachineClass *mc = MACHINE_GET_CLASS(machine);
     const char *kernel_filename = machine->kernel_filename;
     const char *kernel_cmdline = machine->kernel_cmdline;
     const char *initrd_filename = machine->initrd_filename;
@@ -89,22 +92,27 @@ milkymist_init(MachineState *machine)
     int kernel_size;
     DriveInfo *dinfo;
     MemoryRegion *address_space_mem = get_system_memory();
-    MemoryRegion *phys_sdram = g_new(MemoryRegion, 1);
     qemu_irq irq[32];
     int i;
     char *bios_filename;
     ResetInfo *reset_info;
 
+    if (machine->ram_size != mc->default_ram_size) {
+        char *sz = size_to_str(mc->default_ram_size);
+        error_report("Invalid RAM size, should be %s", sz);
+        g_free(sz);
+        exit(EXIT_FAILURE);
+    }
+
     /* memory map */
     hwaddr flash_base   = 0x00000000;
-    size_t flash_sector_size        = 128 * 1024;
-    size_t flash_size               = 32 * 1024 * 1024;
+    size_t flash_sector_size        = 128 * KiB;
+    size_t flash_size               = 32 * MiB;
     hwaddr sdram_base   = 0x40000000;
-    size_t sdram_size               = 128 * 1024 * 1024;
 
     hwaddr initrd_base  = sdram_base + 0x1002000;
     hwaddr cmdline_base = sdram_base + 0x1000000;
-    size_t initrd_max = sdram_size - 0x1002000;
+    size_t initrd_max = machine->ram_size - 0x1002000;
 
     reset_info = g_malloc0(sizeof(ResetInfo));
 
@@ -115,16 +123,13 @@ milkymist_init(MachineState *machine)
 
     cpu_lm32_set_phys_msb_ignore(env, 1);
 
-    memory_region_allocate_system_memory(phys_sdram, NULL, "milkymist.sdram",
-                                         sdram_size);
-    memory_region_add_subregion(address_space_mem, sdram_base, phys_sdram);
+    memory_region_add_subregion(address_space_mem, sdram_base, machine->ram);
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
     /* Numonyx JS28F256J3F105 */
-    pflash_cfi01_register(flash_base, NULL, "milkymist.flash", flash_size,
+    pflash_cfi01_register(flash_base, "milkymist.flash", flash_size,
                           dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                          flash_sector_size, flash_size / flash_sector_size,
-                          2, 0x00, 0x89, 0x00, 0x1d, 1);
+                          flash_sector_size, 2, 0x00, 0x89, 0x00, 0x1d, 1);
 
     /* create irq lines */
     env->pic_state = lm32_pic_init(qemu_allocate_irq(cpu_irq_handler, cpu, 0));
@@ -139,7 +144,10 @@ milkymist_init(MachineState *machine)
     bios_filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);
 
     if (bios_filename) {
-        load_image_targphys(bios_filename, BIOS_OFFSET, BIOS_SIZE);
+        if (load_image_targphys(bios_filename, BIOS_OFFSET, BIOS_SIZE) < 0) {
+            error_report("could not load bios '%s'", bios_filename);
+            exit(1);
+        }
     }
 
     reset_info->bootstrap_pc = BIOS_OFFSET;
@@ -151,7 +159,7 @@ milkymist_init(MachineState *machine)
     }
     g_free(bios_filename);
 
-    milkymist_uart_create(0x60000000, irq[0], serial_hds[0]);
+    milkymist_uart_create(0x60000000, irq[0], serial_hd(0));
     milkymist_sysctl_create(0x60001000, irq[1], irq[2], irq[3],
             80000000, 0x10014d31, 0x0000041f, 0x00000001);
     milkymist_hpdmc_create(0x60002000);
@@ -167,19 +175,20 @@ milkymist_init(MachineState *machine)
             0x20000000, 0x1000, 0x20020000, 0x2000);
 
     /* make sure juart isn't the first chardev */
-    env->juart_state = lm32_juart_init(serial_hds[1]);
+    env->juart_state = lm32_juart_init(serial_hd(1));
 
     if (kernel_filename) {
         uint64_t entry;
 
         /* Boots a kernel elf binary.  */
-        kernel_size = load_elf(kernel_filename, NULL, NULL, &entry, NULL, NULL,
+        kernel_size = load_elf(kernel_filename, NULL, NULL, NULL,
+                               &entry, NULL, NULL, NULL,
                                1, EM_LATTICEMICO32, 0, 0);
         reset_info->bootstrap_pc = entry;
 
         if (kernel_size < 0) {
             kernel_size = load_image_targphys(kernel_filename, sdram_base,
-                                              sdram_size);
+                                              machine->ram_size);
             reset_info->bootstrap_pc = sdram_base;
         }
 
@@ -210,8 +219,9 @@ static void milkymist_machine_init(MachineClass *mc)
 {
     mc->desc = "Milkymist One";
     mc->init = milkymist_init;
-    mc->is_default = 0;
     mc->default_cpu_type = LM32_CPU_TYPE_NAME("lm32-full");
+    mc->default_ram_size = 128 * MiB;
+    mc->default_ram_id = "milkymist.sdram";
 }
 
 DEFINE_MACHINE("milkymist", milkymist_machine_init)

@@ -28,6 +28,7 @@
 #ifndef NET_CAN_EMU_H
 #define NET_CAN_EMU_H
 
+#include "qemu/queue.h"
 #include "qom/object.h"
 
 /* NOTE: the following two structures is copied from <linux/can.h>. */
@@ -82,7 +83,7 @@ typedef struct CanBusClientState CanBusClientState;
 typedef struct CanBusState CanBusState;
 
 typedef struct CanBusClientInfo {
-    int (*can_receive)(CanBusClientState *);
+    bool (*can_receive)(CanBusClientState *);
     ssize_t (*receive)(CanBusClientState *,
         const struct qemu_can_frame *frames, size_t frames_cnt);
 } CanBusClientInfo;

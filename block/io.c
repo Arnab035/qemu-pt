@@ -32,40 +32,94 @@
 #include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
+#include "sysemu/replay.h"
 
 #define NOT_DONE 0x7fffffff /* used while emulated sync operation in progress */
 
 /* Maximum bounce buffer for copy-on-read and write zeroes, in bytes */
 #define MAX_BOUNCE_BUFFER (32768 << BDRV_SECTOR_BITS)
 
+static void bdrv_parent_cb_resize(BlockDriverState *bs);
 static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
     int64_t offset, int bytes, BdrvRequestFlags flags);
 
-void bdrv_parent_drained_begin(BlockDriverState *bs, BdrvChild *ignore)
+static void bdrv_parent_drained_begin(BlockDriverState *bs, BdrvChild *ignore,
+                                      bool ignore_bds_parents)
 {
     BdrvChild *c, *next;
 
     QLIST_FOREACH_SAFE(c, &bs->parents, next_parent, next) {
-        if (c == ignore) {
+        if (c == ignore || (ignore_bds_parents && c->role->parent_is_bds)) {
             continue;
         }
-        if (c->role->drained_begin) {
-            c->role->drained_begin(c);
-        }
+        bdrv_parent_drained_begin_single(c, false);
     }
 }
 
-void bdrv_parent_drained_end(BlockDriverState *bs, BdrvChild *ignore)
+static void bdrv_parent_drained_end_single_no_poll(BdrvChild *c,
+                                                   int *drained_end_counter)
 {
-    BdrvChild *c, *next;
+    assert(c->parent_quiesce_counter > 0);
+    c->parent_quiesce_counter--;
+    if (c->role->drained_end) {
+        c->role->drained_end(c, drained_end_counter);
+    }
+}
 
-    QLIST_FOREACH_SAFE(c, &bs->parents, next_parent, next) {
-        if (c == ignore) {
+void bdrv_parent_drained_end_single(BdrvChild *c)
+{
+    int drained_end_counter = 0;
+    bdrv_parent_drained_end_single_no_poll(c, &drained_end_counter);
+    BDRV_POLL_WHILE(c->bs, atomic_read(&drained_end_counter) > 0);
+}
+
+static void bdrv_parent_drained_end(BlockDriverState *bs, BdrvChild *ignore,
+                                    bool ignore_bds_parents,
+                                    int *drained_end_counter)
+{
+    BdrvChild *c;
+
+    QLIST_FOREACH(c, &bs->parents, next_parent) {
+        if (c == ignore || (ignore_bds_parents && c->role->parent_is_bds)) {
             continue;
         }
-        if (c->role->drained_end) {
-            c->role->drained_end(c);
+        bdrv_parent_drained_end_single_no_poll(c, drained_end_counter);
+    }
+}
+
+static bool bdrv_parent_drained_poll_single(BdrvChild *c)
+{
+    if (c->role->drained_poll) {
+        return c->role->drained_poll(c);
+    }
+    return false;
+}
+
+static bool bdrv_parent_drained_poll(BlockDriverState *bs, BdrvChild *ignore,
+                                     bool ignore_bds_parents)
+{
+    BdrvChild *c, *next;
+    bool busy = false;
+
+    QLIST_FOREACH_SAFE(c, &bs->parents, next_parent, next) {
+        if (c == ignore || (ignore_bds_parents && c->role->parent_is_bds)) {
+            continue;
         }
+        busy |= bdrv_parent_drained_poll_single(c);
+    }
+
+    return busy;
+}
+
+void bdrv_parent_drained_begin_single(BdrvChild *c, bool poll)
+{
+    c->parent_quiesce_counter++;
+    if (c->role->drained_begin) {
+        c->role->drained_begin(c);
+    }
+    if (poll) {
+        BDRV_POLL_WHILE(c->bs, bdrv_parent_drained_poll_single(c));
     }
 }
 
@@ -92,7 +146,9 @@ void bdrv_refresh_limits(BlockDriverState *bs, Error **errp)
     }
 
     /* Default alignment based on whether driver has byte interface */
-    bs->bl.request_alignment = drv->bdrv_co_preadv ? 1 : 512;
+    bs->bl.request_alignment = (drv->bdrv_co_preadv ||
+                                drv->bdrv_aio_preadv ||
+                                drv->bdrv_co_preadv_part) ? 1 : 512;
 
     /* Take some limits from the children as a default */
     if (bs->file) {
@@ -104,7 +160,7 @@ void bdrv_refresh_limits(BlockDriverState *bs, Error **errp)
         bdrv_merge_limits(&bs->bl, &bs->file->bs->bl);
     } else {
         bs->bl.min_mem_alignment = 512;
-        bs->bl.opt_mem_alignment = getpagesize();
+        bs->bl.opt_mem_alignment = qemu_real_host_page_size;
 
         /* Safe default since most protocols use readv()/writev()/etc */
         bs->bl.max_iov = IOV_MAX;
@@ -147,7 +203,10 @@ typedef struct {
     bool done;
     bool begin;
     bool recursive;
+    bool poll;
     BdrvChild *parent;
+    bool ignore_bds_parents;
+    int *drained_end_counter;
 } BdrvCoDrainData;
 
 static void coroutine_fn bdrv_drain_invoke_entry(void *opaque)
@@ -161,69 +220,84 @@ static void coroutine_fn bdrv_drain_invoke_entry(void *opaque)
         bs->drv->bdrv_co_drain_end(bs);
     }
 
-    /* Set data->done before reading bs->wakeup.  */
+    /* Set data->done and decrement drained_end_counter before bdrv_wakeup() */
     atomic_mb_set(&data->done, true);
-    bdrv_wakeup(bs);
+    if (!data->begin) {
+        atomic_dec(data->drained_end_counter);
+    }
+    bdrv_dec_in_flight(bs);
+
+    g_free(data);
 }
 
 /* Recursively call BlockDriver.bdrv_co_drain_begin/end callbacks */
-static void bdrv_drain_invoke(BlockDriverState *bs, bool begin, bool recursive)
+static void bdrv_drain_invoke(BlockDriverState *bs, bool begin,
+                              int *drained_end_counter)
 {
-    BdrvChild *child, *tmp;
-    BdrvCoDrainData data = { .bs = bs, .done = false, .begin = begin};
+    BdrvCoDrainData *data;
 
     if (!bs->drv || (begin && !bs->drv->bdrv_co_drain_begin) ||
             (!begin && !bs->drv->bdrv_co_drain_end)) {
         return;
     }
 
-    data.co = qemu_coroutine_create(bdrv_drain_invoke_entry, &data);
-    bdrv_coroutine_enter(bs, data.co);
-    BDRV_POLL_WHILE(bs, !data.done);
+    data = g_new(BdrvCoDrainData, 1);
+    *data = (BdrvCoDrainData) {
+        .bs = bs,
+        .done = false,
+        .begin = begin,
+        .drained_end_counter = drained_end_counter,
+    };
 
-    if (recursive) {
-        QLIST_FOREACH_SAFE(child, &bs->children, next, tmp) {
-            bdrv_drain_invoke(child->bs, begin, true);
-        }
+    if (!begin) {
+        atomic_inc(drained_end_counter);
     }
+
+    /* Make sure the driver callback completes during the polling phase for
+     * drain_begin. */
+    bdrv_inc_in_flight(bs);
+    data->co = qemu_coroutine_create(bdrv_drain_invoke_entry, data);
+    aio_co_schedule(bdrv_get_aio_context(bs), data->co);
 }
 
-static bool bdrv_drain_recurse(BlockDriverState *bs)
+/* Returns true if BDRV_POLL_WHILE() should go into a blocking aio_poll() */
+bool bdrv_drain_poll(BlockDriverState *bs, bool recursive,
+                     BdrvChild *ignore_parent, bool ignore_bds_parents)
 {
-    BdrvChild *child, *tmp;
-    bool waited;
+    BdrvChild *child, *next;
 
-    /* Wait for drained requests to finish */
-    waited = BDRV_POLL_WHILE(bs, atomic_read(&bs->in_flight) > 0);
+    if (bdrv_parent_drained_poll(bs, ignore_parent, ignore_bds_parents)) {
+        return true;
+    }
 
-    QLIST_FOREACH_SAFE(child, &bs->children, next, tmp) {
-        BlockDriverState *bs = child->bs;
-        bool in_main_loop =
-            qemu_get_current_aio_context() == qemu_get_aio_context();
-        assert(bs->refcnt > 0);
-        if (in_main_loop) {
-            /* In case the recursive bdrv_drain_recurse processes a
-             * block_job_defer_to_main_loop BH and modifies the graph,
-             * let's hold a reference to bs until we are done.
-             *
-             * IOThread doesn't have such a BH, and it is not safe to call
-             * bdrv_unref without BQL, so skip doing it there.
-             */
-            bdrv_ref(bs);
-        }
-        waited |= bdrv_drain_recurse(bs);
-        if (in_main_loop) {
-            bdrv_unref(bs);
+    if (atomic_read(&bs->in_flight)) {
+        return true;
+    }
+
+    if (recursive) {
+        assert(!ignore_bds_parents);
+        QLIST_FOREACH_SAFE(child, &bs->children, next, next) {
+            if (bdrv_drain_poll(child->bs, recursive, child, false)) {
+                return true;
+            }
         }
     }
 
-    return waited;
+    return false;
+}
+
+static bool bdrv_drain_poll_top_level(BlockDriverState *bs, bool recursive,
+                                      BdrvChild *ignore_parent)
+{
+    return bdrv_drain_poll(bs, recursive, ignore_parent, false);
 }
 
 static void bdrv_do_drained_begin(BlockDriverState *bs, bool recursive,
-                                  BdrvChild *parent);
+                                  BdrvChild *parent, bool ignore_bds_parents,
+                                  bool poll);
 static void bdrv_do_drained_end(BlockDriverState *bs, bool recursive,
-                                BdrvChild *parent);
+                                BdrvChild *parent, bool ignore_bds_parents,
+                                int *drained_end_counter);
 
 static void bdrv_co_drain_bh_cb(void *opaque)
 {
@@ -231,11 +305,36 @@ static void bdrv_co_drain_bh_cb(void *opaque)
     Coroutine *co = data->co;
     BlockDriverState *bs = data->bs;
 
-    bdrv_dec_in_flight(bs);
-    if (data->begin) {
-        bdrv_do_drained_begin(bs, data->recursive, data->parent);
+    if (bs) {
+        AioContext *ctx = bdrv_get_aio_context(bs);
+        AioContext *co_ctx = qemu_coroutine_get_aio_context(co);
+
+        /*
+         * When the coroutine yielded, the lock for its home context was
+         * released, so we need to re-acquire it here. If it explicitly
+         * acquired a different context, the lock is still held and we don't
+         * want to lock it a second time (or AIO_WAIT_WHILE() would hang).
+         */
+        if (ctx == co_ctx) {
+            aio_context_acquire(ctx);
+        }
+        bdrv_dec_in_flight(bs);
+        if (data->begin) {
+            assert(!data->drained_end_counter);
+            bdrv_do_drained_begin(bs, data->recursive, data->parent,
+                                  data->ignore_bds_parents, data->poll);
+        } else {
+            assert(!data->poll);
+            bdrv_do_drained_end(bs, data->recursive, data->parent,
+                                data->ignore_bds_parents,
+                                data->drained_end_counter);
+        }
+        if (ctx == co_ctx) {
+            aio_context_release(ctx);
+        }
     } else {
-        bdrv_do_drained_end(bs, data->recursive, data->parent);
+        assert(data->begin);
+        bdrv_drain_all_begin();
     }
 
     data->done = true;
@@ -244,7 +343,10 @@ static void bdrv_co_drain_bh_cb(void *opaque)
 
 static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
                                                 bool begin, bool recursive,
-                                                BdrvChild *parent)
+                                                BdrvChild *parent,
+                                                bool ignore_bds_parents,
+                                                bool poll,
+                                                int *drained_end_counter)
 {
     BdrvCoDrainData data;
 
@@ -259,10 +361,16 @@ static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
         .begin = begin,
         .recursive = recursive,
         .parent = parent,
+        .ignore_bds_parents = ignore_bds_parents,
+        .poll = poll,
+        .drained_end_counter = drained_end_counter,
     };
-    bdrv_inc_in_flight(bs);
-    aio_bh_schedule_oneshot(bdrv_get_aio_context(bs),
-                            bdrv_co_drain_bh_cb, &data);
+
+    if (bs) {
+        bdrv_inc_in_flight(bs);
+    }
+    replay_bh_schedule_oneshot_event(bdrv_get_aio_context(bs),
+                                     bdrv_co_drain_bh_cb, &data);
 
     qemu_coroutine_yield();
     /* If we are resumed from some other event (such as an aio completion or a
@@ -270,79 +378,135 @@ static void coroutine_fn bdrv_co_yield_to_drain(BlockDriverState *bs,
     assert(data.done);
 }
 
-void bdrv_do_drained_begin(BlockDriverState *bs, bool recursive,
-                           BdrvChild *parent)
+void bdrv_do_drained_begin_quiesce(BlockDriverState *bs,
+                                   BdrvChild *parent, bool ignore_bds_parents)
 {
-    BdrvChild *child, *next;
-
-    if (qemu_in_coroutine()) {
-        bdrv_co_yield_to_drain(bs, true, recursive, parent);
-        return;
-    }
+    assert(!qemu_in_coroutine());
 
     /* Stop things in parent-to-child order */
     if (atomic_fetch_inc(&bs->quiesce_counter) == 0) {
         aio_disable_external(bdrv_get_aio_context(bs));
     }
 
-    bdrv_parent_drained_begin(bs, parent);
-    bdrv_drain_invoke(bs, true, false);
-    bdrv_drain_recurse(bs);
+    bdrv_parent_drained_begin(bs, parent, ignore_bds_parents);
+    bdrv_drain_invoke(bs, true, NULL);
+}
+
+static void bdrv_do_drained_begin(BlockDriverState *bs, bool recursive,
+                                  BdrvChild *parent, bool ignore_bds_parents,
+                                  bool poll)
+{
+    BdrvChild *child, *next;
+
+    if (qemu_in_coroutine()) {
+        bdrv_co_yield_to_drain(bs, true, recursive, parent, ignore_bds_parents,
+                               poll, NULL);
+        return;
+    }
+
+    bdrv_do_drained_begin_quiesce(bs, parent, ignore_bds_parents);
 
     if (recursive) {
+        assert(!ignore_bds_parents);
         bs->recursive_quiesce_counter++;
         QLIST_FOREACH_SAFE(child, &bs->children, next, next) {
-            bdrv_do_drained_begin(child->bs, true, child);
+            bdrv_do_drained_begin(child->bs, true, child, ignore_bds_parents,
+                                  false);
         }
+    }
+
+    /*
+     * Wait for drained requests to finish.
+     *
+     * Calling BDRV_POLL_WHILE() only once for the top-level node is okay: The
+     * call is needed so things in this AioContext can make progress even
+     * though we don't return to the main AioContext loop - this automatically
+     * includes other nodes in the same AioContext and therefore all child
+     * nodes.
+     */
+    if (poll) {
+        assert(!ignore_bds_parents);
+        BDRV_POLL_WHILE(bs, bdrv_drain_poll_top_level(bs, recursive, parent));
     }
 }
 
 void bdrv_drained_begin(BlockDriverState *bs)
 {
-    bdrv_do_drained_begin(bs, false, NULL);
+    bdrv_do_drained_begin(bs, false, NULL, false, true);
 }
 
 void bdrv_subtree_drained_begin(BlockDriverState *bs)
 {
-    bdrv_do_drained_begin(bs, true, NULL);
+    bdrv_do_drained_begin(bs, true, NULL, false, true);
 }
 
-void bdrv_do_drained_end(BlockDriverState *bs, bool recursive,
-                         BdrvChild *parent)
+/**
+ * This function does not poll, nor must any of its recursively called
+ * functions.  The *drained_end_counter pointee will be incremented
+ * once for every background operation scheduled, and decremented once
+ * the operation settles.  Therefore, the pointer must remain valid
+ * until the pointee reaches 0.  That implies that whoever sets up the
+ * pointee has to poll until it is 0.
+ *
+ * We use atomic operations to access *drained_end_counter, because
+ * (1) when called from bdrv_set_aio_context_ignore(), the subgraph of
+ *     @bs may contain nodes in different AioContexts,
+ * (2) bdrv_drain_all_end() uses the same counter for all nodes,
+ *     regardless of which AioContext they are in.
+ */
+static void bdrv_do_drained_end(BlockDriverState *bs, bool recursive,
+                                BdrvChild *parent, bool ignore_bds_parents,
+                                int *drained_end_counter)
 {
-    BdrvChild *child, *next;
+    BdrvChild *child;
     int old_quiesce_counter;
 
+    assert(drained_end_counter != NULL);
+
     if (qemu_in_coroutine()) {
-        bdrv_co_yield_to_drain(bs, false, recursive, parent);
+        bdrv_co_yield_to_drain(bs, false, recursive, parent, ignore_bds_parents,
+                               false, drained_end_counter);
         return;
     }
     assert(bs->quiesce_counter > 0);
-    old_quiesce_counter = atomic_fetch_dec(&bs->quiesce_counter);
 
     /* Re-enable things in child-to-parent order */
-    bdrv_drain_invoke(bs, false, false);
-    bdrv_parent_drained_end(bs, parent);
+    bdrv_drain_invoke(bs, false, drained_end_counter);
+    bdrv_parent_drained_end(bs, parent, ignore_bds_parents,
+                            drained_end_counter);
+
+    old_quiesce_counter = atomic_fetch_dec(&bs->quiesce_counter);
     if (old_quiesce_counter == 1) {
         aio_enable_external(bdrv_get_aio_context(bs));
     }
 
     if (recursive) {
+        assert(!ignore_bds_parents);
         bs->recursive_quiesce_counter--;
-        QLIST_FOREACH_SAFE(child, &bs->children, next, next) {
-            bdrv_do_drained_end(child->bs, true, child);
+        QLIST_FOREACH(child, &bs->children, next) {
+            bdrv_do_drained_end(child->bs, true, child, ignore_bds_parents,
+                                drained_end_counter);
         }
     }
 }
 
 void bdrv_drained_end(BlockDriverState *bs)
 {
-    bdrv_do_drained_end(bs, false, NULL);
+    int drained_end_counter = 0;
+    bdrv_do_drained_end(bs, false, NULL, false, &drained_end_counter);
+    BDRV_POLL_WHILE(bs, atomic_read(&drained_end_counter) > 0);
+}
+
+void bdrv_drained_end_no_poll(BlockDriverState *bs, int *drained_end_counter)
+{
+    bdrv_do_drained_end(bs, false, NULL, false, drained_end_counter);
 }
 
 void bdrv_subtree_drained_end(BlockDriverState *bs)
 {
-    bdrv_do_drained_end(bs, true, NULL);
+    int drained_end_counter = 0;
+    bdrv_do_drained_end(bs, true, NULL, false, &drained_end_counter);
+    BDRV_POLL_WHILE(bs, atomic_read(&drained_end_counter) > 0);
 }
 
 void bdrv_apply_subtree_drain(BdrvChild *child, BlockDriverState *new_parent)
@@ -350,17 +514,21 @@ void bdrv_apply_subtree_drain(BdrvChild *child, BlockDriverState *new_parent)
     int i;
 
     for (i = 0; i < new_parent->recursive_quiesce_counter; i++) {
-        bdrv_do_drained_begin(child->bs, true, child);
+        bdrv_do_drained_begin(child->bs, true, child, false, true);
     }
 }
 
 void bdrv_unapply_subtree_drain(BdrvChild *child, BlockDriverState *old_parent)
 {
+    int drained_end_counter = 0;
     int i;
 
     for (i = 0; i < old_parent->recursive_quiesce_counter; i++) {
-        bdrv_do_drained_end(child->bs, true, child);
+        bdrv_do_drained_end(child->bs, true, child, false,
+                            &drained_end_counter);
     }
+
+    BDRV_POLL_WHILE(child->bs, atomic_read(&drained_end_counter) > 0);
 }
 
 /*
@@ -369,10 +537,6 @@ void bdrv_unapply_subtree_drain(BdrvChild *child, BlockDriverState *old_parent)
  *
  * Note that unlike bdrv_drain_all(), the caller must hold the BlockDriverState
  * AioContext.
- *
- * Only this BlockDriverState's AioContext is run, so in-flight requests must
- * not depend on events in other AioContexts.  In that case, use
- * bdrv_drain_all() instead.
  */
 void coroutine_fn bdrv_co_drain(BlockDriverState *bs)
 {
@@ -385,6 +549,35 @@ void bdrv_drain(BlockDriverState *bs)
 {
     bdrv_drained_begin(bs);
     bdrv_drained_end(bs);
+}
+
+static void bdrv_drain_assert_idle(BlockDriverState *bs)
+{
+    BdrvChild *child, *next;
+
+    assert(atomic_read(&bs->in_flight) == 0);
+    QLIST_FOREACH_SAFE(child, &bs->children, next, next) {
+        bdrv_drain_assert_idle(child->bs);
+    }
+}
+
+unsigned int bdrv_drain_all_count = 0;
+
+static bool bdrv_drain_all_poll(void)
+{
+    BlockDriverState *bs = NULL;
+    bool result = false;
+
+    /* bdrv_drain_poll() can't make changes to the graph and we are holding the
+     * main AioContext lock, so iterating bdrv_next_all_states() is safe. */
+    while ((bs = bdrv_next_all_states(bs))) {
+        AioContext *aio_context = bdrv_get_aio_context(bs);
+        aio_context_acquire(aio_context);
+        result |= bdrv_drain_poll(bs, false, NULL, true);
+        aio_context_release(aio_context);
+    }
+
+    return result;
 }
 
 /*
@@ -401,73 +594,73 @@ void bdrv_drain(BlockDriverState *bs)
  */
 void bdrv_drain_all_begin(void)
 {
-    /* Always run first iteration so any pending completion BHs run */
-    bool waited = true;
-    BlockDriverState *bs;
-    BdrvNextIterator it;
-    GSList *aio_ctxs = NULL, *ctx;
+    BlockDriverState *bs = NULL;
 
-    /* BDRV_POLL_WHILE() for a node can only be called from its own I/O thread
-     * or the main loop AioContext. We potentially use BDRV_POLL_WHILE() on
-     * nodes in several different AioContexts, so make sure we're in the main
-     * context. */
+    if (qemu_in_coroutine()) {
+        bdrv_co_yield_to_drain(NULL, true, false, NULL, true, true, NULL);
+        return;
+    }
+
+    /*
+     * bdrv queue is managed by record/replay,
+     * waiting for finishing the I/O requests may
+     * be infinite
+     */
+    if (replay_events_enabled()) {
+        return;
+    }
+
+    /* AIO_WAIT_WHILE() with a NULL context can only be called from the main
+     * loop AioContext, so make sure we're in the main context. */
     assert(qemu_get_current_aio_context() == qemu_get_aio_context());
+    assert(bdrv_drain_all_count < INT_MAX);
+    bdrv_drain_all_count++;
 
-    for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
+    /* Quiesce all nodes, without polling in-flight requests yet. The graph
+     * cannot change during this loop. */
+    while ((bs = bdrv_next_all_states(bs))) {
         AioContext *aio_context = bdrv_get_aio_context(bs);
 
-        /* Stop things in parent-to-child order */
         aio_context_acquire(aio_context);
-        aio_disable_external(aio_context);
-        bdrv_parent_drained_begin(bs, NULL);
-        bdrv_drain_invoke(bs, true, true);
+        bdrv_do_drained_begin(bs, false, NULL, true, false);
         aio_context_release(aio_context);
-
-        if (!g_slist_find(aio_ctxs, aio_context)) {
-            aio_ctxs = g_slist_prepend(aio_ctxs, aio_context);
-        }
     }
 
-    /* Note that completion of an asynchronous I/O operation can trigger any
-     * number of other I/O operations on other devices---for example a
-     * coroutine can submit an I/O request to another device in response to
-     * request completion.  Therefore we must keep looping until there was no
-     * more activity rather than simply draining each device independently.
-     */
-    while (waited) {
-        waited = false;
+    /* Now poll the in-flight requests */
+    AIO_WAIT_WHILE(NULL, bdrv_drain_all_poll());
 
-        for (ctx = aio_ctxs; ctx != NULL; ctx = ctx->next) {
-            AioContext *aio_context = ctx->data;
-
-            aio_context_acquire(aio_context);
-            for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
-                if (aio_context == bdrv_get_aio_context(bs)) {
-                    waited |= bdrv_drain_recurse(bs);
-                }
-            }
-            aio_context_release(aio_context);
-        }
+    while ((bs = bdrv_next_all_states(bs))) {
+        bdrv_drain_assert_idle(bs);
     }
-
-    g_slist_free(aio_ctxs);
 }
 
 void bdrv_drain_all_end(void)
 {
-    BlockDriverState *bs;
-    BdrvNextIterator it;
+    BlockDriverState *bs = NULL;
+    int drained_end_counter = 0;
 
-    for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
+    /*
+     * bdrv queue is managed by record/replay,
+     * waiting for finishing the I/O requests may
+     * be endless
+     */
+    if (replay_events_enabled()) {
+        return;
+    }
+
+    while ((bs = bdrv_next_all_states(bs))) {
         AioContext *aio_context = bdrv_get_aio_context(bs);
 
-        /* Re-enable things in child-to-parent order */
         aio_context_acquire(aio_context);
-        bdrv_drain_invoke(bs, false, true);
-        bdrv_parent_drained_end(bs, NULL);
-        aio_enable_external(aio_context);
+        bdrv_do_drained_end(bs, false, NULL, true, &drained_end_counter);
         aio_context_release(aio_context);
     }
+
+    assert(qemu_get_current_aio_context() == qemu_get_aio_context());
+    AIO_WAIT_WHILE(NULL, atomic_read(&drained_end_counter) > 0);
+
+    assert(bdrv_drain_all_count > 0);
+    bdrv_drain_all_count--;
 }
 
 void bdrv_drain_all(void)
@@ -499,9 +692,11 @@ static void tracked_request_end(BdrvTrackedRequest *req)
 static void tracked_request_begin(BdrvTrackedRequest *req,
                                   BlockDriverState *bs,
                                   int64_t offset,
-                                  unsigned int bytes,
+                                  uint64_t bytes,
                                   enum BdrvTrackedRequestType type)
 {
+    assert(bytes <= INT64_MAX && offset <= INT64_MAX - bytes);
+
     *req = (BdrvTrackedRequest){
         .bs = bs,
         .offset         = offset,
@@ -520,12 +715,69 @@ static void tracked_request_begin(BdrvTrackedRequest *req,
     qemu_co_mutex_unlock(&bs->reqs_lock);
 }
 
-static void mark_request_serialising(BdrvTrackedRequest *req, uint64_t align)
+static bool tracked_request_overlaps(BdrvTrackedRequest *req,
+                                     int64_t offset, uint64_t bytes)
 {
-    int64_t overlap_offset = req->offset & ~(align - 1);
-    unsigned int overlap_bytes = ROUND_UP(req->offset + req->bytes, align)
-                               - overlap_offset;
+    /*        aaaa   bbbb */
+    if (offset >= req->overlap_offset + req->overlap_bytes) {
+        return false;
+    }
+    /* bbbb   aaaa        */
+    if (req->overlap_offset >= offset + bytes) {
+        return false;
+    }
+    return true;
+}
 
+static bool coroutine_fn
+bdrv_wait_serialising_requests_locked(BlockDriverState *bs,
+                                      BdrvTrackedRequest *self)
+{
+    BdrvTrackedRequest *req;
+    bool retry;
+    bool waited = false;
+
+    do {
+        retry = false;
+        QLIST_FOREACH(req, &bs->tracked_requests, list) {
+            if (req == self || (!req->serialising && !self->serialising)) {
+                continue;
+            }
+            if (tracked_request_overlaps(req, self->overlap_offset,
+                                         self->overlap_bytes))
+            {
+                /* Hitting this means there was a reentrant request, for
+                 * example, a block driver issuing nested requests.  This must
+                 * never happen since it means deadlock.
+                 */
+                assert(qemu_coroutine_self() != req->co);
+
+                /* If the request is already (indirectly) waiting for us, or
+                 * will wait for us as soon as it wakes up, then just go on
+                 * (instead of producing a deadlock in the former case). */
+                if (!req->waiting_for) {
+                    self->waiting_for = req;
+                    qemu_co_queue_wait(&req->wait_queue, &bs->reqs_lock);
+                    self->waiting_for = NULL;
+                    retry = true;
+                    waited = true;
+                    break;
+                }
+            }
+        }
+    } while (retry);
+    return waited;
+}
+
+bool bdrv_mark_request_serialising(BdrvTrackedRequest *req, uint64_t align)
+{
+    BlockDriverState *bs = req->bs;
+    int64_t overlap_offset = req->offset & ~(align - 1);
+    uint64_t overlap_bytes = ROUND_UP(req->offset + req->bytes, align)
+                               - overlap_offset;
+    bool waited;
+
+    qemu_co_mutex_lock(&bs->reqs_lock);
     if (!req->serialising) {
         atomic_inc(&req->bs->serialising_in_flight);
         req->serialising = true;
@@ -533,6 +785,27 @@ static void mark_request_serialising(BdrvTrackedRequest *req, uint64_t align)
 
     req->overlap_offset = MIN(req->overlap_offset, overlap_offset);
     req->overlap_bytes = MAX(req->overlap_bytes, overlap_bytes);
+    waited = bdrv_wait_serialising_requests_locked(bs, req);
+    qemu_co_mutex_unlock(&bs->reqs_lock);
+    return waited;
+}
+
+/**
+ * Return the tracked request on @bs for the current coroutine, or
+ * NULL if there is none.
+ */
+BdrvTrackedRequest *coroutine_fn bdrv_co_get_self_request(BlockDriverState *bs)
+{
+    BdrvTrackedRequest *req;
+    Coroutine *self = qemu_coroutine_self();
+
+    QLIST_FOREACH(req, &bs->tracked_requests, list) {
+        if (req->co == self) {
+            return req;
+        }
+    }
+
+    return NULL;
 }
 
 /**
@@ -568,20 +841,6 @@ static int bdrv_get_cluster_size(BlockDriverState *bs)
     }
 }
 
-static bool tracked_request_overlaps(BdrvTrackedRequest *req,
-                                     int64_t offset, unsigned int bytes)
-{
-    /*        aaaa   bbbb */
-    if (offset >= req->overlap_offset + req->overlap_bytes) {
-        return false;
-    }
-    /* bbbb   aaaa        */
-    if (req->overlap_offset >= offset + bytes) {
-        return false;
-    }
-    return true;
-}
-
 void bdrv_inc_in_flight(BlockDriverState *bs)
 {
     atomic_inc(&bs->in_flight);
@@ -589,7 +848,7 @@ void bdrv_inc_in_flight(BlockDriverState *bs)
 
 void bdrv_wakeup(BlockDriverState *bs)
 {
-    aio_wait_kick(bdrv_get_aio_wait(bs));
+    aio_wait_kick();
 }
 
 void bdrv_dec_in_flight(BlockDriverState *bs)
@@ -598,48 +857,18 @@ void bdrv_dec_in_flight(BlockDriverState *bs)
     bdrv_wakeup(bs);
 }
 
-static bool coroutine_fn wait_serialising_requests(BdrvTrackedRequest *self)
+static bool coroutine_fn bdrv_wait_serialising_requests(BdrvTrackedRequest *self)
 {
     BlockDriverState *bs = self->bs;
-    BdrvTrackedRequest *req;
-    bool retry;
     bool waited = false;
 
     if (!atomic_read(&bs->serialising_in_flight)) {
         return false;
     }
 
-    do {
-        retry = false;
-        qemu_co_mutex_lock(&bs->reqs_lock);
-        QLIST_FOREACH(req, &bs->tracked_requests, list) {
-            if (req == self || (!req->serialising && !self->serialising)) {
-                continue;
-            }
-            if (tracked_request_overlaps(req, self->overlap_offset,
-                                         self->overlap_bytes))
-            {
-                /* Hitting this means there was a reentrant request, for
-                 * example, a block driver issuing nested requests.  This must
-                 * never happen since it means deadlock.
-                 */
-                assert(qemu_coroutine_self() != req->co);
-
-                /* If the request is already (indirectly) waiting for us, or
-                 * will wait for us as soon as it wakes up, then just go on
-                 * (instead of producing a deadlock in the former case). */
-                if (!req->waiting_for) {
-                    self->waiting_for = req;
-                    qemu_co_queue_wait(&req->wait_queue, &bs->reqs_lock);
-                    self->waiting_for = NULL;
-                    retry = true;
-                    waited = true;
-                    break;
-                }
-            }
-        }
-        qemu_co_mutex_unlock(&bs->reqs_lock);
-    } while (retry);
+    qemu_co_mutex_lock(&bs->reqs_lock);
+    waited = bdrv_wait_serialising_requests_locked(bs, self);
+    qemu_co_mutex_unlock(&bs->reqs_lock);
 
     return waited;
 }
@@ -647,7 +876,7 @@ static bool coroutine_fn wait_serialising_requests(BdrvTrackedRequest *self)
 static int bdrv_check_byte_request(BlockDriverState *bs, int64_t offset,
                                    size_t size)
 {
-    if (size > BDRV_REQUEST_MAX_SECTORS << BDRV_SECTOR_BITS) {
+    if (size > BDRV_REQUEST_MAX_BYTES) {
         return -EIO;
     }
 
@@ -684,6 +913,7 @@ static void coroutine_fn bdrv_rw_co_entry(void *opaque)
                                     rwco->qiov->size, rwco->qiov,
                                     rwco->flags);
     }
+    aio_wait_kick();
 }
 
 /*
@@ -714,56 +944,11 @@ static int bdrv_prwv_co(BdrvChild *child, int64_t offset,
     return rwco.ret;
 }
 
-/*
- * Process a synchronous request using coroutines
- */
-static int bdrv_rw_co(BdrvChild *child, int64_t sector_num, uint8_t *buf,
-                      int nb_sectors, bool is_write, BdrvRequestFlags flags)
-{
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base = (void *)buf,
-        .iov_len = nb_sectors * BDRV_SECTOR_SIZE,
-    };
-
-    if (nb_sectors < 0 || nb_sectors > BDRV_REQUEST_MAX_SECTORS) {
-        return -EINVAL;
-    }
-
-    qemu_iovec_init_external(&qiov, &iov, 1);
-    return bdrv_prwv_co(child, sector_num << BDRV_SECTOR_BITS,
-                        &qiov, is_write, flags);
-}
-
-/* return < 0 if error. See bdrv_write() for the return codes */
-int bdrv_read(BdrvChild *child, int64_t sector_num,
-              uint8_t *buf, int nb_sectors)
-{
-    return bdrv_rw_co(child, sector_num, buf, nb_sectors, false, 0);
-}
-
-/* Return < 0 if error. Important errors are:
-  -EIO         generic I/O error (may happen for all errors)
-  -ENOMEDIUM   No media inserted.
-  -EINVAL      Invalid sector number or nb_sectors
-  -EACCES      Trying to write a read-only device
-*/
-int bdrv_write(BdrvChild *child, int64_t sector_num,
-               const uint8_t *buf, int nb_sectors)
-{
-    return bdrv_rw_co(child, sector_num, (uint8_t *)buf, nb_sectors, true, 0);
-}
-
 int bdrv_pwrite_zeroes(BdrvChild *child, int64_t offset,
                        int bytes, BdrvRequestFlags flags)
 {
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base = NULL,
-        .iov_len = bytes,
-    };
+    QEMUIOVector qiov = QEMU_IOVEC_INIT_BUF(qiov, NULL, bytes);
 
-    qemu_iovec_init_external(&qiov, &iov, 1);
     return bdrv_prwv_co(child, offset, &qiov, true,
                         BDRV_REQ_ZERO_WRITE | flags);
 }
@@ -795,8 +980,6 @@ int bdrv_make_zero(BdrvChild *child, BdrvRequestFlags flags)
         }
         ret = bdrv_block_status(bs, offset, bytes, &bytes, NULL, NULL);
         if (ret < 0) {
-            error_report("error getting block status at offset %" PRId64 ": %s",
-                         offset, strerror(-ret));
             return ret;
         }
         if (ret & BDRV_BLOCK_ZERO) {
@@ -805,8 +988,6 @@ int bdrv_make_zero(BdrvChild *child, BdrvRequestFlags flags)
         }
         ret = bdrv_pwrite_zeroes(child, offset, bytes, flags);
         if (ret < 0) {
-            error_report("error writing zeroes at offset %" PRId64 ": %s",
-                         offset, strerror(-ret));
             return ret;
         }
         offset += bytes;
@@ -825,19 +1006,15 @@ int bdrv_preadv(BdrvChild *child, int64_t offset, QEMUIOVector *qiov)
     return qiov->size;
 }
 
+/* See bdrv_pwrite() for the return codes */
 int bdrv_pread(BdrvChild *child, int64_t offset, void *buf, int bytes)
 {
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base = (void *)buf,
-        .iov_len = bytes,
-    };
+    QEMUIOVector qiov = QEMU_IOVEC_INIT_BUF(qiov, buf, bytes);
 
     if (bytes < 0) {
         return -EINVAL;
     }
 
-    qemu_iovec_init_external(&qiov, &iov, 1);
     return bdrv_preadv(child, offset, &qiov);
 }
 
@@ -853,19 +1030,20 @@ int bdrv_pwritev(BdrvChild *child, int64_t offset, QEMUIOVector *qiov)
     return qiov->size;
 }
 
+/* Return no. of bytes on success or < 0 on error. Important errors are:
+  -EIO         generic I/O error (may happen for all errors)
+  -ENOMEDIUM   No media inserted.
+  -EINVAL      Invalid offset or number of bytes
+  -EACCES      Trying to write a read-only device
+*/
 int bdrv_pwrite(BdrvChild *child, int64_t offset, const void *buf, int bytes)
 {
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base   = (void *) buf,
-        .iov_len    = bytes,
-    };
+    QEMUIOVector qiov = QEMU_IOVEC_INIT_BUF(qiov, buf, bytes);
 
     if (bytes < 0) {
         return -EINVAL;
     }
 
-    qemu_iovec_init_external(&qiov, &iov, 1);
     return bdrv_pwritev(child, offset, &qiov);
 }
 
@@ -908,61 +1086,101 @@ static void bdrv_co_io_em_complete(void *opaque, int ret)
 
 static int coroutine_fn bdrv_driver_preadv(BlockDriverState *bs,
                                            uint64_t offset, uint64_t bytes,
-                                           QEMUIOVector *qiov, int flags)
+                                           QEMUIOVector *qiov,
+                                           size_t qiov_offset, int flags)
 {
     BlockDriver *drv = bs->drv;
     int64_t sector_num;
     unsigned int nb_sectors;
+    QEMUIOVector local_qiov;
+    int ret;
 
     assert(!(flags & ~BDRV_REQ_MASK));
+    assert(!(flags & BDRV_REQ_NO_FALLBACK));
 
     if (!drv) {
         return -ENOMEDIUM;
     }
 
-    if (drv->bdrv_co_preadv) {
-        return drv->bdrv_co_preadv(bs, offset, bytes, qiov, flags);
+    if (drv->bdrv_co_preadv_part) {
+        return drv->bdrv_co_preadv_part(bs, offset, bytes, qiov, qiov_offset,
+                                        flags);
     }
 
-    sector_num = offset >> BDRV_SECTOR_BITS;
-    nb_sectors = bytes >> BDRV_SECTOR_BITS;
+    if (qiov_offset > 0 || bytes != qiov->size) {
+        qemu_iovec_init_slice(&local_qiov, qiov, qiov_offset, bytes);
+        qiov = &local_qiov;
+    }
 
-    assert((offset & (BDRV_SECTOR_SIZE - 1)) == 0);
-    assert((bytes & (BDRV_SECTOR_SIZE - 1)) == 0);
-    assert((bytes >> BDRV_SECTOR_BITS) <= BDRV_REQUEST_MAX_SECTORS);
+    if (drv->bdrv_co_preadv) {
+        ret = drv->bdrv_co_preadv(bs, offset, bytes, qiov, flags);
+        goto out;
+    }
 
-    if (drv->bdrv_co_readv) {
-        return drv->bdrv_co_readv(bs, sector_num, nb_sectors, qiov);
-    } else {
+    if (drv->bdrv_aio_preadv) {
         BlockAIOCB *acb;
         CoroutineIOCompletion co = {
             .coroutine = qemu_coroutine_self(),
         };
 
-        acb = bs->drv->bdrv_aio_readv(bs, sector_num, qiov, nb_sectors,
-                                      bdrv_co_io_em_complete, &co);
+        acb = drv->bdrv_aio_preadv(bs, offset, bytes, qiov, flags,
+                                   bdrv_co_io_em_complete, &co);
         if (acb == NULL) {
-            return -EIO;
+            ret = -EIO;
+            goto out;
         } else {
             qemu_coroutine_yield();
-            return co.ret;
+            ret = co.ret;
+            goto out;
         }
     }
+
+    sector_num = offset >> BDRV_SECTOR_BITS;
+    nb_sectors = bytes >> BDRV_SECTOR_BITS;
+
+    assert(QEMU_IS_ALIGNED(offset, BDRV_SECTOR_SIZE));
+    assert(QEMU_IS_ALIGNED(bytes, BDRV_SECTOR_SIZE));
+    assert(bytes <= BDRV_REQUEST_MAX_BYTES);
+    assert(drv->bdrv_co_readv);
+
+    ret = drv->bdrv_co_readv(bs, sector_num, nb_sectors, qiov);
+
+out:
+    if (qiov == &local_qiov) {
+        qemu_iovec_destroy(&local_qiov);
+    }
+
+    return ret;
 }
 
 static int coroutine_fn bdrv_driver_pwritev(BlockDriverState *bs,
                                             uint64_t offset, uint64_t bytes,
-                                            QEMUIOVector *qiov, int flags)
+                                            QEMUIOVector *qiov,
+                                            size_t qiov_offset, int flags)
 {
     BlockDriver *drv = bs->drv;
     int64_t sector_num;
     unsigned int nb_sectors;
+    QEMUIOVector local_qiov;
     int ret;
 
     assert(!(flags & ~BDRV_REQ_MASK));
+    assert(!(flags & BDRV_REQ_NO_FALLBACK));
 
     if (!drv) {
         return -ENOMEDIUM;
+    }
+
+    if (drv->bdrv_co_pwritev_part) {
+        ret = drv->bdrv_co_pwritev_part(bs, offset, bytes, qiov, qiov_offset,
+                                        flags & bs->supported_write_flags);
+        flags &= ~bs->supported_write_flags;
+        goto emulate_flags;
+    }
+
+    if (qiov_offset > 0 || bytes != qiov->size) {
+        qemu_iovec_init_slice(&local_qiov, qiov, qiov_offset, bytes);
+        qiov = &local_qiov;
     }
 
     if (drv->bdrv_co_pwritev) {
@@ -972,39 +1190,44 @@ static int coroutine_fn bdrv_driver_pwritev(BlockDriverState *bs,
         goto emulate_flags;
     }
 
-    sector_num = offset >> BDRV_SECTOR_BITS;
-    nb_sectors = bytes >> BDRV_SECTOR_BITS;
-
-    assert((offset & (BDRV_SECTOR_SIZE - 1)) == 0);
-    assert((bytes & (BDRV_SECTOR_SIZE - 1)) == 0);
-    assert((bytes >> BDRV_SECTOR_BITS) <= BDRV_REQUEST_MAX_SECTORS);
-
-    if (drv->bdrv_co_writev_flags) {
-        ret = drv->bdrv_co_writev_flags(bs, sector_num, nb_sectors, qiov,
-                                        flags & bs->supported_write_flags);
-        flags &= ~bs->supported_write_flags;
-    } else if (drv->bdrv_co_writev) {
-        assert(!bs->supported_write_flags);
-        ret = drv->bdrv_co_writev(bs, sector_num, nb_sectors, qiov);
-    } else {
+    if (drv->bdrv_aio_pwritev) {
         BlockAIOCB *acb;
         CoroutineIOCompletion co = {
             .coroutine = qemu_coroutine_self(),
         };
 
-        acb = bs->drv->bdrv_aio_writev(bs, sector_num, qiov, nb_sectors,
-                                       bdrv_co_io_em_complete, &co);
+        acb = drv->bdrv_aio_pwritev(bs, offset, bytes, qiov,
+                                    flags & bs->supported_write_flags,
+                                    bdrv_co_io_em_complete, &co);
+        flags &= ~bs->supported_write_flags;
         if (acb == NULL) {
             ret = -EIO;
         } else {
             qemu_coroutine_yield();
             ret = co.ret;
         }
+        goto emulate_flags;
     }
+
+    sector_num = offset >> BDRV_SECTOR_BITS;
+    nb_sectors = bytes >> BDRV_SECTOR_BITS;
+
+    assert(QEMU_IS_ALIGNED(offset, BDRV_SECTOR_SIZE));
+    assert(QEMU_IS_ALIGNED(bytes, BDRV_SECTOR_SIZE));
+    assert(bytes <= BDRV_REQUEST_MAX_BYTES);
+
+    assert(drv->bdrv_co_writev);
+    ret = drv->bdrv_co_writev(bs, sector_num, nb_sectors, qiov,
+                              flags & bs->supported_write_flags);
+    flags &= ~bs->supported_write_flags;
 
 emulate_flags:
     if (ret == 0 && (flags & BDRV_REQ_FUA)) {
         ret = bdrv_co_flush(bs);
+    }
+
+    if (qiov == &local_qiov) {
+        qemu_iovec_destroy(&local_qiov);
     }
 
     return ret;
@@ -1012,23 +1235,40 @@ emulate_flags:
 
 static int coroutine_fn
 bdrv_driver_pwritev_compressed(BlockDriverState *bs, uint64_t offset,
-                               uint64_t bytes, QEMUIOVector *qiov)
+                               uint64_t bytes, QEMUIOVector *qiov,
+                               size_t qiov_offset)
 {
     BlockDriver *drv = bs->drv;
+    QEMUIOVector local_qiov;
+    int ret;
 
     if (!drv) {
         return -ENOMEDIUM;
     }
 
-    if (!drv->bdrv_co_pwritev_compressed) {
+    if (!block_driver_can_compress(drv)) {
         return -ENOTSUP;
     }
 
-    return drv->bdrv_co_pwritev_compressed(bs, offset, bytes, qiov);
+    if (drv->bdrv_co_pwritev_compressed_part) {
+        return drv->bdrv_co_pwritev_compressed_part(bs, offset, bytes,
+                                                    qiov, qiov_offset);
+    }
+
+    if (qiov_offset == 0) {
+        return drv->bdrv_co_pwritev_compressed(bs, offset, bytes, qiov);
+    }
+
+    qemu_iovec_init_slice(&local_qiov, qiov, qiov_offset, bytes);
+    ret = drv->bdrv_co_pwritev_compressed(bs, offset, bytes, &local_qiov);
+    qemu_iovec_destroy(&local_qiov);
+
+    return ret;
 }
 
 static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
-        int64_t offset, unsigned int bytes, QEMUIOVector *qiov)
+        int64_t offset, unsigned int bytes, QEMUIOVector *qiov,
+        size_t qiov_offset, int flags)
 {
     BlockDriverState *bs = child->bs;
 
@@ -1037,11 +1277,9 @@ static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
      * modifying the image file.  This is critical for zero-copy guest I/O
      * where anything might happen inside guest memory.
      */
-    void *bounce_buffer;
+    void *bounce_buffer = NULL;
 
     BlockDriver *drv = bs->drv;
-    struct iovec iov;
-    QEMUIOVector local_qiov;
     int64_t cluster_offset;
     int64_t cluster_bytes;
     size_t skip_bytes;
@@ -1049,10 +1287,17 @@ static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
     int max_transfer = MIN_NON_ZERO(bs->bl.max_transfer,
                                     BDRV_REQUEST_MAX_BYTES);
     unsigned int progress = 0;
+    bool skip_write;
 
     if (!drv) {
         return -ENOMEDIUM;
     }
+
+    /*
+     * Do not write anything when the BDS is inactive.  That is not
+     * allowed, and it would not help.
+     */
+    skip_write = (bs->open_flags & BDRV_O_INACTIVE);
 
     /* FIXME We cannot require callers to have write permissions when all they
      * are doing is a read request. If we did things right, write permissions
@@ -1074,37 +1319,53 @@ static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
     trace_bdrv_co_do_copy_on_readv(bs, offset, bytes,
                                    cluster_offset, cluster_bytes);
 
-    bounce_buffer = qemu_try_blockalign(bs,
-                                        MIN(MIN(max_transfer, cluster_bytes),
-                                            MAX_BOUNCE_BUFFER));
-    if (bounce_buffer == NULL) {
-        ret = -ENOMEM;
-        goto err;
-    }
-
     while (cluster_bytes) {
         int64_t pnum;
 
-        ret = bdrv_is_allocated(bs, cluster_offset,
-                                MIN(cluster_bytes, max_transfer), &pnum);
-        if (ret < 0) {
-            /* Safe to treat errors in querying allocation as if
-             * unallocated; we'll probably fail again soon on the
-             * read, but at least that will set a decent errno.
-             */
+        if (skip_write) {
+            ret = 1; /* "already allocated", so nothing will be copied */
             pnum = MIN(cluster_bytes, max_transfer);
+        } else {
+            ret = bdrv_is_allocated(bs, cluster_offset,
+                                    MIN(cluster_bytes, max_transfer), &pnum);
+            if (ret < 0) {
+                /*
+                 * Safe to treat errors in querying allocation as if
+                 * unallocated; we'll probably fail again soon on the
+                 * read, but at least that will set a decent errno.
+                 */
+                pnum = MIN(cluster_bytes, max_transfer);
+            }
+
+            /* Stop at EOF if the image ends in the middle of the cluster */
+            if (ret == 0 && pnum == 0) {
+                assert(progress >= bytes);
+                break;
+            }
+
+            assert(skip_bytes < pnum);
         }
 
-        assert(skip_bytes < pnum);
-
         if (ret <= 0) {
+            QEMUIOVector local_qiov;
+
             /* Must copy-on-read; use the bounce buffer */
-            iov.iov_base = bounce_buffer;
-            iov.iov_len = pnum = MIN(pnum, MAX_BOUNCE_BUFFER);
-            qemu_iovec_init_external(&local_qiov, &iov, 1);
+            pnum = MIN(pnum, MAX_BOUNCE_BUFFER);
+            if (!bounce_buffer) {
+                int64_t max_we_need = MAX(pnum, cluster_bytes - pnum);
+                int64_t max_allowed = MIN(max_transfer, MAX_BOUNCE_BUFFER);
+                int64_t bounce_buffer_len = MIN(max_we_need, max_allowed);
+
+                bounce_buffer = qemu_try_blockalign(bs, bounce_buffer_len);
+                if (!bounce_buffer) {
+                    ret = -ENOMEM;
+                    goto err;
+                }
+            }
+            qemu_iovec_init_buf(&local_qiov, bounce_buffer, pnum);
 
             ret = bdrv_driver_preadv(bs, cluster_offset, pnum,
-                                     &local_qiov, 0);
+                                     &local_qiov, 0, 0);
             if (ret < 0) {
                 goto err;
             }
@@ -1115,13 +1376,15 @@ static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
                 /* FIXME: Should we (perhaps conditionally) be setting
                  * BDRV_REQ_MAY_UNMAP, if it will allow for a sparser copy
                  * that still correctly reads as zero? */
-                ret = bdrv_co_do_pwrite_zeroes(bs, cluster_offset, pnum, 0);
+                ret = bdrv_co_do_pwrite_zeroes(bs, cluster_offset, pnum,
+                                               BDRV_REQ_WRITE_UNCHANGED);
             } else {
                 /* This does not change the data on the disk, it is not
                  * necessary to flush even in cache=writethrough mode.
                  */
                 ret = bdrv_driver_pwritev(bs, cluster_offset, pnum,
-                                          &local_qiov, 0);
+                                          &local_qiov, 0,
+                                          BDRV_REQ_WRITE_UNCHANGED);
             }
 
             if (ret < 0) {
@@ -1133,15 +1396,16 @@ static int coroutine_fn bdrv_co_do_copy_on_readv(BdrvChild *child,
                 goto err;
             }
 
-            qemu_iovec_from_buf(qiov, progress, bounce_buffer + skip_bytes,
-                                pnum - skip_bytes);
-        } else {
+            if (!(flags & BDRV_REQ_PREFETCH)) {
+                qemu_iovec_from_buf(qiov, qiov_offset + progress,
+                                    bounce_buffer + skip_bytes,
+                                    MIN(pnum - skip_bytes, bytes - progress));
+            }
+        } else if (!(flags & BDRV_REQ_PREFETCH)) {
             /* Read directly into the destination */
-            qemu_iovec_init(&local_qiov, qiov->niov);
-            qemu_iovec_concat(&local_qiov, qiov, progress, pnum - skip_bytes);
-            ret = bdrv_driver_preadv(bs, offset + progress, local_qiov.size,
-                                     &local_qiov, 0);
-            qemu_iovec_destroy(&local_qiov);
+            ret = bdrv_driver_preadv(bs, offset + progress,
+                                     MIN(pnum - skip_bytes, bytes - progress),
+                                     qiov, qiov_offset + progress, 0);
             if (ret < 0) {
                 goto err;
             }
@@ -1166,7 +1430,7 @@ err:
  */
 static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
     BdrvTrackedRequest *req, int64_t offset, unsigned int bytes,
-    int64_t align, QEMUIOVector *qiov, int flags)
+    int64_t align, QEMUIOVector *qiov, size_t qiov_offset, int flags)
 {
     BlockDriverState *bs = child->bs;
     int64_t total_bytes, max_bytes;
@@ -1177,7 +1441,6 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
     assert(is_power_of_2(align));
     assert((offset & (align - 1)) == 0);
     assert((bytes & (align - 1)) == 0);
-    assert(!qiov || bytes == qiov->size);
     assert((bs->open_flags & BDRV_O_NO_IO) == 0);
     max_transfer = QEMU_ALIGN_DOWN(MIN_NON_ZERO(bs->bl.max_transfer, INT_MAX),
                                    align);
@@ -1186,7 +1449,7 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
      * potential fallback support, if we ever implement any read flags
      * to pass through to drivers.  For now, there aren't any
      * passthrough flags.  */
-    assert(!(flags & ~(BDRV_REQ_NO_SERIALISING | BDRV_REQ_COPY_ON_READ)));
+    assert(!(flags & ~(BDRV_REQ_COPY_ON_READ | BDRV_REQ_PREFETCH)));
 
     /* Handle Copy on Read and associated serialisation */
     if (flags & BDRV_REQ_COPY_ON_READ) {
@@ -1195,11 +1458,9 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
          * with each other for the same cluster.  For example, in copy-on-read
          * it ensures that the CoR read and write operations are atomic and
          * guest writes cannot interleave between them. */
-        mark_request_serialising(req, bdrv_get_cluster_size(bs));
-    }
-
-    if (!(flags & BDRV_REQ_NO_SERIALISING)) {
-        wait_serialising_requests(req);
+        bdrv_mark_request_serialising(req, bdrv_get_cluster_size(bs));
+    } else {
+        bdrv_wait_serialising_requests(req);
     }
 
     if (flags & BDRV_REQ_COPY_ON_READ) {
@@ -1211,7 +1472,10 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
         }
 
         if (!ret || pnum != bytes) {
-            ret = bdrv_co_do_copy_on_readv(child, offset, bytes, qiov);
+            ret = bdrv_co_do_copy_on_readv(child, offset, bytes,
+                                           qiov, qiov_offset, flags);
+            goto out;
+        } else if (flags & BDRV_REQ_PREFETCH) {
             goto out;
         }
     }
@@ -1225,7 +1489,7 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
 
     max_bytes = ROUND_UP(MAX(0, total_bytes - offset), align);
     if (bytes <= max_bytes && bytes <= max_transfer) {
-        ret = bdrv_driver_preadv(bs, offset, bytes, qiov, 0);
+        ret = bdrv_driver_preadv(bs, offset, bytes, qiov, qiov_offset, 0);
         goto out;
     }
 
@@ -1233,21 +1497,17 @@ static int coroutine_fn bdrv_aligned_preadv(BdrvChild *child,
         int num;
 
         if (max_bytes) {
-            QEMUIOVector local_qiov;
-
             num = MIN(bytes_remaining, MIN(max_bytes, max_transfer));
             assert(num);
-            qemu_iovec_init(&local_qiov, qiov->niov);
-            qemu_iovec_concat(&local_qiov, qiov, bytes - bytes_remaining, num);
 
             ret = bdrv_driver_preadv(bs, offset + bytes - bytes_remaining,
-                                     num, &local_qiov, 0);
+                                     num, qiov,
+                                     qiov_offset + bytes - bytes_remaining, 0);
             max_bytes -= num;
-            qemu_iovec_destroy(&local_qiov);
         } else {
             num = bytes_remaining;
-            ret = qemu_iovec_memset(qiov, bytes - bytes_remaining, 0,
-                                    bytes_remaining);
+            ret = qemu_iovec_memset(qiov, qiov_offset + bytes - bytes_remaining,
+                                    0, bytes_remaining);
         }
         if (ret < 0) {
             goto out;
@@ -1260,98 +1520,226 @@ out:
 }
 
 /*
- * Handle a read request in coroutine context
+ * Request padding
+ *
+ *  |<---- align ----->|                     |<----- align ---->|
+ *  |<- head ->|<------------- bytes ------------->|<-- tail -->|
+ *  |          |       |                     |     |            |
+ * -*----------$-------*-------- ... --------*-----$------------*---
+ *  |          |       |                     |     |            |
+ *  |          offset  |                     |     end          |
+ *  ALIGN_DOWN(offset) ALIGN_UP(offset)      ALIGN_DOWN(end)   ALIGN_UP(end)
+ *  [buf   ... )                             [tail_buf          )
+ *
+ * @buf is an aligned allocation needed to store @head and @tail paddings. @head
+ * is placed at the beginning of @buf and @tail at the @end.
+ *
+ * @tail_buf is a pointer to sub-buffer, corresponding to align-sized chunk
+ * around tail, if tail exists.
+ *
+ * @merge_reads is true for small requests,
+ * if @buf_len == @head + bytes + @tail. In this case it is possible that both
+ * head and tail exist but @buf_len == align and @tail_buf == @buf.
  */
+typedef struct BdrvRequestPadding {
+    uint8_t *buf;
+    size_t buf_len;
+    uint8_t *tail_buf;
+    size_t head;
+    size_t tail;
+    bool merge_reads;
+    QEMUIOVector local_qiov;
+} BdrvRequestPadding;
+
+static bool bdrv_init_padding(BlockDriverState *bs,
+                              int64_t offset, int64_t bytes,
+                              BdrvRequestPadding *pad)
+{
+    uint64_t align = bs->bl.request_alignment;
+    size_t sum;
+
+    memset(pad, 0, sizeof(*pad));
+
+    pad->head = offset & (align - 1);
+    pad->tail = ((offset + bytes) & (align - 1));
+    if (pad->tail) {
+        pad->tail = align - pad->tail;
+    }
+
+    if (!pad->head && !pad->tail) {
+        return false;
+    }
+
+    assert(bytes); /* Nothing good in aligning zero-length requests */
+
+    sum = pad->head + bytes + pad->tail;
+    pad->buf_len = (sum > align && pad->head && pad->tail) ? 2 * align : align;
+    pad->buf = qemu_blockalign(bs, pad->buf_len);
+    pad->merge_reads = sum == pad->buf_len;
+    if (pad->tail) {
+        pad->tail_buf = pad->buf + pad->buf_len - align;
+    }
+
+    return true;
+}
+
+static int bdrv_padding_rmw_read(BdrvChild *child,
+                                 BdrvTrackedRequest *req,
+                                 BdrvRequestPadding *pad,
+                                 bool zero_middle)
+{
+    QEMUIOVector local_qiov;
+    BlockDriverState *bs = child->bs;
+    uint64_t align = bs->bl.request_alignment;
+    int ret;
+
+    assert(req->serialising && pad->buf);
+
+    if (pad->head || pad->merge_reads) {
+        uint64_t bytes = pad->merge_reads ? pad->buf_len : align;
+
+        qemu_iovec_init_buf(&local_qiov, pad->buf, bytes);
+
+        if (pad->head) {
+            bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_HEAD);
+        }
+        if (pad->merge_reads && pad->tail) {
+            bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_TAIL);
+        }
+        ret = bdrv_aligned_preadv(child, req, req->overlap_offset, bytes,
+                                  align, &local_qiov, 0, 0);
+        if (ret < 0) {
+            return ret;
+        }
+        if (pad->head) {
+            bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_HEAD);
+        }
+        if (pad->merge_reads && pad->tail) {
+            bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_TAIL);
+        }
+
+        if (pad->merge_reads) {
+            goto zero_mem;
+        }
+    }
+
+    if (pad->tail) {
+        qemu_iovec_init_buf(&local_qiov, pad->tail_buf, align);
+
+        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_TAIL);
+        ret = bdrv_aligned_preadv(
+                child, req,
+                req->overlap_offset + req->overlap_bytes - align,
+                align, align, &local_qiov, 0, 0);
+        if (ret < 0) {
+            return ret;
+        }
+        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_TAIL);
+    }
+
+zero_mem:
+    if (zero_middle) {
+        memset(pad->buf + pad->head, 0, pad->buf_len - pad->head - pad->tail);
+    }
+
+    return 0;
+}
+
+static void bdrv_padding_destroy(BdrvRequestPadding *pad)
+{
+    if (pad->buf) {
+        qemu_vfree(pad->buf);
+        qemu_iovec_destroy(&pad->local_qiov);
+    }
+}
+
+/*
+ * bdrv_pad_request
+ *
+ * Exchange request parameters with padded request if needed. Don't include RMW
+ * read of padding, bdrv_padding_rmw_read() should be called separately if
+ * needed.
+ *
+ * All parameters except @bs are in-out: they represent original request at
+ * function call and padded (if padding needed) at function finish.
+ *
+ * Function always succeeds.
+ */
+static bool bdrv_pad_request(BlockDriverState *bs,
+                             QEMUIOVector **qiov, size_t *qiov_offset,
+                             int64_t *offset, unsigned int *bytes,
+                             BdrvRequestPadding *pad)
+{
+    if (!bdrv_init_padding(bs, *offset, *bytes, pad)) {
+        return false;
+    }
+
+    qemu_iovec_init_extended(&pad->local_qiov, pad->buf, pad->head,
+                             *qiov, *qiov_offset, *bytes,
+                             pad->buf + pad->buf_len - pad->tail, pad->tail);
+    *bytes += pad->head + pad->tail;
+    *offset -= pad->head;
+    *qiov = &pad->local_qiov;
+    *qiov_offset = 0;
+
+    return true;
+}
+
 int coroutine_fn bdrv_co_preadv(BdrvChild *child,
     int64_t offset, unsigned int bytes, QEMUIOVector *qiov,
     BdrvRequestFlags flags)
 {
-    BlockDriverState *bs = child->bs;
-    BlockDriver *drv = bs->drv;
-    BdrvTrackedRequest req;
+    return bdrv_co_preadv_part(child, offset, bytes, qiov, 0, flags);
+}
 
-    uint64_t align = bs->bl.request_alignment;
-    uint8_t *head_buf = NULL;
-    uint8_t *tail_buf = NULL;
-    QEMUIOVector local_qiov;
-    bool use_local_qiov = false;
+int coroutine_fn bdrv_co_preadv_part(BdrvChild *child,
+    int64_t offset, unsigned int bytes,
+    QEMUIOVector *qiov, size_t qiov_offset,
+    BdrvRequestFlags flags)
+{
+    BlockDriverState *bs = child->bs;
+    BdrvTrackedRequest req;
+    BdrvRequestPadding pad;
     int ret;
 
-    trace_bdrv_co_preadv(child->bs, offset, bytes, flags);
-
-    if (!drv) {
-        return -ENOMEDIUM;
-    }
+    trace_bdrv_co_preadv(bs, offset, bytes, flags);
 
     ret = bdrv_check_byte_request(bs, offset, bytes);
     if (ret < 0) {
         return ret;
     }
 
+    if (bytes == 0 && !QEMU_IS_ALIGNED(offset, bs->bl.request_alignment)) {
+        /*
+         * Aligning zero request is nonsense. Even if driver has special meaning
+         * of zero-length (like qcow2_co_pwritev_compressed_part), we can't pass
+         * it to driver due to request_alignment.
+         *
+         * Still, no reason to return an error if someone do unaligned
+         * zero-length read occasionally.
+         */
+        return 0;
+    }
+
     bdrv_inc_in_flight(bs);
 
     /* Don't do copy-on-read if we read data before write operation */
-    if (atomic_read(&bs->copy_on_read) && !(flags & BDRV_REQ_NO_SERIALISING)) {
+    if (atomic_read(&bs->copy_on_read)) {
         flags |= BDRV_REQ_COPY_ON_READ;
     }
 
-    /* Align read if necessary by padding qiov */
-    if (offset & (align - 1)) {
-        head_buf = qemu_blockalign(bs, align);
-        qemu_iovec_init(&local_qiov, qiov->niov + 2);
-        qemu_iovec_add(&local_qiov, head_buf, offset & (align - 1));
-        qemu_iovec_concat(&local_qiov, qiov, 0, qiov->size);
-        use_local_qiov = true;
-
-        bytes += offset & (align - 1);
-        offset = offset & ~(align - 1);
-    }
-
-    if ((offset + bytes) & (align - 1)) {
-        if (!use_local_qiov) {
-            qemu_iovec_init(&local_qiov, qiov->niov + 1);
-            qemu_iovec_concat(&local_qiov, qiov, 0, qiov->size);
-            use_local_qiov = true;
-        }
-        tail_buf = qemu_blockalign(bs, align);
-        qemu_iovec_add(&local_qiov, tail_buf,
-                       align - ((offset + bytes) & (align - 1)));
-
-        bytes = ROUND_UP(bytes, align);
-    }
+    bdrv_pad_request(bs, &qiov, &qiov_offset, &offset, &bytes, &pad);
 
     tracked_request_begin(&req, bs, offset, bytes, BDRV_TRACKED_READ);
-    ret = bdrv_aligned_preadv(child, &req, offset, bytes, align,
-                              use_local_qiov ? &local_qiov : qiov,
-                              flags);
+    ret = bdrv_aligned_preadv(child, &req, offset, bytes,
+                              bs->bl.request_alignment,
+                              qiov, qiov_offset, flags);
     tracked_request_end(&req);
     bdrv_dec_in_flight(bs);
 
-    if (use_local_qiov) {
-        qemu_iovec_destroy(&local_qiov);
-        qemu_vfree(head_buf);
-        qemu_vfree(tail_buf);
-    }
+    bdrv_padding_destroy(&pad);
 
     return ret;
-}
-
-static int coroutine_fn bdrv_co_do_readv(BdrvChild *child,
-    int64_t sector_num, int nb_sectors, QEMUIOVector *qiov,
-    BdrvRequestFlags flags)
-{
-    if (nb_sectors < 0 || nb_sectors > BDRV_REQUEST_MAX_SECTORS) {
-        return -EINVAL;
-    }
-
-    return bdrv_co_preadv(child, sector_num << BDRV_SECTOR_BITS,
-                          nb_sectors << BDRV_SECTOR_BITS, qiov, flags);
-}
-
-int coroutine_fn bdrv_co_readv(BdrvChild *child, int64_t sector_num,
-                               int nb_sectors, QEMUIOVector *qiov)
-{
-    return bdrv_co_do_readv(child, sector_num, nb_sectors, qiov, 0);
 }
 
 static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
@@ -1359,7 +1747,7 @@ static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
 {
     BlockDriver *drv = bs->drv;
     QEMUIOVector qiov;
-    struct iovec iov = {0};
+    void *buf = NULL;
     int ret = 0;
     bool need_flush = false;
     int head = 0;
@@ -1372,6 +1760,10 @@ static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
 
     if (!drv) {
         return -ENOMEDIUM;
+    }
+
+    if ((flags & ~bs->supported_zero_flags) & BDRV_REQ_NO_FALLBACK) {
+        return -ENOTSUP;
     }
 
     assert(alignment % bs->bl.request_alignment == 0);
@@ -1417,7 +1809,7 @@ static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
             assert(!bs->supported_zero_flags);
         }
 
-        if (ret == -ENOTSUP) {
+        if (ret == -ENOTSUP && !(flags & BDRV_REQ_NO_FALLBACK)) {
             /* Fall back to bounce buffer if write zeroes is unsupported */
             BdrvRequestFlags write_flags = flags & ~BDRV_REQ_ZERO_WRITE;
 
@@ -1429,25 +1821,23 @@ static int coroutine_fn bdrv_co_do_pwrite_zeroes(BlockDriverState *bs,
                 need_flush = true;
             }
             num = MIN(num, max_transfer);
-            iov.iov_len = num;
-            if (iov.iov_base == NULL) {
-                iov.iov_base = qemu_try_blockalign(bs, num);
-                if (iov.iov_base == NULL) {
+            if (buf == NULL) {
+                buf = qemu_try_blockalign0(bs, num);
+                if (buf == NULL) {
                     ret = -ENOMEM;
                     goto fail;
                 }
-                memset(iov.iov_base, 0, num);
             }
-            qemu_iovec_init_external(&qiov, &iov, 1);
+            qemu_iovec_init_buf(&qiov, buf, num);
 
-            ret = bdrv_driver_pwritev(bs, offset, num, &qiov, write_flags);
+            ret = bdrv_driver_pwritev(bs, offset, num, &qiov, 0, write_flags);
 
             /* Keep bounce buffer around if it is big enough for all
              * all future requests.
              */
             if (num < max_transfer) {
-                qemu_vfree(iov.iov_base);
-                iov.iov_base = NULL;
+                qemu_vfree(buf);
+                buf = NULL;
             }
         }
 
@@ -1459,8 +1849,98 @@ fail:
     if (ret == 0 && need_flush) {
         ret = bdrv_co_flush(bs);
     }
-    qemu_vfree(iov.iov_base);
+    qemu_vfree(buf);
     return ret;
+}
+
+static inline int coroutine_fn
+bdrv_co_write_req_prepare(BdrvChild *child, int64_t offset, uint64_t bytes,
+                          BdrvTrackedRequest *req, int flags)
+{
+    BlockDriverState *bs = child->bs;
+    bool waited;
+    int64_t end_sector = DIV_ROUND_UP(offset + bytes, BDRV_SECTOR_SIZE);
+
+    if (bs->read_only) {
+        return -EPERM;
+    }
+
+    assert(!(bs->open_flags & BDRV_O_INACTIVE));
+    assert((bs->open_flags & BDRV_O_NO_IO) == 0);
+    assert(!(flags & ~BDRV_REQ_MASK));
+
+    if (flags & BDRV_REQ_SERIALISING) {
+        waited = bdrv_mark_request_serialising(req, bdrv_get_cluster_size(bs));
+        /*
+         * For a misaligned request we should have already waited earlier,
+         * because we come after bdrv_padding_rmw_read which must be called
+         * with the request already marked as serialising.
+         */
+        assert(!waited ||
+               (req->offset == req->overlap_offset &&
+                req->bytes == req->overlap_bytes));
+    } else {
+        bdrv_wait_serialising_requests(req);
+    }
+
+    assert(req->overlap_offset <= offset);
+    assert(offset + bytes <= req->overlap_offset + req->overlap_bytes);
+    assert(end_sector <= bs->total_sectors || child->perm & BLK_PERM_RESIZE);
+
+    switch (req->type) {
+    case BDRV_TRACKED_WRITE:
+    case BDRV_TRACKED_DISCARD:
+        if (flags & BDRV_REQ_WRITE_UNCHANGED) {
+            assert(child->perm & (BLK_PERM_WRITE_UNCHANGED | BLK_PERM_WRITE));
+        } else {
+            assert(child->perm & BLK_PERM_WRITE);
+        }
+        return notifier_with_return_list_notify(&bs->before_write_notifiers,
+                                                req);
+    case BDRV_TRACKED_TRUNCATE:
+        assert(child->perm & BLK_PERM_RESIZE);
+        return 0;
+    default:
+        abort();
+    }
+}
+
+static inline void coroutine_fn
+bdrv_co_write_req_finish(BdrvChild *child, int64_t offset, uint64_t bytes,
+                         BdrvTrackedRequest *req, int ret)
+{
+    int64_t end_sector = DIV_ROUND_UP(offset + bytes, BDRV_SECTOR_SIZE);
+    BlockDriverState *bs = child->bs;
+
+    atomic_inc(&bs->write_gen);
+
+    /*
+     * Discard cannot extend the image, but in error handling cases, such as
+     * when reverting a qcow2 cluster allocation, the discarded range can pass
+     * the end of image file, so we cannot assert about BDRV_TRACKED_DISCARD
+     * here. Instead, just skip it, since semantically a discard request
+     * beyond EOF cannot expand the image anyway.
+     */
+    if (ret == 0 &&
+        (req->type == BDRV_TRACKED_TRUNCATE ||
+         end_sector > bs->total_sectors) &&
+        req->type != BDRV_TRACKED_DISCARD) {
+        bs->total_sectors = end_sector;
+        bdrv_parent_cb_resize(bs);
+        bdrv_dirty_bitmap_truncate(bs, end_sector << BDRV_SECTOR_BITS);
+    }
+    if (req->bytes) {
+        switch (req->type) {
+        case BDRV_TRACKED_WRITE:
+            stat64_max(&bs->wr_highest_offset, offset + bytes);
+            /* fall through, to set dirty bits */
+        case BDRV_TRACKED_DISCARD:
+            bdrv_set_dirty(bs, offset, bytes);
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 /*
@@ -1469,14 +1949,12 @@ fail:
  */
 static int coroutine_fn bdrv_aligned_pwritev(BdrvChild *child,
     BdrvTrackedRequest *req, int64_t offset, unsigned int bytes,
-    int64_t align, QEMUIOVector *qiov, int flags)
+    int64_t align, QEMUIOVector *qiov, size_t qiov_offset, int flags)
 {
     BlockDriverState *bs = child->bs;
     BlockDriver *drv = bs->drv;
-    bool waited;
     int ret;
 
-    int64_t end_sector = DIV_ROUND_UP(offset + bytes, BDRV_SECTOR_SIZE);
     uint64_t bytes_remaining = bytes;
     int max_transfer;
 
@@ -1491,24 +1969,15 @@ static int coroutine_fn bdrv_aligned_pwritev(BdrvChild *child,
     assert(is_power_of_2(align));
     assert((offset & (align - 1)) == 0);
     assert((bytes & (align - 1)) == 0);
-    assert(!qiov || bytes == qiov->size);
-    assert((bs->open_flags & BDRV_O_NO_IO) == 0);
-    assert(!(flags & ~BDRV_REQ_MASK));
+    assert(!qiov || qiov_offset + bytes <= qiov->size);
     max_transfer = QEMU_ALIGN_DOWN(MIN_NON_ZERO(bs->bl.max_transfer, INT_MAX),
                                    align);
 
-    waited = wait_serialising_requests(req);
-    assert(!waited || !req->serialising);
-    assert(req->overlap_offset <= offset);
-    assert(offset + bytes <= req->overlap_offset + req->overlap_bytes);
-    assert(child->perm & BLK_PERM_WRITE);
-    assert(end_sector <= bs->total_sectors || child->perm & BLK_PERM_RESIZE);
-
-    ret = notifier_with_return_list_notify(&bs->before_write_notifiers, req);
+    ret = bdrv_co_write_req_prepare(child, offset, bytes, req, flags);
 
     if (!ret && bs->detect_zeroes != BLOCKDEV_DETECT_ZEROES_OPTIONS_OFF &&
         !(flags & BDRV_REQ_ZERO_WRITE) && drv->bdrv_co_pwrite_zeroes &&
-        qemu_iovec_is_zero(qiov)) {
+        qemu_iovec_is_zero(qiov, qiov_offset, bytes)) {
         flags |= BDRV_REQ_ZERO_WRITE;
         if (bs->detect_zeroes == BLOCKDEV_DETECT_ZEROES_OPTIONS_UNMAP) {
             flags |= BDRV_REQ_MAY_UNMAP;
@@ -1521,15 +1990,15 @@ static int coroutine_fn bdrv_aligned_pwritev(BdrvChild *child,
         bdrv_debug_event(bs, BLKDBG_PWRITEV_ZERO);
         ret = bdrv_co_do_pwrite_zeroes(bs, offset, bytes, flags);
     } else if (flags & BDRV_REQ_WRITE_COMPRESSED) {
-        ret = bdrv_driver_pwritev_compressed(bs, offset, bytes, qiov);
+        ret = bdrv_driver_pwritev_compressed(bs, offset, bytes,
+                                             qiov, qiov_offset);
     } else if (bytes <= max_transfer) {
         bdrv_debug_event(bs, BLKDBG_PWRITEV);
-        ret = bdrv_driver_pwritev(bs, offset, bytes, qiov, flags);
+        ret = bdrv_driver_pwritev(bs, offset, bytes, qiov, qiov_offset, flags);
     } else {
         bdrv_debug_event(bs, BLKDBG_PWRITEV);
         while (bytes_remaining) {
             int num = MIN(bytes_remaining, max_transfer);
-            QEMUIOVector local_qiov;
             int local_flags = flags;
 
             assert(num);
@@ -1539,12 +2008,11 @@ static int coroutine_fn bdrv_aligned_pwritev(BdrvChild *child,
                  * need to flush on the last iteration */
                 local_flags &= ~BDRV_REQ_FUA;
             }
-            qemu_iovec_init(&local_qiov, qiov->niov);
-            qemu_iovec_concat(&local_qiov, qiov, bytes - bytes_remaining, num);
 
             ret = bdrv_driver_pwritev(bs, offset + bytes - bytes_remaining,
-                                      num, &local_qiov, local_flags);
-            qemu_iovec_destroy(&local_qiov);
+                                      num, qiov,
+                                      qiov_offset + bytes - bytes_remaining,
+                                      local_flags);
             if (ret < 0) {
                 break;
             }
@@ -1553,15 +2021,10 @@ static int coroutine_fn bdrv_aligned_pwritev(BdrvChild *child,
     }
     bdrv_debug_event(bs, BLKDBG_PWRITEV_DONE);
 
-    atomic_inc(&bs->write_gen);
-    bdrv_set_dirty(bs, offset, bytes);
-
-    stat64_max(&bs->wr_highest_offset, offset + bytes);
-
     if (ret >= 0) {
-        bs->total_sectors = MAX(bs->total_sectors, end_sector);
         ret = 0;
     }
+    bdrv_co_write_req_finish(child, offset, bytes, req, ret);
 
     return ret;
 }
@@ -1573,49 +2036,33 @@ static int coroutine_fn bdrv_co_do_zero_pwritev(BdrvChild *child,
                                                 BdrvTrackedRequest *req)
 {
     BlockDriverState *bs = child->bs;
-    uint8_t *buf = NULL;
     QEMUIOVector local_qiov;
-    struct iovec iov;
     uint64_t align = bs->bl.request_alignment;
-    unsigned int head_padding_bytes, tail_padding_bytes;
     int ret = 0;
+    bool padding;
+    BdrvRequestPadding pad;
 
-    head_padding_bytes = offset & (align - 1);
-    tail_padding_bytes = (align - (offset + bytes)) & (align - 1);
+    padding = bdrv_init_padding(bs, offset, bytes, &pad);
+    if (padding) {
+        bdrv_mark_request_serialising(req, align);
 
+        bdrv_padding_rmw_read(child, req, &pad, true);
 
-    assert(flags & BDRV_REQ_ZERO_WRITE);
-    if (head_padding_bytes || tail_padding_bytes) {
-        buf = qemu_blockalign(bs, align);
-        iov = (struct iovec) {
-            .iov_base   = buf,
-            .iov_len    = align,
-        };
-        qemu_iovec_init_external(&local_qiov, &iov, 1);
-    }
-    if (head_padding_bytes) {
-        uint64_t zero_bytes = MIN(bytes, align - head_padding_bytes);
+        if (pad.head || pad.merge_reads) {
+            int64_t aligned_offset = offset & ~(align - 1);
+            int64_t write_bytes = pad.merge_reads ? pad.buf_len : align;
 
-        /* RMW the unaligned part before head. */
-        mark_request_serialising(req, align);
-        wait_serialising_requests(req);
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_HEAD);
-        ret = bdrv_aligned_preadv(child, req, offset & ~(align - 1), align,
-                                  align, &local_qiov, 0);
-        if (ret < 0) {
-            goto fail;
+            qemu_iovec_init_buf(&local_qiov, pad.buf, write_bytes);
+            ret = bdrv_aligned_pwritev(child, req, aligned_offset, write_bytes,
+                                       align, &local_qiov, 0,
+                                       flags & ~BDRV_REQ_ZERO_WRITE);
+            if (ret < 0 || pad.merge_reads) {
+                /* Error or all work is done */
+                goto out;
+            }
+            offset += write_bytes - pad.head;
+            bytes -= write_bytes - pad.head;
         }
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_HEAD);
-
-        memset(buf + head_padding_bytes, 0, zero_bytes);
-        ret = bdrv_aligned_pwritev(child, req, offset & ~(align - 1), align,
-                                   align, &local_qiov,
-                                   flags & ~BDRV_REQ_ZERO_WRITE);
-        if (ret < 0) {
-            goto fail;
-        }
-        offset += zero_bytes;
-        bytes -= zero_bytes;
     }
 
     assert(!bytes || (offset & (align - 1)) == 0);
@@ -1623,9 +2070,9 @@ static int coroutine_fn bdrv_co_do_zero_pwritev(BdrvChild *child,
         /* Write the aligned part in the middle. */
         uint64_t aligned_bytes = bytes & ~(align - 1);
         ret = bdrv_aligned_pwritev(child, req, offset, aligned_bytes, align,
-                                   NULL, flags);
+                                   NULL, 0, flags);
         if (ret < 0) {
-            goto fail;
+            goto out;
         }
         bytes -= aligned_bytes;
         offset += aligned_bytes;
@@ -1633,26 +2080,18 @@ static int coroutine_fn bdrv_co_do_zero_pwritev(BdrvChild *child,
 
     assert(!bytes || (offset & (align - 1)) == 0);
     if (bytes) {
-        assert(align == tail_padding_bytes + bytes);
-        /* RMW the unaligned part after tail. */
-        mark_request_serialising(req, align);
-        wait_serialising_requests(req);
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_TAIL);
-        ret = bdrv_aligned_preadv(child, req, offset, align,
-                                  align, &local_qiov, 0);
-        if (ret < 0) {
-            goto fail;
-        }
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_TAIL);
+        assert(align == pad.tail + bytes);
 
-        memset(buf, 0, bytes);
+        qemu_iovec_init_buf(&local_qiov, pad.tail_buf, align);
         ret = bdrv_aligned_pwritev(child, req, offset, align, align,
-                                   &local_qiov, flags & ~BDRV_REQ_ZERO_WRITE);
+                                   &local_qiov, 0,
+                                   flags & ~BDRV_REQ_ZERO_WRITE);
     }
-fail:
-    qemu_vfree(buf);
-    return ret;
 
+out:
+    bdrv_padding_destroy(&pad);
+
+    return ret;
 }
 
 /*
@@ -1662,13 +2101,17 @@ int coroutine_fn bdrv_co_pwritev(BdrvChild *child,
     int64_t offset, unsigned int bytes, QEMUIOVector *qiov,
     BdrvRequestFlags flags)
 {
+    return bdrv_co_pwritev_part(child, offset, bytes, qiov, 0, flags);
+}
+
+int coroutine_fn bdrv_co_pwritev_part(BdrvChild *child,
+    int64_t offset, unsigned int bytes, QEMUIOVector *qiov, size_t qiov_offset,
+    BdrvRequestFlags flags)
+{
     BlockDriverState *bs = child->bs;
     BdrvTrackedRequest req;
     uint64_t align = bs->bl.request_alignment;
-    uint8_t *head_buf = NULL;
-    uint8_t *tail_buf = NULL;
-    QEMUIOVector local_qiov;
-    bool use_local_qiov = false;
+    BdrvRequestPadding pad;
     int ret;
 
     trace_bdrv_co_pwritev(child->bs, offset, bytes, flags);
@@ -1676,14 +2119,29 @@ int coroutine_fn bdrv_co_pwritev(BdrvChild *child,
     if (!bs->drv) {
         return -ENOMEDIUM;
     }
-    if (bs->read_only) {
-        return -EPERM;
-    }
-    assert(!(bs->open_flags & BDRV_O_INACTIVE));
 
     ret = bdrv_check_byte_request(bs, offset, bytes);
     if (ret < 0) {
         return ret;
+    }
+
+    /* If the request is misaligned then we can't make it efficient */
+    if ((flags & BDRV_REQ_NO_FALLBACK) &&
+        !QEMU_IS_ALIGNED(offset | bytes, align))
+    {
+        return -ENOTSUP;
+    }
+
+    if (bytes == 0 && !QEMU_IS_ALIGNED(offset, bs->bl.request_alignment)) {
+        /*
+         * Aligning zero request is nonsense. Even if driver has special meaning
+         * of zero-length (like qcow2_co_pwritev_compressed_part), we can't pass
+         * it to driver due to request_alignment.
+         *
+         * Still, no reason to return an error if someone do unaligned
+         * zero-length write occasionally.
+         */
+        return 0;
     }
 
     bdrv_inc_in_flight(bs);
@@ -1699,115 +2157,21 @@ int coroutine_fn bdrv_co_pwritev(BdrvChild *child,
         goto out;
     }
 
-    if (offset & (align - 1)) {
-        QEMUIOVector head_qiov;
-        struct iovec head_iov;
-
-        mark_request_serialising(&req, align);
-        wait_serialising_requests(&req);
-
-        head_buf = qemu_blockalign(bs, align);
-        head_iov = (struct iovec) {
-            .iov_base   = head_buf,
-            .iov_len    = align,
-        };
-        qemu_iovec_init_external(&head_qiov, &head_iov, 1);
-
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_HEAD);
-        ret = bdrv_aligned_preadv(child, &req, offset & ~(align - 1), align,
-                                  align, &head_qiov, 0);
-        if (ret < 0) {
-            goto fail;
-        }
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_HEAD);
-
-        qemu_iovec_init(&local_qiov, qiov->niov + 2);
-        qemu_iovec_add(&local_qiov, head_buf, offset & (align - 1));
-        qemu_iovec_concat(&local_qiov, qiov, 0, qiov->size);
-        use_local_qiov = true;
-
-        bytes += offset & (align - 1);
-        offset = offset & ~(align - 1);
-
-        /* We have read the tail already if the request is smaller
-         * than one aligned block.
-         */
-        if (bytes < align) {
-            qemu_iovec_add(&local_qiov, head_buf + bytes, align - bytes);
-            bytes = align;
-        }
-    }
-
-    if ((offset + bytes) & (align - 1)) {
-        QEMUIOVector tail_qiov;
-        struct iovec tail_iov;
-        size_t tail_bytes;
-        bool waited;
-
-        mark_request_serialising(&req, align);
-        waited = wait_serialising_requests(&req);
-        assert(!waited || !use_local_qiov);
-
-        tail_buf = qemu_blockalign(bs, align);
-        tail_iov = (struct iovec) {
-            .iov_base   = tail_buf,
-            .iov_len    = align,
-        };
-        qemu_iovec_init_external(&tail_qiov, &tail_iov, 1);
-
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_TAIL);
-        ret = bdrv_aligned_preadv(child, &req, (offset + bytes) & ~(align - 1),
-                                  align, align, &tail_qiov, 0);
-        if (ret < 0) {
-            goto fail;
-        }
-        bdrv_debug_event(bs, BLKDBG_PWRITEV_RMW_AFTER_TAIL);
-
-        if (!use_local_qiov) {
-            qemu_iovec_init(&local_qiov, qiov->niov + 1);
-            qemu_iovec_concat(&local_qiov, qiov, 0, qiov->size);
-            use_local_qiov = true;
-        }
-
-        tail_bytes = (offset + bytes) & (align - 1);
-        qemu_iovec_add(&local_qiov, tail_buf + tail_bytes, align - tail_bytes);
-
-        bytes = ROUND_UP(bytes, align);
+    if (bdrv_pad_request(bs, &qiov, &qiov_offset, &offset, &bytes, &pad)) {
+        bdrv_mark_request_serialising(&req, align);
+        bdrv_padding_rmw_read(child, &req, &pad, false);
     }
 
     ret = bdrv_aligned_pwritev(child, &req, offset, bytes, align,
-                               use_local_qiov ? &local_qiov : qiov,
-                               flags);
+                               qiov, qiov_offset, flags);
 
-fail:
+    bdrv_padding_destroy(&pad);
 
-    if (use_local_qiov) {
-        qemu_iovec_destroy(&local_qiov);
-    }
-    qemu_vfree(head_buf);
-    qemu_vfree(tail_buf);
 out:
     tracked_request_end(&req);
     bdrv_dec_in_flight(bs);
+
     return ret;
-}
-
-static int coroutine_fn bdrv_co_do_writev(BdrvChild *child,
-    int64_t sector_num, int nb_sectors, QEMUIOVector *qiov,
-    BdrvRequestFlags flags)
-{
-    if (nb_sectors < 0 || nb_sectors > BDRV_REQUEST_MAX_SECTORS) {
-        return -EINVAL;
-    }
-
-    return bdrv_co_pwritev(child, sector_num << BDRV_SECTOR_BITS,
-                           nb_sectors << BDRV_SECTOR_BITS, qiov, flags);
-}
-
-int coroutine_fn bdrv_co_writev(BdrvChild *child, int64_t sector_num,
-    int nb_sectors, QEMUIOVector *qiov)
-{
-    return bdrv_co_do_writev(child, sector_num, nb_sectors, qiov, 0);
 }
 
 int coroutine_fn bdrv_co_pwrite_zeroes(BdrvChild *child, int64_t offset,
@@ -1831,6 +2195,15 @@ int bdrv_flush_all(void)
     BdrvNextIterator it;
     BlockDriverState *bs = NULL;
     int result = 0;
+
+    /*
+     * bdrv queue is managed by record/replay,
+     * creating new flush request for stopping
+     * the VM may break the determinism
+     */
+    if (replay_events_enabled()) {
+        return result;
+    }
 
     for (bs = bdrv_first(&it); bs; bs = bdrv_next(&it)) {
         AioContext *aio_context = bdrv_get_aio_context(bs);
@@ -1991,6 +2364,12 @@ static int coroutine_fn bdrv_co_block_status(BlockDriverState *bs,
      */
     assert(*pnum && QEMU_IS_ALIGNED(*pnum, align) &&
            align > offset - aligned_offset);
+    if (ret & BDRV_BLOCK_RECURSE) {
+        assert(ret & BDRV_BLOCK_DATA);
+        assert(ret & BDRV_BLOCK_OFFSET_VALID);
+        assert(!(ret & BDRV_BLOCK_ZERO));
+    }
+
     *pnum -= offset - aligned_offset;
     if (*pnum > bytes) {
         *pnum = bytes;
@@ -2021,7 +2400,8 @@ static int coroutine_fn bdrv_co_block_status(BlockDriverState *bs,
         }
     }
 
-    if (want_zero && local_file && local_file != bs &&
+    if (want_zero && ret & BDRV_BLOCK_RECURSE &&
+        local_file && local_file != bs &&
         (ret & BDRV_BLOCK_DATA) && !(ret & BDRV_BLOCK_ZERO) &&
         (ret & BDRV_BLOCK_OFFSET_VALID)) {
         int64_t file_pnum;
@@ -2114,6 +2494,7 @@ static void coroutine_fn bdrv_block_status_above_co_entry(void *opaque)
                                            data->offset, data->bytes,
                                            data->pnum, data->map, data->file);
     data->done = true;
+    aio_wait_kick();
 }
 
 /*
@@ -2185,10 +2566,11 @@ int coroutine_fn bdrv_is_allocated(BlockDriverState *bs, int64_t offset,
 /*
  * Given an image chain: ... -> [BASE] -> [INTER1] -> [INTER2] -> [TOP]
  *
- * Return true if (a prefix of) the given range is allocated in any image
- * between BASE and TOP (inclusive).  BASE can be NULL to check if the given
- * offset is allocated in any image of the chain.  Return false otherwise,
- * or negative errno on failure.
+ * Return 1 if (a prefix of) the given range is allocated in any image
+ * between BASE and TOP (BASE is only included if include_base is set).
+ * BASE can be NULL to check if the given offset is allocated in any
+ * image of the chain.  Return 0 otherwise, or negative errno on
+ * failure.
  *
  * 'pnum' is set to the number of bytes (including and immediately
  * following the specified offset) that are known to be in the same
@@ -2200,17 +2582,21 @@ int coroutine_fn bdrv_is_allocated(BlockDriverState *bs, int64_t offset,
  */
 int bdrv_is_allocated_above(BlockDriverState *top,
                             BlockDriverState *base,
-                            int64_t offset, int64_t bytes, int64_t *pnum)
+                            bool include_base, int64_t offset,
+                            int64_t bytes, int64_t *pnum)
 {
     BlockDriverState *intermediate;
     int ret;
     int64_t n = bytes;
 
+    assert(base || !include_base);
+
     intermediate = top;
-    while (intermediate && intermediate != base) {
+    while (include_base || intermediate != base) {
         int64_t pnum_inter;
         int64_t size_inter;
 
+        assert(intermediate);
         ret = bdrv_is_allocated(intermediate, offset, bytes, &pnum_inter);
         if (ret < 0) {
             return ret;
@@ -2227,6 +2613,10 @@ int bdrv_is_allocated_above(BlockDriverState *top,
         if (n > pnum_inter &&
             (intermediate == top || offset + pnum_inter < size_inter)) {
             n = pnum_inter;
+        }
+
+        if (intermediate == base) {
+            break;
         }
 
         intermediate = backing_bs(intermediate);
@@ -2273,6 +2663,7 @@ static void coroutine_fn bdrv_co_rw_vmstate_entry(void *opaque)
 {
     BdrvVmstateCo *co = opaque;
     co->ret = bdrv_co_rw_vmstate(co->bs, co->qiov, co->pos, co->is_read);
+    aio_wait_kick();
 }
 
 static inline int
@@ -2300,14 +2691,8 @@ bdrv_rw_vmstate(BlockDriverState *bs, QEMUIOVector *qiov, int64_t pos,
 int bdrv_save_vmstate(BlockDriverState *bs, const uint8_t *buf,
                       int64_t pos, int size)
 {
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base   = (void *) buf,
-        .iov_len    = size,
-    };
+    QEMUIOVector qiov = QEMU_IOVEC_INIT_BUF(qiov, buf, size);
     int ret;
-
-    qemu_iovec_init_external(&qiov, &iov, 1);
 
     ret = bdrv_writev_vmstate(bs, &qiov, pos);
     if (ret < 0) {
@@ -2325,14 +2710,9 @@ int bdrv_writev_vmstate(BlockDriverState *bs, QEMUIOVector *qiov, int64_t pos)
 int bdrv_load_vmstate(BlockDriverState *bs, uint8_t *buf,
                       int64_t pos, int size)
 {
-    QEMUIOVector qiov;
-    struct iovec iov = {
-        .iov_base   = buf,
-        .iov_len    = size,
-    };
+    QEMUIOVector qiov = QEMU_IOVEC_INIT_BUF(qiov, buf, size);
     int ret;
 
-    qemu_iovec_init_external(&qiov, &iov, 1);
     ret = bdrv_readv_vmstate(bs, &qiov, pos);
     if (ret < 0) {
         return ret;
@@ -2394,6 +2774,7 @@ static void coroutine_fn bdrv_flush_co_entry(void *opaque)
     FlushCo *rwco = opaque;
 
     rwco->ret = bdrv_co_flush(rwco->bs);
+    aio_wait_kick();
 }
 
 int coroutine_fn bdrv_co_flush(BlockDriverState *bs)
@@ -2529,26 +2910,28 @@ int bdrv_flush(BlockDriverState *bs)
 }
 
 typedef struct DiscardCo {
-    BlockDriverState *bs;
+    BdrvChild *child;
     int64_t offset;
-    int bytes;
+    int64_t bytes;
     int ret;
 } DiscardCo;
 static void coroutine_fn bdrv_pdiscard_co_entry(void *opaque)
 {
     DiscardCo *rwco = opaque;
 
-    rwco->ret = bdrv_co_pdiscard(rwco->bs, rwco->offset, rwco->bytes);
+    rwco->ret = bdrv_co_pdiscard(rwco->child, rwco->offset, rwco->bytes);
+    aio_wait_kick();
 }
 
-int coroutine_fn bdrv_co_pdiscard(BlockDriverState *bs, int64_t offset,
-                                  int bytes)
+int coroutine_fn bdrv_co_pdiscard(BdrvChild *child, int64_t offset,
+                                  int64_t bytes)
 {
     BdrvTrackedRequest req;
     int max_pdiscard, ret;
     int head, tail, align;
+    BlockDriverState *bs = child->bs;
 
-    if (!bs->drv) {
+    if (!bs || !bs->drv || !bdrv_is_inserted(bs)) {
         return -ENOMEDIUM;
     }
 
@@ -2556,13 +2939,9 @@ int coroutine_fn bdrv_co_pdiscard(BlockDriverState *bs, int64_t offset,
         return -EPERM;
     }
 
-    ret = bdrv_check_byte_request(bs, offset, bytes);
-    if (ret < 0) {
-        return ret;
-    } else if (bs->read_only) {
-        return -EPERM;
+    if (offset < 0 || bytes < 0 || bytes > INT64_MAX - offset) {
+        return -EIO;
     }
-    assert(!(bs->open_flags & BDRV_O_INACTIVE));
 
     /* Do nothing if disabled.  */
     if (!(bs->open_flags & BDRV_O_UNMAP)) {
@@ -2586,7 +2965,7 @@ int coroutine_fn bdrv_co_pdiscard(BlockDriverState *bs, int64_t offset,
     bdrv_inc_in_flight(bs);
     tracked_request_begin(&req, bs, offset, bytes, BDRV_TRACKED_DISCARD);
 
-    ret = notifier_with_return_list_notify(&bs->before_write_notifiers, &req);
+    ret = bdrv_co_write_req_prepare(child, offset, bytes, &req, 0);
     if (ret < 0) {
         goto out;
     }
@@ -2596,7 +2975,7 @@ int coroutine_fn bdrv_co_pdiscard(BlockDriverState *bs, int64_t offset,
     assert(max_pdiscard >= bs->bl.request_alignment);
 
     while (bytes > 0) {
-        int num = bytes;
+        int64_t num = bytes;
 
         if (head) {
             /* Make small requests to get to alignment boundaries. */
@@ -2652,18 +3031,17 @@ int coroutine_fn bdrv_co_pdiscard(BlockDriverState *bs, int64_t offset,
     }
     ret = 0;
 out:
-    atomic_inc(&bs->write_gen);
-    bdrv_set_dirty(bs, req.offset, req.bytes);
+    bdrv_co_write_req_finish(child, req.offset, req.bytes, &req, ret);
     tracked_request_end(&req);
     bdrv_dec_in_flight(bs);
     return ret;
 }
 
-int bdrv_pdiscard(BlockDriverState *bs, int64_t offset, int bytes)
+int bdrv_pdiscard(BdrvChild *child, int64_t offset, int64_t bytes)
 {
     Coroutine *co;
     DiscardCo rwco = {
-        .bs = bs,
+        .child = child,
         .offset = offset,
         .bytes = bytes,
         .ret = NOT_DONE,
@@ -2674,8 +3052,8 @@ int bdrv_pdiscard(BlockDriverState *bs, int64_t offset, int bytes)
         bdrv_pdiscard_co_entry(&rwco);
     } else {
         co = qemu_coroutine_create(bdrv_pdiscard_co_entry, &rwco);
-        bdrv_coroutine_enter(bs, co);
-        BDRV_POLL_WHILE(bs, rwco.ret == NOT_DONE);
+        bdrv_coroutine_enter(child->bs, co);
+        BDRV_POLL_WHILE(child->bs, rwco.ret == NOT_DONE);
     }
 
     return rwco.ret;
@@ -2825,4 +3203,267 @@ void bdrv_unregister_buf(BlockDriverState *bs, void *host)
     QLIST_FOREACH(child, &bs->children, next) {
         bdrv_unregister_buf(child->bs, host);
     }
+}
+
+static int coroutine_fn bdrv_co_copy_range_internal(
+        BdrvChild *src, uint64_t src_offset, BdrvChild *dst,
+        uint64_t dst_offset, uint64_t bytes,
+        BdrvRequestFlags read_flags, BdrvRequestFlags write_flags,
+        bool recurse_src)
+{
+    BdrvTrackedRequest req;
+    int ret;
+
+    /* TODO We can support BDRV_REQ_NO_FALLBACK here */
+    assert(!(read_flags & BDRV_REQ_NO_FALLBACK));
+    assert(!(write_flags & BDRV_REQ_NO_FALLBACK));
+
+    if (!dst || !dst->bs) {
+        return -ENOMEDIUM;
+    }
+    ret = bdrv_check_byte_request(dst->bs, dst_offset, bytes);
+    if (ret) {
+        return ret;
+    }
+    if (write_flags & BDRV_REQ_ZERO_WRITE) {
+        return bdrv_co_pwrite_zeroes(dst, dst_offset, bytes, write_flags);
+    }
+
+    if (!src || !src->bs) {
+        return -ENOMEDIUM;
+    }
+    ret = bdrv_check_byte_request(src->bs, src_offset, bytes);
+    if (ret) {
+        return ret;
+    }
+
+    if (!src->bs->drv->bdrv_co_copy_range_from
+        || !dst->bs->drv->bdrv_co_copy_range_to
+        || src->bs->encrypted || dst->bs->encrypted) {
+        return -ENOTSUP;
+    }
+
+    if (recurse_src) {
+        bdrv_inc_in_flight(src->bs);
+        tracked_request_begin(&req, src->bs, src_offset, bytes,
+                              BDRV_TRACKED_READ);
+
+        /* BDRV_REQ_SERIALISING is only for write operation */
+        assert(!(read_flags & BDRV_REQ_SERIALISING));
+        bdrv_wait_serialising_requests(&req);
+
+        ret = src->bs->drv->bdrv_co_copy_range_from(src->bs,
+                                                    src, src_offset,
+                                                    dst, dst_offset,
+                                                    bytes,
+                                                    read_flags, write_flags);
+
+        tracked_request_end(&req);
+        bdrv_dec_in_flight(src->bs);
+    } else {
+        bdrv_inc_in_flight(dst->bs);
+        tracked_request_begin(&req, dst->bs, dst_offset, bytes,
+                              BDRV_TRACKED_WRITE);
+        ret = bdrv_co_write_req_prepare(dst, dst_offset, bytes, &req,
+                                        write_flags);
+        if (!ret) {
+            ret = dst->bs->drv->bdrv_co_copy_range_to(dst->bs,
+                                                      src, src_offset,
+                                                      dst, dst_offset,
+                                                      bytes,
+                                                      read_flags, write_flags);
+        }
+        bdrv_co_write_req_finish(dst, dst_offset, bytes, &req, ret);
+        tracked_request_end(&req);
+        bdrv_dec_in_flight(dst->bs);
+    }
+
+    return ret;
+}
+
+/* Copy range from @src to @dst.
+ *
+ * See the comment of bdrv_co_copy_range for the parameter and return value
+ * semantics. */
+int coroutine_fn bdrv_co_copy_range_from(BdrvChild *src, uint64_t src_offset,
+                                         BdrvChild *dst, uint64_t dst_offset,
+                                         uint64_t bytes,
+                                         BdrvRequestFlags read_flags,
+                                         BdrvRequestFlags write_flags)
+{
+    trace_bdrv_co_copy_range_from(src, src_offset, dst, dst_offset, bytes,
+                                  read_flags, write_flags);
+    return bdrv_co_copy_range_internal(src, src_offset, dst, dst_offset,
+                                       bytes, read_flags, write_flags, true);
+}
+
+/* Copy range from @src to @dst.
+ *
+ * See the comment of bdrv_co_copy_range for the parameter and return value
+ * semantics. */
+int coroutine_fn bdrv_co_copy_range_to(BdrvChild *src, uint64_t src_offset,
+                                       BdrvChild *dst, uint64_t dst_offset,
+                                       uint64_t bytes,
+                                       BdrvRequestFlags read_flags,
+                                       BdrvRequestFlags write_flags)
+{
+    trace_bdrv_co_copy_range_to(src, src_offset, dst, dst_offset, bytes,
+                                read_flags, write_flags);
+    return bdrv_co_copy_range_internal(src, src_offset, dst, dst_offset,
+                                       bytes, read_flags, write_flags, false);
+}
+
+int coroutine_fn bdrv_co_copy_range(BdrvChild *src, uint64_t src_offset,
+                                    BdrvChild *dst, uint64_t dst_offset,
+                                    uint64_t bytes, BdrvRequestFlags read_flags,
+                                    BdrvRequestFlags write_flags)
+{
+    return bdrv_co_copy_range_from(src, src_offset,
+                                   dst, dst_offset,
+                                   bytes, read_flags, write_flags);
+}
+
+static void bdrv_parent_cb_resize(BlockDriverState *bs)
+{
+    BdrvChild *c;
+    QLIST_FOREACH(c, &bs->parents, next_parent) {
+        if (c->role->resize) {
+            c->role->resize(c);
+        }
+    }
+}
+
+/**
+ * Truncate file to 'offset' bytes (needed only for file protocols)
+ *
+ * If 'exact' is true, the file must be resized to exactly the given
+ * 'offset'.  Otherwise, it is sufficient for the node to be at least
+ * 'offset' bytes in length.
+ */
+int coroutine_fn bdrv_co_truncate(BdrvChild *child, int64_t offset, bool exact,
+                                  PreallocMode prealloc, Error **errp)
+{
+    BlockDriverState *bs = child->bs;
+    BlockDriver *drv = bs->drv;
+    BdrvTrackedRequest req;
+    int64_t old_size, new_bytes;
+    int ret;
+
+
+    /* if bs->drv == NULL, bs is closed, so there's nothing to do here */
+    if (!drv) {
+        error_setg(errp, "No medium inserted");
+        return -ENOMEDIUM;
+    }
+    if (offset < 0) {
+        error_setg(errp, "Image size cannot be negative");
+        return -EINVAL;
+    }
+
+    old_size = bdrv_getlength(bs);
+    if (old_size < 0) {
+        error_setg_errno(errp, -old_size, "Failed to get old image size");
+        return old_size;
+    }
+
+    if (offset > old_size) {
+        new_bytes = offset - old_size;
+    } else {
+        new_bytes = 0;
+    }
+
+    bdrv_inc_in_flight(bs);
+    tracked_request_begin(&req, bs, offset - new_bytes, new_bytes,
+                          BDRV_TRACKED_TRUNCATE);
+
+    /* If we are growing the image and potentially using preallocation for the
+     * new area, we need to make sure that no write requests are made to it
+     * concurrently or they might be overwritten by preallocation. */
+    if (new_bytes) {
+        bdrv_mark_request_serialising(&req, 1);
+    }
+    if (bs->read_only) {
+        error_setg(errp, "Image is read-only");
+        ret = -EACCES;
+        goto out;
+    }
+    ret = bdrv_co_write_req_prepare(child, offset - new_bytes, new_bytes, &req,
+                                    0);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret,
+                         "Failed to prepare request for truncation");
+        goto out;
+    }
+
+    if (drv->bdrv_co_truncate) {
+        ret = drv->bdrv_co_truncate(bs, offset, exact, prealloc, errp);
+    } else if (bs->file && drv->is_filter) {
+        ret = bdrv_co_truncate(bs->file, offset, exact, prealloc, errp);
+    } else {
+        error_setg(errp, "Image format driver does not support resize");
+        ret = -ENOTSUP;
+        goto out;
+    }
+    if (ret < 0) {
+        goto out;
+    }
+
+    ret = refresh_total_sectors(bs, offset >> BDRV_SECTOR_BITS);
+    if (ret < 0) {
+        error_setg_errno(errp, -ret, "Could not refresh total sector count");
+    } else {
+        offset = bs->total_sectors * BDRV_SECTOR_SIZE;
+    }
+    /* It's possible that truncation succeeded but refresh_total_sectors
+     * failed, but the latter doesn't affect how we should finish the request.
+     * Pass 0 as the last parameter so that dirty bitmaps etc. are handled. */
+    bdrv_co_write_req_finish(child, offset - new_bytes, new_bytes, &req, 0);
+
+out:
+    tracked_request_end(&req);
+    bdrv_dec_in_flight(bs);
+
+    return ret;
+}
+
+typedef struct TruncateCo {
+    BdrvChild *child;
+    int64_t offset;
+    bool exact;
+    PreallocMode prealloc;
+    Error **errp;
+    int ret;
+} TruncateCo;
+
+static void coroutine_fn bdrv_truncate_co_entry(void *opaque)
+{
+    TruncateCo *tco = opaque;
+    tco->ret = bdrv_co_truncate(tco->child, tco->offset, tco->exact,
+                                tco->prealloc, tco->errp);
+    aio_wait_kick();
+}
+
+int bdrv_truncate(BdrvChild *child, int64_t offset, bool exact,
+                  PreallocMode prealloc, Error **errp)
+{
+    Coroutine *co;
+    TruncateCo tco = {
+        .child      = child,
+        .offset     = offset,
+        .exact      = exact,
+        .prealloc   = prealloc,
+        .errp       = errp,
+        .ret        = NOT_DONE,
+    };
+
+    if (qemu_in_coroutine()) {
+        /* Fast-path if already in coroutine context */
+        bdrv_truncate_co_entry(&tco);
+    } else {
+        co = qemu_coroutine_create(bdrv_truncate_co_entry, &tco);
+        bdrv_coroutine_enter(child->bs, co);
+        BDRV_POLL_WHILE(child->bs, tco.ret == NOT_DONE);
+    }
+
+    return tco.ret;
 }

@@ -20,7 +20,7 @@
 #ifndef QEMU_LM32_CPU_QOM_H
 #define QEMU_LM32_CPU_QOM_H
 
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 
 #define TYPE_LM32_CPU "lm32-cpu"
 
@@ -44,7 +44,7 @@ typedef struct LM32CPUClass {
     /*< public >*/
 
     DeviceRealize parent_realize;
-    void (*parent_reset)(CPUState *cpu);
+    DeviceReset parent_reset;
 } LM32CPUClass;
 
 typedef struct LM32CPU LM32CPU;

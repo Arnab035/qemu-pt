@@ -18,9 +18,10 @@
 #include "cpu.h"
 #include "internal.h"
 #include "qemu/error-report.h"
+#include "qemu/main-loop.h"
 #include "qemu/timer.h"
-#include "sysemu/sysemu.h"
 #include "sysemu/kvm.h"
+#include "sysemu/runstate.h"
 #include "sysemu/cpus.h"
 #include "kvm_mips.h"
 #include "exec/memattrs.h"
@@ -56,7 +57,7 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
     return 0;
 }
 
-int kvm_arch_irqchip_create(MachineState *ms, KVMState *s)
+int kvm_arch_irqchip_create(KVMState *s)
 {
     return 0;
 }
@@ -89,6 +90,11 @@ int kvm_arch_init_vcpu(CPUState *cs)
 
     DPRINTF("%s\n", __func__);
     return ret;
+}
+
+int kvm_arch_destroy_vcpu(CPUState *cs)
+{
+    return 0;
 }
 
 void kvm_mips_reset_vcpu(MIPSCPU *cpu)

@@ -28,12 +28,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
 #include "cpu.h"
 #include "hw/boards.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "strongarm.h"
 #include "qemu/error-report.h"
-#include "hw/arm/arm.h"
+#include "hw/arm/boot.h"
 #include "chardev/char-fe.h"
 #include "chardev/char-serial.h"
 #include "sysemu/sysemu.h"
@@ -395,15 +399,19 @@ static void strongarm_rtc_init(Object *obj)
     s->last_rcnr = (uint32_t) mktimegm(&tm);
     s->last_hz = qemu_clock_get_ms(rtc_clock);
 
-    s->rtc_alarm = timer_new_ms(rtc_clock, strongarm_rtc_alarm_tick, s);
-    s->rtc_hz = timer_new_ms(rtc_clock, strongarm_rtc_hz_tick, s);
-
     sysbus_init_irq(dev, &s->rtc_irq);
     sysbus_init_irq(dev, &s->rtc_hz_irq);
 
     memory_region_init_io(&s->iomem, obj, &strongarm_rtc_ops, s,
                           "rtc", 0x10000);
     sysbus_init_mmio(dev, &s->iomem);
+}
+
+static void strongarm_rtc_realize(DeviceState *dev, Error **errp)
+{
+    StrongARMRTCState *s = STRONGARM_RTC(dev);
+    s->rtc_alarm = timer_new_ms(rtc_clock, strongarm_rtc_alarm_tick, s);
+    s->rtc_hz = timer_new_ms(rtc_clock, strongarm_rtc_hz_tick, s);
 }
 
 static int strongarm_rtc_pre_save(void *opaque)
@@ -447,6 +455,7 @@ static void strongarm_rtc_sysbus_class_init(ObjectClass *klass, void *data)
 
     dc->desc = "StrongARM RTC Controller";
     dc->vmsd = &vmstate_strongarm_rtc_regs;
+    dc->realize = strongarm_rtc_realize;
 }
 
 static const TypeInfo strongarm_rtc_sysbus_info = {
@@ -587,12 +596,12 @@ static void strongarm_gpio_write(void *opaque, hwaddr offset,
 
     switch (offset) {
     case GPDR:        /* GPIO Pin-Direction registers */
-        s->dir = value;
+        s->dir = value & 0x0fffffff;
         strongarm_gpio_handler_update(s);
         break;
 
     case GPSR:        /* GPIO Pin-Output Set registers */
-        s->olevel |= value;
+        s->olevel |= value & 0x0fffffff;
         strongarm_gpio_handler_update(s);
         break;
 
@@ -1089,7 +1098,7 @@ static void strongarm_uart_receive(void *opaque, const uint8_t *buf, int size)
     strongarm_uart_update_int_status(s);
 }
 
-static void strongarm_uart_event(void *opaque, int event)
+static void strongarm_uart_event(void *opaque, QEMUChrEvent event)
 {
     StrongARMUARTState *s = opaque;
     if (event == CHR_EVENT_BREAK) {
@@ -1236,15 +1245,16 @@ static void strongarm_uart_init(Object *obj)
                           "uart", 0x10000);
     sysbus_init_mmio(dev, &s->iomem);
     sysbus_init_irq(dev, &s->irq);
-
-    s->rx_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, strongarm_uart_rx_to, s);
-    s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, strongarm_uart_tx, s);
 }
 
 static void strongarm_uart_realize(DeviceState *dev, Error **errp)
 {
     StrongARMUARTState *s = STRONGARM_UART(dev);
 
+    s->rx_timeout_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+                                       strongarm_uart_rx_to,
+                                       s);
+    s->tx_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, strongarm_uart_tx, s);
     qemu_chr_fe_set_handlers(&s->chr,
                              strongarm_uart_can_receive,
                              strongarm_uart_receive,
@@ -1323,7 +1333,7 @@ static void strongarm_uart_class_init(ObjectClass *klass, void *data)
     dc->desc = "StrongARM UART controller";
     dc->reset = strongarm_uart_reset;
     dc->vmsd = &vmstate_strongarm_uart_regs;
-    dc->props = strongarm_uart_properties;
+    device_class_set_props(dc, strongarm_uart_properties);
     dc->realize = strongarm_uart_realize;
 }
 
@@ -1582,8 +1592,7 @@ static const TypeInfo strongarm_ssp_info = {
 };
 
 /* Main CPU functions */
-StrongARMState *sa1110_init(MemoryRegion *sysmem,
-                            unsigned int sdram_size, const char *cpu_type)
+StrongARMState *sa1110_init(const char *cpu_type)
 {
     StrongARMState *s;
     int i;
@@ -1596,10 +1605,6 @@ StrongARMState *sa1110_init(MemoryRegion *sysmem,
     }
 
     s->cpu = ARM_CPU(cpu_create(cpu_type));
-
-    memory_region_allocate_system_memory(&s->sdram, NULL, "strongarm.sdram",
-                                         sdram_size);
-    memory_region_add_subregion(sysmem, SA_SDCS0, &s->sdram);
 
     s->pic = sysbus_create_varargs("strongarm_pic", 0x90050000,
                     qdev_get_gpio_in(DEVICE(s->cpu), ARM_CPU_IRQ),
@@ -1622,7 +1627,7 @@ StrongARMState *sa1110_init(MemoryRegion *sysmem,
 
     for (i = 0; sa_serial[i].io_base; i++) {
         DeviceState *dev = qdev_create(NULL, TYPE_STRONGARM_UART);
-        qdev_prop_set_chr(dev, "chardev", serial_hds[i]);
+        qdev_prop_set_chr(dev, "chardev", serial_hd(i));
         qdev_init_nofail(dev);
         sysbus_mmio_map(SYS_BUS_DEVICE(dev), 0,
                 sa_serial[i].io_base);

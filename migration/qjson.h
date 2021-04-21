@@ -13,8 +13,6 @@
 #ifndef QEMU_QJSON_H
 #define QEMU_QJSON_H
 
-typedef struct QJSON QJSON;
-
 QJSON *qjson_new(void);
 void qjson_destroy(QJSON *json);
 void json_prop_str(QJSON *json, const char *name, const char *str);
@@ -25,5 +23,7 @@ void json_end_object(QJSON *json);
 void json_start_object(QJSON *json, const char *name);
 const char *qjson_get_str(QJSON *json);
 void qjson_finish(QJSON *json);
+
+G_DEFINE_AUTOPTR_CLEANUP_FUNC(QJSON, qjson_destroy)
 
 #endif /* QEMU_QJSON_H */

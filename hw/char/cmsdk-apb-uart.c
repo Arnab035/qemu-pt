@@ -17,13 +17,16 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 #include "qapi/error.h"
 #include "trace.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "hw/registerfields.h"
 #include "chardev/char-fe.h"
 #include "chardev/char-serial.h"
 #include "hw/char/cmsdk-apb-uart.h"
+#include "hw/irq.h"
 
 REG32(DATA, 0)
 REG32(STATE, 4)
@@ -157,6 +160,7 @@ static uint64_t uart_read(void *opaque, hwaddr offset, unsigned size)
         r = s->rxbuf;
         s->state &= ~R_STATE_RXFULL_MASK;
         cmsdk_apb_uart_update(s);
+        qemu_chr_fe_accept_input(&s->chr);
         break;
     case A_STATE:
         r = s->state;
@@ -274,6 +278,7 @@ static void uart_write(void *opaque, hwaddr offset, uint64_t value,
          * is then reflected into the intstatus value by the update function).
          */
         s->state &= ~(value & (R_INTSTATUS_TXO_MASK | R_INTSTATUS_RXO_MASK));
+        s->intstatus &= ~value;
         cmsdk_apb_uart_update(s);
         break;
     case A_BAUDDIV:
@@ -384,7 +389,7 @@ static void cmsdk_apb_uart_class_init(ObjectClass *klass, void *data)
     dc->realize = cmsdk_apb_uart_realize;
     dc->vmsd = &cmsdk_apb_uart_vmstate;
     dc->reset = cmsdk_apb_uart_reset;
-    dc->props = cmsdk_apb_uart_properties;
+    device_class_set_props(dc, cmsdk_apb_uart_properties);
 }
 
 static const TypeInfo cmsdk_apb_uart_info = {

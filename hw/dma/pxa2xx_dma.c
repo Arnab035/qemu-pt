@@ -10,9 +10,13 @@
 
 #include "qemu/osdep.h"
 #include "hw/hw.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/arm/pxa.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
 #include "qapi/error.h"
+#include "qemu/module.h"
 
 #define PXA255_DMA_NUM_CHANNELS 16
 #define PXA27X_DMA_NUM_CHANNELS 32
@@ -228,7 +232,7 @@ static void pxa2xx_dma_run(PXA2xxDMAState *s)
                                         !(ch->state & DCSR_NODESCFETCH))
                             pxa2xx_dma_descriptor_fetch(s, c);
                         break;
-		    }
+                    }
                 }
 
                 ch->cmd = (ch->cmd & ~DCMD_LEN) | length;
@@ -283,7 +287,7 @@ static uint64_t pxa2xx_dma_read(void *opaque, hwaddr offset,
 
     case DCSR0 ... DCSR31:
         channel = offset >> 2;
-	if (s->chan[channel].request)
+        if (s->chan[channel].request)
             return s->chan[channel].state | DCSR_REQPEND;
         return s->chan[channel].state;
 
@@ -562,7 +566,7 @@ static void pxa2xx_dma_class_init(ObjectClass *klass, void *data)
 
     dc->desc = "PXA2xx DMA controller";
     dc->vmsd = &vmstate_pxa2xx_dma;
-    dc->props = pxa2xx_dma_properties;
+    device_class_set_props(dc, pxa2xx_dma_properties);
     dc->realize = pxa2xx_dma_realize;
 }
 

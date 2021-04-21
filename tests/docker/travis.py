@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Travis YAML config parser
 #
@@ -16,32 +16,31 @@ import yaml
 import itertools
 
 def load_yaml(fname):
-    return yaml.load(open(fname, "r").read())
+    return yaml.safe_load(open(fname, "r").read())
 
 def conf_iter(conf):
+    # If "compiler" is omitted from the included env then Travis picks the
+    # first entry of the global compiler list.
+    default_compiler = conf["compiler"][0]
     def env_to_list(env):
         return env if isinstance(env, list) else [env]
     for entry in conf["matrix"]["include"]:
         yield {"env": env_to_list(entry["env"]),
-               "compiler": entry["compiler"]}
-    for entry in itertools.product(conf["compiler"],
-                                   conf["env"]["matrix"]):
-        yield {"env": env_to_list(entry[1]),
-               "compiler": entry[0]}
+               "compiler": entry.get("compiler", default_compiler)}
 
 def main():
     if len(sys.argv) < 2:
         sys.stderr.write("Usage: %s <travis-file>\n" % sys.argv[0])
         return 1
     conf = load_yaml(sys.argv[1])
-    print "\n".join((": ${%s}" % var for var in conf["env"]["global"]))
+    print("\n".join((": ${%s}" % var for var in conf["env"]["global"])))
     for config in conf_iter(conf):
-        print "("
-        print "\n".join(config["env"])
-        print "alias cc=" + config["compiler"]
-        print "\n".join(conf["before_script"])
-        print "\n".join(conf["script"])
-        print ")"
+        print("(")
+        print("\n".join(config["env"]))
+        print("alias cc=" + config["compiler"])
+        print("\n".join(conf["before_script"]))
+        print("\n".join(conf["script"]))
+        print(")")
     return 0
 
 if __name__ == "__main__":

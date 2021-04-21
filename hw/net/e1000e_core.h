@@ -33,6 +33,9 @@
 * License along with this library; if not, see <http://www.gnu.org/licenses/>.
 */
 
+#ifndef HW_NET_E1000E_CORE_H
+#define HW_NET_E1000E_CORE_H
+
 #define E1000E_PHY_PAGE_SIZE    (0x20)
 #define E1000E_PHY_PAGES        (0x07)
 #define E1000E_MAC_SIZE         (0x8000)
@@ -109,6 +112,8 @@ struct E1000Core {
     NICState *owner_nic;
     PCIDevice *owner;
     void (*owner_start_recv)(PCIDevice *d);
+
+    uint32_t msi_causes_pending;
 };
 
 void
@@ -138,7 +143,7 @@ e1000e_core_set_link_status(E1000ECore *core);
 void
 e1000e_core_pci_uninit(E1000ECore *core);
 
-int
+bool
 e1000e_can_receive(E1000ECore *core);
 
 ssize_t
@@ -149,3 +154,5 @@ e1000e_receive_iov(E1000ECore *core, const struct iovec *iov, int iovcnt);
 
 void
 e1000e_start_recv(E1000ECore *core);
+
+#endif

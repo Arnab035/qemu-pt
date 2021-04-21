@@ -16,11 +16,7 @@
      INTERFACE_CHECK(UserCreatable, (obj), \
                      TYPE_USER_CREATABLE)
 
-
-typedef struct UserCreatable {
-    /* <private> */
-    Object Parent;
-} UserCreatable;
+typedef struct UserCreatable UserCreatable;
 
 /**
  * UserCreatableClass:
@@ -55,14 +51,14 @@ typedef struct UserCreatableClass {
 
 /**
  * user_creatable_complete:
- * @obj: the object whose complete() method is called if defined
+ * @uc: the user-creatable object whose complete() method is called if defined
  * @errp: if an error occurs, a pointer to an area to store the error
  *
  * Wrapper to call complete() method if one of types it's inherited
  * from implements USER_CREATABLE interface, otherwise the call does
  * nothing.
  */
-void user_creatable_complete(Object *obj, Error **errp);
+void user_creatable_complete(UserCreatable *uc, Error **errp);
 
 /**
  * user_creatable_can_be_deleted:
@@ -137,6 +133,18 @@ int user_creatable_add_opts_foreach(void *opaque,
                                     QemuOpts *opts, Error **errp);
 
 /**
+ * user_creatable_print_help:
+ * @type: the QOM type to be added
+ * @opts: options to create
+ *
+ * Prints help if requested in @opts.
+ *
+ * Returns: true if @opts contained a help option and help was printed, false
+ * if no help option was found.
+ */
+bool user_creatable_print_help(const char *type, QemuOpts *opts);
+
+/**
  * user_creatable_del:
  * @id: the unique ID for the object
  * @errp: if an error occurs, a pointer to an area to store the error
@@ -153,5 +161,12 @@ void user_creatable_del(const char *id, Error **errp);
  * objects container.
  */
 void user_creatable_cleanup(void);
+
+/**
+ * qmp_object_add:
+ *
+ * QMP command handler for object-add. See the QAPI schema for documentation.
+ */
+void qmp_object_add(QDict *qdict, QObject **ret_data, Error **errp);
 
 #endif

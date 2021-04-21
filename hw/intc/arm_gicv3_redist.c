@@ -192,7 +192,8 @@ static MemTxResult gicr_readl(GICv3CPUState *cs, hwaddr offset,
         int i, irq = offset - GICR_IPRIORITYR;
         uint32_t value = 0;
 
-        for (i = irq + 3; i >= irq; i--, value <<= 8) {
+        for (i = irq + 3; i >= irq; i--) {
+            value <<= 8;
             value |= gicr_read_ipriorityr(cs, attrs, i);
         }
         *data = value;
@@ -232,7 +233,7 @@ static MemTxResult gicr_readl(GICv3CPUState *cs, hwaddr offset,
         }
         *data = cs->gicr_nsacr;
         return MEMTX_OK;
-    case GICR_IDREGS ... GICR_IDREGS + 0x1f:
+    case GICR_IDREGS ... GICR_IDREGS + 0x2f:
         *data = gicv3_idreg(offset - GICR_IDREGS);
         return MEMTX_OK;
     default:
@@ -362,7 +363,7 @@ static MemTxResult gicr_writel(GICv3CPUState *cs, hwaddr offset,
         return MEMTX_OK;
     case GICR_IIDR:
     case GICR_TYPER:
-    case GICR_IDREGS ... GICR_IDREGS + 0x1f:
+    case GICR_IDREGS ... GICR_IDREGS + 0x2f:
         /* RO registers, ignore the write */
         qemu_log_mask(LOG_GUEST_ERROR,
                       "%s: invalid guest write to RO register at offset "

@@ -23,42 +23,25 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
-#include "sysemu/block-backend.h"
-#include "sysemu/blockdev.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/dma.h"
 #include "qemu/timer.h"
 #include "qemu/bitops.h"
 #include "hw/sd/sdhci.h"
+#include "migration/vmstate.h"
 #include "sdhci-internal.h"
 #include "qemu/log.h"
-#include "qemu/cutils.h"
+#include "qemu/module.h"
 #include "trace.h"
 
 #define TYPE_SDHCI_BUS "sdhci-bus"
 #define SDHCI_BUS(obj) OBJECT_CHECK(SDBus, (obj), TYPE_SDHCI_BUS)
 
 #define MASKED_WRITE(reg, mask, val)  (reg = (reg & (mask)) | (val))
-
-/* Default SD/MMC host controller features information, which will be
- * presented in CAPABILITIES register of generic SD host controller at reset.
- *
- * support:
- * - 3.3v and 1.8v voltages
- * - SDMA/ADMA1/ADMA2
- * - high-speed
- * max host controller R/W buffers size: 512B
- * max clock frequency for SDclock: 52 MHz
- * timeout clock frequency: 52 MHz
- *
- * does not support:
- * - 3.0v voltage
- * - 64-bit system bus
- * - suspend/resume
- */
-#define SDHC_CAPAB_REG_DEFAULT 0x057834b4
 
 static inline unsigned int sdhci_get_fifolen(SDHCIState *s)
 {
@@ -344,17 +327,13 @@ static void sdhci_send_command(SDHCIState *s)
 
     if (s->cmdreg & SDHC_CMD_RESPONSE) {
         if (rlen == 4) {
-            s->rspreg[0] = (response[0] << 24) | (response[1] << 16) |
-                           (response[2] << 8)  |  response[3];
+            s->rspreg[0] = ldl_be_p(response);
             s->rspreg[1] = s->rspreg[2] = s->rspreg[3] = 0;
             trace_sdhci_response4(s->rspreg[0]);
         } else if (rlen == 16) {
-            s->rspreg[0] = (response[11] << 24) | (response[12] << 16) |
-                           (response[13] << 8) |  response[14];
-            s->rspreg[1] = (response[7] << 24) | (response[8] << 16) |
-                           (response[9] << 8)  |  response[10];
-            s->rspreg[2] = (response[3] << 24) | (response[4] << 16) |
-                           (response[5] << 8)  |  response[6];
+            s->rspreg[0] = ldl_be_p(&response[11]);
+            s->rspreg[1] = ldl_be_p(&response[7]);
+            s->rspreg[2] = ldl_be_p(&response[3]);
             s->rspreg[3] = (response[0] << 16) | (response[1] << 8) |
                             response[2];
             trace_sdhci_response16(s->rspreg[3], s->rspreg[2],
@@ -398,8 +377,7 @@ static void sdhci_end_transfer(SDHCIState *s)
         trace_sdhci_end_transfer(request.cmd, request.arg);
         sdbus_do_command(&s->sdbus, &request, response);
         /* Auto CMD12 response goes to the upper Response register */
-        s->rspreg[3] = (response[0] << 24) | (response[1] << 16) |
-                (response[2] << 8) | response[3];
+        s->rspreg[3] = ldl_be_p(response);
     }
 
     s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
@@ -416,7 +394,7 @@ static void sdhci_end_transfer(SDHCIState *s)
 /*
  * Programmed i/o data transfer
  */
-#define BLOCK_SIZE_MASK (4 * K_BYTE - 1)
+#define BLOCK_SIZE_MASK (4 * KiB - 1)
 
 /* Fill host controller's read buffer with BLKSIZE bytes of data from card */
 static void sdhci_read_block_from_card(SDHCIState *s)
@@ -723,8 +701,7 @@ static void get_adma_description(SDHCIState *s, ADMADescr *dscr)
     hwaddr entry_addr = (hwaddr)s->admasysaddr;
     switch (SDHC_DMA_TYPE(s->hostctl1)) {
     case SDHC_CTRL_ADMA2_32:
-        dma_memory_read(s->dma_as, entry_addr, (uint8_t *)&adma2,
-                        sizeof(adma2));
+        dma_memory_read(s->dma_as, entry_addr, &adma2, sizeof(adma2));
         adma2 = le64_to_cpu(adma2);
         /* The spec does not specify endianness of descriptor table.
          * We currently assume that it is LE.
@@ -735,8 +712,7 @@ static void get_adma_description(SDHCIState *s, ADMADescr *dscr)
         dscr->incr = 8;
         break;
     case SDHC_CTRL_ADMA1_32:
-        dma_memory_read(s->dma_as, entry_addr, (uint8_t *)&adma1,
-                        sizeof(adma1));
+        dma_memory_read(s->dma_as, entry_addr, &adma1, sizeof(adma1));
         adma1 = le32_to_cpu(adma1);
         dscr->addr = (hwaddr)(adma1 & 0xFFFFF000);
         dscr->attr = (uint8_t)extract32(adma1, 0, 7);
@@ -744,17 +720,14 @@ static void get_adma_description(SDHCIState *s, ADMADescr *dscr)
         if ((dscr->attr & SDHC_ADMA_ATTR_ACT_MASK) == SDHC_ADMA_ATTR_SET_LEN) {
             dscr->length = (uint16_t)extract32(adma1, 12, 16);
         } else {
-            dscr->length = 4096;
+            dscr->length = 4 * KiB;
         }
         break;
     case SDHC_CTRL_ADMA2_64:
-        dma_memory_read(s->dma_as, entry_addr,
-                        (uint8_t *)(&dscr->attr), 1);
-        dma_memory_read(s->dma_as, entry_addr + 2,
-                        (uint8_t *)(&dscr->length), 2);
+        dma_memory_read(s->dma_as, entry_addr, &dscr->attr, 1);
+        dma_memory_read(s->dma_as, entry_addr + 2, &dscr->length, 2);
         dscr->length = le16_to_cpu(dscr->length);
-        dma_memory_read(s->dma_as, entry_addr + 4,
-                        (uint8_t *)(&dscr->addr), 8);
+        dma_memory_read(s->dma_as, entry_addr + 4, &dscr->addr, 8);
         dscr->addr = le64_to_cpu(dscr->addr);
         dscr->attr &= (uint8_t) ~0xC0;
         dscr->incr = 12;
@@ -792,7 +765,7 @@ static void sdhci_do_adma(SDHCIState *s)
             return;
         }
 
-        length = dscr.length ? dscr.length : 65536;
+        length = dscr.length ? dscr.length : 64 * KiB;
 
         switch (dscr.attr & SDHC_ADMA_ATTR_ACT_MASK) {
         case SDHC_ADMA_ATTR_ACT_TRAN:  /* data transfer */
@@ -1335,16 +1308,7 @@ static void sdhci_init_readonly_registers(SDHCIState *s, Error **errp)
 
 /* --- qdev common --- */
 
-#define DEFINE_SDHCI_COMMON_PROPERTIES(_state) \
-    DEFINE_PROP_UINT8("sd-spec-version", _state, sd_spec_version, 2), \
-    DEFINE_PROP_UINT8("uhs", _state, uhs_mode, UHS_NOT_SUPPORTED), \
-    \
-    /* Capabilities registers provide information on supported
-     * features of this specific host controller implementation */ \
-    DEFINE_PROP_UINT64("capareg", _state, capareg, SDHC_CAPAB_REG_DEFAULT), \
-    DEFINE_PROP_UINT64("maxcurr", _state, maxcurr, 0)
-
-static void sdhci_initfn(SDHCIState *s)
+void sdhci_initfn(SDHCIState *s)
 {
     qbus_create_inplace(&s->sdbus, sizeof(s->sdbus),
                         TYPE_SDHCI_BUS, DEVICE(s), "sd-bus");
@@ -1355,7 +1319,7 @@ static void sdhci_initfn(SDHCIState *s)
     s->io_ops = &sdhci_mmio_ops;
 }
 
-static void sdhci_uninitfn(SDHCIState *s)
+void sdhci_uninitfn(SDHCIState *s)
 {
     timer_del(s->insert_timer);
     timer_free(s->insert_timer);
@@ -1366,7 +1330,7 @@ static void sdhci_uninitfn(SDHCIState *s)
     s->fifo_buffer = NULL;
 }
 
-static void sdhci_common_realize(SDHCIState *s, Error **errp)
+void sdhci_common_realize(SDHCIState *s, Error **errp)
 {
     Error *local_err = NULL;
 
@@ -1378,11 +1342,11 @@ static void sdhci_common_realize(SDHCIState *s, Error **errp)
     s->buf_maxsz = sdhci_get_fifolen(s);
     s->fifo_buffer = g_malloc0(s->buf_maxsz);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), &sdhci_mmio_ops, s, "sdhci",
+    memory_region_init_io(&s->iomem, OBJECT(s), s->io_ops, s, "sdhci",
                           SDHC_REGISTERS_MAP_SIZE);
 }
 
-static void sdhci_common_unrealize(SDHCIState *s, Error **errp)
+void sdhci_common_unrealize(SDHCIState *s, Error **errp)
 {
     /* This function is expected to be called only once for each class:
      * - SysBus:    via DeviceClass->unrealize(),
@@ -1452,7 +1416,7 @@ const VMStateDescription sdhci_vmstate = {
     },
 };
 
-static void sdhci_common_class_init(ObjectClass *klass, void *data)
+void sdhci_common_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
@@ -1460,66 +1424,6 @@ static void sdhci_common_class_init(ObjectClass *klass, void *data)
     dc->vmsd = &sdhci_vmstate;
     dc->reset = sdhci_poweron_reset;
 }
-
-/* --- qdev PCI --- */
-
-static Property sdhci_pci_properties[] = {
-    DEFINE_SDHCI_COMMON_PROPERTIES(SDHCIState),
-    DEFINE_PROP_END_OF_LIST(),
-};
-
-static void sdhci_pci_realize(PCIDevice *dev, Error **errp)
-{
-    SDHCIState *s = PCI_SDHCI(dev);
-    Error *local_err = NULL;
-
-    sdhci_initfn(s);
-    sdhci_common_realize(s, &local_err);
-    if (local_err) {
-        error_propagate(errp, local_err);
-        return;
-    }
-
-    dev->config[PCI_CLASS_PROG] = 0x01; /* Standard Host supported DMA */
-    dev->config[PCI_INTERRUPT_PIN] = 0x01; /* interrupt pin A */
-    s->irq = pci_allocate_irq(dev);
-    s->dma_as = pci_get_address_space(dev);
-    pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->iomem);
-}
-
-static void sdhci_pci_exit(PCIDevice *dev)
-{
-    SDHCIState *s = PCI_SDHCI(dev);
-
-    sdhci_common_unrealize(s, &error_abort);
-    sdhci_uninitfn(s);
-}
-
-static void sdhci_pci_class_init(ObjectClass *klass, void *data)
-{
-    DeviceClass *dc = DEVICE_CLASS(klass);
-    PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
-
-    k->realize = sdhci_pci_realize;
-    k->exit = sdhci_pci_exit;
-    k->vendor_id = PCI_VENDOR_ID_REDHAT;
-    k->device_id = PCI_DEVICE_ID_REDHAT_SDHCI;
-    k->class_id = PCI_CLASS_SYSTEM_SDHCI;
-    dc->props = sdhci_pci_properties;
-
-    sdhci_common_class_init(klass, data);
-}
-
-static const TypeInfo sdhci_pci_info = {
-    .name = TYPE_PCI_SDHCI,
-    .parent = TYPE_PCI_DEVICE,
-    .instance_size = sizeof(SDHCIState),
-    .class_init = sdhci_pci_class_init,
-    .interfaces = (InterfaceInfo[]) {
-        { INTERFACE_CONVENTIONAL_PCI_DEVICE },
-        { },
-    },
-};
 
 /* --- qdev SysBus --- */
 
@@ -1550,7 +1454,7 @@ static void sdhci_sysbus_finalize(Object *obj)
     sdhci_uninitfn(s);
 }
 
-static void sdhci_sysbus_realize(DeviceState *dev, Error ** errp)
+static void sdhci_sysbus_realize(DeviceState *dev, Error **errp)
 {
     SDHCIState *s = SYSBUS_SDHCI(dev);
     SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
@@ -1572,9 +1476,6 @@ static void sdhci_sysbus_realize(DeviceState *dev, Error ** errp)
 
     sysbus_init_irq(sbd, &s->irq);
 
-    memory_region_init_io(&s->iomem, OBJECT(s), s->io_ops, s, "sdhci",
-            SDHC_REGISTERS_MAP_SIZE);
-
     sysbus_init_mmio(sbd, &s->iomem);
 }
 
@@ -1593,7 +1494,7 @@ static void sdhci_sysbus_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = sdhci_sysbus_properties;
+    device_class_set_props(dc, sdhci_sysbus_properties);
     dc->realize = sdhci_sysbus_realize;
     dc->unrealize = sdhci_sysbus_unrealize;
 
@@ -1626,6 +1527,8 @@ static const TypeInfo sdhci_bus_info = {
     .class_init = sdhci_bus_class_init,
 };
 
+/* --- qdev i.MX eSDHC --- */
+
 static uint64_t usdhc_read(void *opaque, hwaddr offset, unsigned size)
 {
     SDHCIState *s = SYSBUS_SDHCI(opaque);
@@ -1656,6 +1559,14 @@ static uint64_t usdhc_read(void *opaque, hwaddr offset, unsigned size)
         ret |= (uint32_t)s->blkgap << 16;
         ret |= (uint32_t)s->wakcon << 24;
 
+        break;
+
+    case SDHC_PRNSTS:
+        /* Add SDSTB (SD Clock Stable) bit to PRNSTS */
+        ret = sdhci_read(opaque, offset, size) & ~ESDHC_PRNSTS_SDSTB;
+        if (s->clkcon & SDHC_CLOCK_INT_STABLE) {
+            ret |= ESDHC_PRNSTS_SDSTB;
+        }
         break;
 
     case ESDHC_DLL_CTRL:
@@ -1820,7 +1731,6 @@ usdhc_write(void *opaque, hwaddr offset, uint64_t val, unsigned size)
     }
 }
 
-
 static const MemoryRegionOps usdhc_mmio_ops = {
     .read = usdhc_read,
     .write = usdhc_write,
@@ -1846,12 +1756,76 @@ static const TypeInfo imx_usdhc_info = {
     .instance_init = imx_usdhc_init,
 };
 
+/* --- qdev Samsung s3c --- */
+
+#define S3C_SDHCI_CONTROL2      0x80
+#define S3C_SDHCI_CONTROL3      0x84
+#define S3C_SDHCI_CONTROL4      0x8c
+
+static uint64_t sdhci_s3c_read(void *opaque, hwaddr offset, unsigned size)
+{
+    uint64_t ret;
+
+    switch (offset) {
+    case S3C_SDHCI_CONTROL2:
+    case S3C_SDHCI_CONTROL3:
+    case S3C_SDHCI_CONTROL4:
+        /* ignore */
+        ret = 0;
+        break;
+    default:
+        ret = sdhci_read(opaque, offset, size);
+        break;
+    }
+
+    return ret;
+}
+
+static void sdhci_s3c_write(void *opaque, hwaddr offset, uint64_t val,
+                            unsigned size)
+{
+    switch (offset) {
+    case S3C_SDHCI_CONTROL2:
+    case S3C_SDHCI_CONTROL3:
+    case S3C_SDHCI_CONTROL4:
+        /* ignore */
+        break;
+    default:
+        sdhci_write(opaque, offset, val, size);
+        break;
+    }
+}
+
+static const MemoryRegionOps sdhci_s3c_mmio_ops = {
+    .read = sdhci_s3c_read,
+    .write = sdhci_s3c_write,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+        .unaligned = false
+    },
+    .endianness = DEVICE_LITTLE_ENDIAN,
+};
+
+static void sdhci_s3c_init(Object *obj)
+{
+    SDHCIState *s = SYSBUS_SDHCI(obj);
+
+    s->io_ops = &sdhci_s3c_mmio_ops;
+}
+
+static const TypeInfo sdhci_s3c_info = {
+    .name = TYPE_S3C_SDHCI  ,
+    .parent = TYPE_SYSBUS_SDHCI,
+    .instance_init = sdhci_s3c_init,
+};
+
 static void sdhci_register_types(void)
 {
-    type_register_static(&sdhci_pci_info);
     type_register_static(&sdhci_sysbus_info);
     type_register_static(&sdhci_bus_info);
     type_register_static(&imx_usdhc_info);
+    type_register_static(&sdhci_s3c_info);
 }
 
 type_init(sdhci_register_types)

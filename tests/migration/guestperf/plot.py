@@ -588,7 +588,7 @@ class Plot(object):
 """
 
     def generate_html(self, fh):
-        print >>fh, """<html>
+        print("""<html>
   <head>
     <script type="text/javascript" src="plotly.min.js">
     </script>
@@ -601,19 +601,19 @@ class Plot(object):
     <h1>Migration report</h1>
     <h2>Chart summary</h2>
     <div id="chart">
-""" % self._generate_style()
-        print >>fh, self._generate_chart()
-        print >>fh, """
+""" % self._generate_style(), file=fh)
+        print(self._generate_chart(), file=fh)
+        print("""
     </div>
     <h2>Report details</h2>
     <div id="report">
-"""
-        print >>fh, self._generate_report()
-        print >>fh, """
+""", file=fh)
+        print(self._generate_report(), file=fh)
+        print("""
     </div>
   </body>
 </html>
-"""
+""", file=fh)
 
     def generate(self, filename):
         if filename is None:

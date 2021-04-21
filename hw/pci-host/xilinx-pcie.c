@@ -18,8 +18,12 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/module.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "hw/pci/pci_bridge.h"
+#include "hw/qdev-properties.h"
+#include "hw/irq.h"
 #include "hw/pci-host/xilinx-pcie.h"
 
 enum root_cfg_reg {
@@ -120,9 +124,8 @@ static void xilinx_pcie_host_realize(DeviceState *dev, Error **errp)
     memory_region_init(&s->mmio, OBJECT(s), "mmio", UINT64_MAX);
     memory_region_set_enabled(&s->mmio, false);
 
-    /* dummy I/O region */
-    memory_region_init_ram_nomigrate(&s->io, OBJECT(s), "io", 16, NULL);
-    memory_region_set_enabled(&s->io, false);
+    /* dummy PCI I/O region (not visible to the CPU) */
+    memory_region_init(&s->io, OBJECT(s), "io", 16);
 
     /* interrupt out */
     qdev_init_gpio_out_named(dev, &s->irq, "interrupt_out", 1);
@@ -149,8 +152,8 @@ static void xilinx_pcie_host_init(Object *obj)
     XilinxPCIEHost *s = XILINX_PCIE_HOST(obj);
     XilinxPCIERoot *root = &s->root;
 
-    object_initialize(root, sizeof(*root), TYPE_XILINX_PCIE_ROOT);
-    object_property_add_child(obj, "root", OBJECT(root), NULL);
+    object_initialize_child(obj, "root",  root, sizeof(*root),
+                            TYPE_XILINX_PCIE_ROOT, &error_abort, NULL);
     qdev_prop_set_int32(DEVICE(root), "addr", PCI_DEVFN(0, 0));
     qdev_prop_set_bit(DEVICE(root), "multifunction", false);
 }
@@ -158,9 +161,9 @@ static void xilinx_pcie_host_init(Object *obj)
 static Property xilinx_pcie_host_props[] = {
     DEFINE_PROP_UINT32("bus_nr", XilinxPCIEHost, bus_nr, 0),
     DEFINE_PROP_SIZE("cfg_base", XilinxPCIEHost, cfg_base, 0),
-    DEFINE_PROP_SIZE("cfg_size", XilinxPCIEHost, cfg_size, 32 << 20),
+    DEFINE_PROP_SIZE("cfg_size", XilinxPCIEHost, cfg_size, 32 * MiB),
     DEFINE_PROP_SIZE("mmio_base", XilinxPCIEHost, mmio_base, 0),
-    DEFINE_PROP_SIZE("mmio_size", XilinxPCIEHost, mmio_size, 1 << 20),
+    DEFINE_PROP_SIZE("mmio_size", XilinxPCIEHost, mmio_size, 1 * MiB),
     DEFINE_PROP_BOOL("link_up", XilinxPCIEHost, link_up, true),
     DEFINE_PROP_END_OF_LIST(),
 };
@@ -174,7 +177,7 @@ static void xilinx_pcie_host_class_init(ObjectClass *klass, void *data)
     dc->realize = xilinx_pcie_host_realize;
     set_bit(DEVICE_CATEGORY_BRIDGE, dc->categories);
     dc->fw_name = "pci";
-    dc->props = xilinx_pcie_host_props;
+    device_class_set_props(dc, xilinx_pcie_host_props);
 }
 
 static const TypeInfo xilinx_pcie_host_info = {

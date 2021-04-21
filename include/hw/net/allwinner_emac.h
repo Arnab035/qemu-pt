@@ -23,9 +23,11 @@
 #ifndef ALLWINNER_EMAC_H
 #define ALLWINNER_EMAC_H
 
+#include "qemu/units.h"
 #include "net/net.h"
 #include "qemu/fifo8.h"
 #include "hw/net/mii.h"
+#include "hw/sysbus.h"
 
 #define TYPE_AW_EMAC "allwinner-emac"
 #define AW_EMAC(obj) OBJECT_CHECK(AwEmacState, (obj), TYPE_AW_EMAC)
@@ -125,8 +127,8 @@
 #define EMAC_INT_RX         (1 << 8)
 
 /* Due to lack of specifications, size of fifos is chosen arbitrarily */
-#define TX_FIFO_SIZE        (4 * 1024)
-#define RX_FIFO_SIZE        (32 * 1024)
+#define TX_FIFO_SIZE        (4 * KiB)
+#define RX_FIFO_SIZE        (32 * KiB)
 
 #define NUM_TX_FIFOS        2
 #define RX_HDR_SIZE         8

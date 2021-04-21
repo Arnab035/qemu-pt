@@ -21,25 +21,28 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  * THE SOFTWARE.
  */
+
 #include "qemu/osdep.h"
+#include "qemu/units.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "qemu-common.h"
 #include "cpu.h"
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/pci/pci_bus.h"
 #include "hw/pci/pci_host.h"
+#include "hw/qdev-properties.h"
 #include "hw/pci-host/sabre.h"
-#include "hw/i386/pc.h"
 #include "hw/char/serial.h"
 #include "hw/char/parallel.h"
-#include "hw/timer/m48t59.h"
+#include "hw/rtc/m48t59.h"
+#include "migration/vmstate.h"
 #include "hw/input/i8042.h"
 #include "hw/block/fdc.h"
 #include "net/net.h"
 #include "qemu/timer.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
 #include "hw/boards.h"
 #include "hw/nvram/sun_nvram.h"
@@ -47,16 +50,15 @@
 #include "hw/sparc/sparc64.h"
 #include "hw/nvram/fw_cfg.h"
 #include "hw/sysbus.h"
-#include "hw/ide.h"
 #include "hw/ide/pci.h"
 #include "hw/loader.h"
+#include "hw/fw-path-provider.h"
 #include "elf.h"
 #include "trace.h"
-#include "qemu/cutils.h"
 
 #define KERNEL_LOAD_ADDR     0x00404000
 #define CMDLINE_ADDR         0x003ff000
-#define PROM_SIZE_MAX        (4 * 1024 * 1024)
+#define PROM_SIZE_MAX        (4 * MiB)
 #define PROM_VADDR           0x000ffd00000ULL
 #define PBM_SPECIAL_BASE     0x1fe00000000ULL
 #define PBM_MEM_BASE         0x1ff00000000ULL
@@ -91,6 +93,25 @@ typedef struct EbusState {
 #define TYPE_EBUS "ebus"
 #define EBUS(obj) OBJECT_CHECK(EbusState, (obj), TYPE_EBUS)
 
+const char *fw_cfg_arch_key_name(uint16_t key)
+{
+    static const struct {
+        uint16_t key;
+        const char *name;
+    } fw_cfg_arch_wellknown_keys[] = {
+        {FW_CFG_SPARC64_WIDTH, "width"},
+        {FW_CFG_SPARC64_HEIGHT, "height"},
+        {FW_CFG_SPARC64_DEPTH, "depth"},
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(fw_cfg_arch_wellknown_keys); i++) {
+        if (fw_cfg_arch_wellknown_keys[i].key == key) {
+            return fw_cfg_arch_wellknown_keys[i].name;
+        }
+    }
+    return NULL;
+}
+
 static void fw_cfg_boot_set(void *opaque, const char *boot_device,
                             Error **errp)
 {
@@ -115,7 +136,7 @@ static int sun4u_NVRAM_set_params(Nvram *nvram, uint16_t NVRAM_size,
     memset(image, '\0', sizeof(image));
 
     /* OpenBIOS nvram variables partition */
-    sysp_end = chrp_nvram_create_system_partition(image, 0);
+    sysp_end = chrp_nvram_create_system_partition(image, 0, 0x1fd0);
 
     /* Free space partition */
     chrp_nvram_create_free_partition(&image[sysp_end], 0x1fd0 - sysp_end);
@@ -139,7 +160,7 @@ static uint64_t sun4u_load_kernel(const char *kernel_filename,
     unsigned int i;
     long kernel_size;
     uint8_t *ptr;
-    uint64_t kernel_top;
+    uint64_t kernel_top = 0;
 
     linux_boot = (kernel_filename != NULL);
 
@@ -152,8 +173,9 @@ static uint64_t sun4u_load_kernel(const char *kernel_filename,
 #else
         bswap_needed = 0;
 #endif
-        kernel_size = load_elf(kernel_filename, NULL, NULL, kernel_entry,
-                               kernel_addr, &kernel_top, 1, EM_SPARCV9, 0, 0);
+        kernel_size = load_elf(kernel_filename, NULL, NULL, NULL, kernel_entry,
+                               kernel_addr, &kernel_top, NULL, 1, EM_SPARCV9, 0,
+                               0);
         if (kernel_size < 0) {
             *kernel_addr = KERNEL_LOAD_ADDR;
             *kernel_entry = KERNEL_LOAD_ADDR;
@@ -172,7 +194,7 @@ static uint64_t sun4u_load_kernel(const char *kernel_filename,
         }
         /* load initrd above kernel */
         *initrd_size = 0;
-        if (initrd_filename) {
+        if (initrd_filename && kernel_top) {
             *initrd_addr = TARGET_PAGE_ALIGN(kernel_top);
 
             *initrd_size = load_image_targphys(initrd_filename,
@@ -186,8 +208,8 @@ static uint64_t sun4u_load_kernel(const char *kernel_filename,
         }
         if (*initrd_size > 0) {
             for (i = 0; i < 64 * TARGET_PAGE_SIZE; i += TARGET_PAGE_SIZE) {
-                ptr = rom_ptr(*kernel_addr + i);
-                if (ldl_p(ptr + 8) == 0x48647253) { /* HdrS */
+                ptr = rom_ptr(*kernel_addr + i, 32);
+                if (ptr && ldl_p(ptr + 8) == 0x48647253) { /* HdrS */
                     stl_p(ptr + 24, *initrd_addr + *kernel_addr);
                     stl_p(ptr + 28, *initrd_size);
                     break;
@@ -213,6 +235,11 @@ typedef struct PowerDevice {
 } PowerDevice;
 
 /* Power */
+static uint64_t power_mem_read(void *opaque, hwaddr addr, unsigned size)
+{
+    return 0;
+}
+
 static void power_mem_write(void *opaque, hwaddr addr,
                             uint64_t val, unsigned size)
 {
@@ -223,6 +250,7 @@ static void power_mem_write(void *opaque, hwaddr addr,
 }
 
 static const MemoryRegionOps power_mem_ops = {
+    .read = power_mem_read,
     .write = power_mem_write,
     .endianness = DEVICE_NATIVE_ENDIAN,
     .valid = {
@@ -295,10 +323,10 @@ static void ebus_realize(PCIDevice *pci_dev, Error **errp)
     i = 0;
     if (s->console_serial_base) {
         serial_mm_init(pci_address_space(pci_dev), s->console_serial_base,
-                       0, NULL, 115200, serial_hds[i], DEVICE_BIG_ENDIAN);
+                       0, NULL, 115200, serial_hd(i), DEVICE_BIG_ENDIAN);
         i++;
     }
-    serial_hds_isa_init(s->isa_bus, i, MAX_SERIAL_PORTS);
+    serial_hds_isa_init(s->isa_bus, i, MAX_ISA_SERIAL_PORTS);
 
     /* Parallel ports */
     parallel_hds_isa_init(s->isa_bus, MAX_PARALLEL_PORTS);
@@ -361,7 +389,7 @@ static void ebus_class_init(ObjectClass *klass, void *data)
     k->device_id = PCI_DEVICE_ID_SUN_EBUS;
     k->revision = 0x01;
     k->class_id = PCI_CLASS_BRIDGE_OTHER;
-    dc->props = ebus_properties;
+    device_class_set_props(dc, ebus_properties);
 }
 
 static const TypeInfo ebus_info = {
@@ -410,8 +438,8 @@ static void prom_init(hwaddr addr, const char *bios_name)
     }
     filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, bios_name);
     if (filename) {
-        ret = load_elf(filename, translate_prom_address, &addr,
-                       NULL, NULL, NULL, 1, EM_SPARCV9, 0, 0);
+        ret = load_elf(filename, NULL, translate_prom_address, &addr,
+                       NULL, NULL, NULL, NULL, 1, EM_SPARCV9, 0, 0);
         if (ret < 0 || ret > PROM_SIZE_MAX) {
             ret = load_image_targphys(filename, addr, PROM_SIZE_MAX);
         }
@@ -425,13 +453,19 @@ static void prom_init(hwaddr addr, const char *bios_name)
     }
 }
 
-static void prom_init1(Object *obj)
+static void prom_realize(DeviceState *ds, Error **errp)
 {
-    PROMState *s = OPENPROM(obj);
-    SysBusDevice *dev = SYS_BUS_DEVICE(obj);
+    PROMState *s = OPENPROM(ds);
+    SysBusDevice *dev = SYS_BUS_DEVICE(ds);
+    Error *local_err = NULL;
 
-    memory_region_init_ram_nomigrate(&s->prom, obj, "sun4u.prom", PROM_SIZE_MAX,
-                           &error_fatal);
+    memory_region_init_ram_nomigrate(&s->prom, OBJECT(ds), "sun4u.prom",
+                                     PROM_SIZE_MAX, &local_err);
+    if (local_err) {
+        error_propagate(errp, local_err);
+        return;
+    }
+
     vmstate_register_ram_global(&s->prom);
     memory_region_set_readonly(&s->prom, true);
     sysbus_init_mmio(dev, &s->prom);
@@ -445,7 +479,8 @@ static void prom_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->props = prom_properties;
+    device_class_set_props(dc, prom_properties);
+    dc->realize = prom_realize;
 }
 
 static const TypeInfo prom_info = {
@@ -453,7 +488,6 @@ static const TypeInfo prom_info = {
     .parent        = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(PROMState),
     .class_init    = prom_class_init,
-    .instance_init = prom_init1,
 };
 
 
@@ -506,7 +540,7 @@ static void ram_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->realize = ram_realize;
-    dc->props = ram_properties;
+    device_class_set_props(dc, ram_properties);
 }
 
 static const TypeInfo ram_info = {
@@ -528,7 +562,6 @@ static void sun4uv_init(MemoryRegion *address_space_mem,
     PCIBus *pci_bus, *pci_busA, *pci_busB;
     PCIDevice *ebus, *pci_dev;
     SysBusDevice *s;
-    DriveInfo *hd[MAX_IDE_BUS * MAX_IDE_DEVS];
     DeviceState *iommu, *dev;
     FWCfgState *fw_cfg;
     NICInfo *nd;
@@ -589,7 +622,15 @@ static void sun4uv_init(MemoryRegion *address_space_mem,
     qdev_connect_gpio_out_named(DEVICE(ebus), "isa-irq", 4,
         qdev_get_gpio_in_named(DEVICE(sabre), "pbm-irq", OBIO_SER_IRQ));
 
-    pci_dev = pci_create_simple(pci_busA, PCI_DEVFN(2, 0), "VGA");
+    switch (vga_interface_type) {
+    case VGA_STD:
+        pci_create_simple(pci_busA, PCI_DEVFN(2, 0), "VGA");
+        break;
+    case VGA_NONE:
+        break;
+    default:
+        abort();   /* Should not happen - types are checked in vl.c already */
+    }
 
     memset(&macaddr, 0, sizeof(MACAddr));
     onboard_nic = false;
@@ -620,12 +661,10 @@ static void sun4uv_init(MemoryRegion *address_space_mem,
         qemu_macaddr_default_if_unset(&macaddr);
     }
 
-    ide_drive_get(hd, ARRAY_SIZE(hd));
-
     pci_dev = pci_create(pci_busA, PCI_DEVFN(3, 0), "cmd646-ide");
     qdev_prop_set_uint32(&pci_dev->qdev, "secondary", 1);
     qdev_init_nofail(&pci_dev->qdev);
-    pci_ide_create_devs(pci_dev, hd);
+    pci_ide_create_devs(pci_dev);
 
     /* Map NVRAM into I/O (ebus) space */
     nvram = m48t59_init(NULL, 0, 0, NVRAM_SIZE, 1968, 59);
@@ -658,8 +697,8 @@ static void sun4uv_init(MemoryRegion *address_space_mem,
                                 &FW_CFG_IO(dev)->comb_iomem);
 
     fw_cfg = FW_CFG(dev);
-    fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, (uint16_t)smp_cpus);
-    fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, (uint16_t)max_cpus);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_NB_CPUS, (uint16_t)machine->smp.cpus);
+    fw_cfg_add_i16(fw_cfg, FW_CFG_MAX_CPUS, (uint16_t)machine->smp.max_cpus);
     fw_cfg_add_i64(fw_cfg, FW_CFG_RAM_SIZE, (uint64_t)ram_size);
     fw_cfg_add_i16(fw_cfg, FW_CFG_MACHINE_ID, hwdef->machine_id);
     fw_cfg_add_i64(fw_cfg, FW_CFG_KERNEL_ADDR, kernel_entry);
@@ -686,6 +725,56 @@ enum {
     sun4u_id = 0,
     sun4v_id = 64,
 };
+
+/*
+ * Implementation of an interface to adjust firmware path
+ * for the bootindex property handling.
+ */
+static char *sun4u_fw_dev_path(FWPathProvider *p, BusState *bus,
+                               DeviceState *dev)
+{
+    PCIDevice *pci;
+    IDEBus *ide_bus;
+    IDEState *ide_s;
+    int bus_id;
+
+    if (!strcmp(object_get_typename(OBJECT(dev)), "pbm-bridge")) {
+        pci = PCI_DEVICE(dev);
+
+        if (PCI_FUNC(pci->devfn)) {
+            return g_strdup_printf("pci@%x,%x", PCI_SLOT(pci->devfn),
+                                   PCI_FUNC(pci->devfn));
+        } else {
+            return g_strdup_printf("pci@%x", PCI_SLOT(pci->devfn));
+        }
+    }
+
+    if (!strcmp(object_get_typename(OBJECT(dev)), "ide-drive")) {
+         ide_bus = IDE_BUS(qdev_get_parent_bus(dev));
+         ide_s = idebus_active_if(ide_bus);
+         bus_id = ide_bus->bus_id;
+
+         if (ide_s->drive_kind == IDE_CD) {
+             return g_strdup_printf("ide@%x/cdrom", bus_id);
+         }
+
+         return g_strdup_printf("ide@%x/disk", bus_id);
+    }
+
+    if (!strcmp(object_get_typename(OBJECT(dev)), "ide-hd")) {
+        return g_strdup("disk");
+    }
+
+    if (!strcmp(object_get_typename(OBJECT(dev)), "ide-cd")) {
+        return g_strdup("cdrom");
+    }
+
+    if (!strcmp(object_get_typename(OBJECT(dev)), "virtio-blk-device")) {
+        return g_strdup("disk");
+    }
+
+    return NULL;
+}
 
 static const struct hwdef hwdefs[] = {
     /* Sun4u generic PC-like machine */
@@ -717,20 +806,28 @@ static void sun4v_init(MachineState *machine)
 static void sun4u_class_init(ObjectClass *oc, void *data)
 {
     MachineClass *mc = MACHINE_CLASS(oc);
+    FWPathProviderClass *fwc = FW_PATH_PROVIDER_CLASS(oc);
 
     mc->desc = "Sun4u platform";
     mc->init = sun4u_init;
     mc->block_default_type = IF_IDE;
     mc->max_cpus = 1; /* XXX for now */
-    mc->is_default = 1;
+    mc->is_default = true;
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("TI-UltraSparc-IIi");
+    mc->ignore_boot_device_suffixes = true;
+    mc->default_display = "std";
+    fwc->get_dev_path = sun4u_fw_dev_path;
 }
 
 static const TypeInfo sun4u_type = {
     .name = MACHINE_TYPE_NAME("sun4u"),
     .parent = TYPE_MACHINE,
     .class_init = sun4u_class_init,
+    .interfaces = (InterfaceInfo[]) {
+        { TYPE_FW_PATH_PROVIDER },
+        { }
+    },
 };
 
 static void sun4v_class_init(ObjectClass *oc, void *data)
@@ -743,6 +840,7 @@ static void sun4v_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 1; /* XXX for now */
     mc->default_boot_order = "c";
     mc->default_cpu_type = SPARC_CPU_TYPE_NAME("Sun-UltraSparc-T1");
+    mc->default_display = "std";
 }
 
 static const TypeInfo sun4v_type = {

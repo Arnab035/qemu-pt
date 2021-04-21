@@ -49,12 +49,15 @@
  */
 
 /* For crc32 */
+
 #include "qemu/osdep.h"
 #include <zlib.h>
 
-#include "hw/hw.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "sysemu/dma.h"
+#include "qemu/module.h"
 #include "qemu/timer.h"
 #include "net/net.h"
 #include "net/eth.h"
@@ -790,26 +793,28 @@ static bool rtl8139_cp_rx_valid(RTL8139State *s)
     return !(s->RxRingAddrLO == 0 && s->RxRingAddrHI == 0);
 }
 
-static int rtl8139_can_receive(NetClientState *nc)
+static bool rtl8139_can_receive(NetClientState *nc)
 {
     RTL8139State *s = qemu_get_nic_opaque(nc);
     int avail;
 
     /* Receive (drop) packets if card is disabled.  */
-    if (!s->clock_enabled)
-      return 1;
-    if (!rtl8139_receiver_enabled(s))
-      return 1;
+    if (!s->clock_enabled) {
+        return true;
+    }
+    if (!rtl8139_receiver_enabled(s)) {
+        return true;
+    }
 
     if (rtl8139_cp_receiver_enabled(s) && rtl8139_cp_rx_valid(s)) {
         /* ??? Flow control not implemented in c+ mode.
            This is a hack to work around slirp deficiencies anyway.  */
-        return 1;
-    } else {
-        avail = MOD2(s->RxBufferSize + s->RxBufPtr - s->RxBufAddr,
-                     s->RxBufferSize);
-        return (avail == 0 || avail >= 1514 || (s->IntrMask & RxOverflow));
+        return true;
     }
+
+    avail = MOD2(s->RxBufferSize + s->RxBufPtr - s->RxBufAddr,
+                 s->RxBufferSize);
+    return avail == 0 || avail >= 1514 || (s->IntrMask & RxOverflow);
 }
 
 static ssize_t rtl8139_do_receive(NetClientState *nc, const uint8_t *buf, size_t size_, int do_interrupt)
@@ -817,7 +822,7 @@ static ssize_t rtl8139_do_receive(NetClientState *nc, const uint8_t *buf, size_t
     RTL8139State *s = qemu_get_nic_opaque(nc);
     PCIDevice *d = PCI_DEVICE(s);
     /* size is the length of the buffer passed to the driver */
-    int size = size_;
+    size_t size = size_;
     const uint8_t *dot1q_buf = NULL;
 
     uint32_t packet_header = 0;
@@ -826,7 +831,7 @@ static ssize_t rtl8139_do_receive(NetClientState *nc, const uint8_t *buf, size_t
     static const uint8_t broadcast_macaddr[6] =
         { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
 
-    DPRINTF(">>> received len=%d\n", size);
+    DPRINTF(">>> received len=%zu\n", size);
 
     /* test if board clock is stopped */
     if (!s->clock_enabled)
@@ -1035,7 +1040,7 @@ static ssize_t rtl8139_do_receive(NetClientState *nc, const uint8_t *buf, size_t
 
         if (size+4 > rx_space)
         {
-            DPRINTF("C+ Rx mode : descriptor %d size %d received %d + 4\n",
+            DPRINTF("C+ Rx mode : descriptor %d size %d received %zu + 4\n",
                 descriptor, rx_space, size);
 
             s->IntrStatus |= RxOverflow;
@@ -1148,7 +1153,7 @@ static ssize_t rtl8139_do_receive(NetClientState *nc, const uint8_t *buf, size_t
         if (avail != 0 && RX_ALIGN(size + 8) >= avail)
         {
             DPRINTF("rx overflow: rx buffer length %d head 0x%04x "
-                "read 0x%04x === available 0x%04x need 0x%04x\n",
+                "read 0x%04x === available 0x%04x need 0x%04zx\n",
                 s->RxBufferSize, s->RxBufAddr, s->RxBufPtr, avail, size + 8);
 
             s->IntrStatus |= RxOverflow;
@@ -3432,7 +3437,7 @@ static void rtl8139_class_init(ObjectClass *klass, void *data)
     k->class_id = PCI_CLASS_NETWORK_ETHERNET;
     dc->reset = rtl8139_reset;
     dc->vmsd = &vmstate_rtl8139;
-    dc->props = rtl8139_properties;
+    device_class_set_props(dc, rtl8139_properties);
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
 }
 

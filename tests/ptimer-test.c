@@ -14,7 +14,6 @@
 #include "qemu/main-loop.h"
 #include "hw/ptimer.h"
 
-#include "libqtest.h"
 #include "ptimer-test.h"
 
 static bool triggered;
@@ -50,13 +49,15 @@ static void ptimer_test_set_qemu_time_ns(int64_t ns)
 
 static void qemu_clock_step(uint64_t ns)
 {
-    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
+    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                                  QEMU_TIMER_ATTR_ALL);
     int64_t advanced_time = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + ns;
 
     while (deadline != -1 && deadline <= advanced_time) {
         ptimer_test_set_qemu_time_ns(deadline);
         ptimer_test_expire_qemu_timers(deadline, QEMU_CLOCK_VIRTUAL);
-        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
+        deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                              QEMU_TIMER_ATTR_ALL);
     }
 
     ptimer_test_set_qemu_time_ns(advanced_time);
@@ -65,12 +66,13 @@ static void qemu_clock_step(uint64_t ns)
 static void check_set_count(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 1000);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 1000);
     g_assert_false(triggered);
     ptimer_free(ptimer);
@@ -79,17 +81,20 @@ static void check_set_count(gconstpointer arg)
 static void check_set_limit(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_limit(ptimer, 1000, 0);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 0);
     g_assert_cmpuint(ptimer_get_limit(ptimer), ==, 1000);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_limit(ptimer, 2000, 1);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 2000);
     g_assert_cmpuint(ptimer_get_limit(ptimer), ==, 2000);
     g_assert_false(triggered);
@@ -99,22 +104,25 @@ static void check_set_limit(gconstpointer arg)
 static void check_oneshot(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_set_count(ptimer, 10);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 2 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 8 : 7);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 8 : 7);
     g_assert_false(triggered);
@@ -124,7 +132,9 @@ static void check_oneshot(gconstpointer arg)
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 8 : 7);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 7 + 1);
 
@@ -155,28 +165,36 @@ static void check_oneshot(gconstpointer arg)
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 0);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 10);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(20000000 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 10);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_limit(ptimer, 9, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(20000000 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 9);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 8 : 7);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 20);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 19 + 1);
 
@@ -188,7 +206,9 @@ static void check_oneshot(gconstpointer arg)
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 0);
     g_assert_true(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
 
     triggered = false;
 
@@ -202,18 +222,20 @@ static void check_oneshot(gconstpointer arg)
 static void check_periodic(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool wrap_policy = (*policy & PTIMER_POLICY_WRAP_AFTER_ONE_PERIOD);
     bool no_immediate_trigger = (*policy & PTIMER_POLICY_NO_IMMEDIATE_TRIGGER);
     bool no_immediate_reload = (*policy & PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
+    bool trig_only_on_dec = (*policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_set_limit(ptimer, 10, 1);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 10);
     g_assert_false(triggered);
@@ -242,7 +264,9 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 9 : 8) + (wrap_policy ? 1 : 0));
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 20);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 20);
     g_assert_false(triggered);
@@ -265,7 +289,9 @@ static void check_periodic(gconstpointer arg)
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 3);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 3);
     g_assert_false(triggered);
@@ -281,7 +307,9 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 9 : 8) + (wrap_policy ? 1 : 0));
     g_assert_true(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
     triggered = false;
 
     qemu_clock_step(2000000);
@@ -290,8 +318,10 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 9 : 8) + (wrap_policy ? 1 : 0));
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 3);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 3 + 1);
 
@@ -307,11 +337,13 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 9 : 8) + (wrap_policy ? 1 : 0));
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==,
                      no_immediate_reload ? 0 : 10);
 
-    if (no_immediate_trigger) {
+    if (no_immediate_trigger || trig_only_on_dec) {
         g_assert_false(triggered);
     } else {
         g_assert_true(triggered);
@@ -345,7 +377,9 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 8 : 7) + (wrap_policy ? 1 : 0));
     g_assert_true(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
 
     triggered = false;
 
@@ -355,8 +389,13 @@ static void check_periodic(gconstpointer arg)
                     (no_round_down ? 8 : 7) + (wrap_policy ? 1 : 0));
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
+
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 + 1);
 
@@ -369,23 +408,26 @@ static void check_periodic(gconstpointer arg)
 static void check_on_the_fly_mode_change(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool wrap_policy = (*policy & PTIMER_POLICY_WRAP_AFTER_ONE_PERIOD);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_set_limit(ptimer, 10, 1);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 9 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 1 : 0);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 1 : 0);
     g_assert_false(triggered);
@@ -400,7 +442,9 @@ static void check_on_the_fly_mode_change(gconstpointer arg)
 
     qemu_clock_step(2000000 * 9);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==,
                      (no_round_down ? 1 : 0) + (wrap_policy ? 1 : 0));
@@ -416,22 +460,25 @@ static void check_on_the_fly_mode_change(gconstpointer arg)
 static void check_on_the_fly_period_change(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_set_limit(ptimer, 8, 1);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 4 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 4 : 3);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 4000000);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 4 : 3);
 
     qemu_clock_step(4000000 * 2 + 1);
@@ -449,22 +496,25 @@ static void check_on_the_fly_period_change(gconstpointer arg)
 static void check_on_the_fly_freq_change(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_freq(ptimer, 500);
     ptimer_set_limit(ptimer, 8, 1);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 4 + 1);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 4 : 3);
     g_assert_false(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_freq(ptimer, 250);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, no_round_down ? 4 : 3);
 
     qemu_clock_step(2000000 * 4 + 1);
@@ -482,13 +532,14 @@ static void check_on_the_fly_freq_change(gconstpointer arg)
 static void check_run_with_period_0(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 99);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(10 * NANOSECONDS_PER_SECOND);
 
@@ -500,22 +551,24 @@ static void check_run_with_period_0(gconstpointer arg)
 static void check_run_with_delta_0(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool wrap_policy = (*policy & PTIMER_POLICY_WRAP_AFTER_ONE_PERIOD);
     bool no_immediate_trigger = (*policy & PTIMER_POLICY_NO_IMMEDIATE_TRIGGER);
     bool no_immediate_reload = (*policy & PTIMER_POLICY_NO_IMMEDIATE_RELOAD);
     bool no_round_down = (*policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN);
+    bool trig_only_on_dec = (*policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_set_limit(ptimer, 99, 0);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==,
                      no_immediate_reload ? 0 : 99);
 
-    if (no_immediate_trigger) {
+    if (no_immediate_trigger || trig_only_on_dec) {
         g_assert_false(triggered);
     } else {
         g_assert_true(triggered);
@@ -537,8 +590,10 @@ static void check_run_with_delta_0(gconstpointer arg)
             g_assert_false(triggered);
         }
 
+        ptimer_transaction_begin(ptimer);
         ptimer_set_count(ptimer, 99);
         ptimer_run(ptimer, 1);
+        ptimer_transaction_commit(ptimer);
     }
 
     qemu_clock_step(2000000 + 1);
@@ -558,12 +613,14 @@ static void check_run_with_delta_0(gconstpointer arg)
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 0);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
     g_assert_cmpuint(ptimer_get_count(ptimer), ==,
                      no_immediate_reload ? 0 : 99);
 
-    if (no_immediate_trigger) {
+    if (no_immediate_trigger || trig_only_on_dec) {
         g_assert_false(triggered);
     } else {
         g_assert_true(triggered);
@@ -598,26 +655,30 @@ static void check_run_with_delta_0(gconstpointer arg)
                     wrap_policy ? 0 : (no_round_down ? 99 : 98));
     g_assert_true(triggered);
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
     ptimer_free(ptimer);
 }
 
 static void check_periodic_with_load_0(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool continuous_trigger = (*policy & PTIMER_POLICY_CONTINUOUS_TRIGGER);
     bool no_immediate_trigger = (*policy & PTIMER_POLICY_NO_IMMEDIATE_TRIGGER);
+    bool trig_only_on_dec = (*policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 0);
 
-    if (no_immediate_trigger) {
+    if (no_immediate_trigger || trig_only_on_dec) {
         g_assert_false(triggered);
     } else {
         g_assert_true(triggered);
@@ -637,8 +698,10 @@ static void check_periodic_with_load_0(gconstpointer arg)
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_count(ptimer, 10);
     ptimer_run(ptimer, 0);
+    ptimer_transaction_commit(ptimer);
 
     qemu_clock_step(2000000 * 10 + 1);
 
@@ -657,25 +720,29 @@ static void check_periodic_with_load_0(gconstpointer arg)
         g_assert_false(triggered);
     }
 
+    ptimer_transaction_begin(ptimer);
     ptimer_stop(ptimer);
+    ptimer_transaction_commit(ptimer);
     ptimer_free(ptimer);
 }
 
 static void check_oneshot_with_load_0(gconstpointer arg)
 {
     const uint8_t *policy = arg;
-    QEMUBH *bh = qemu_bh_new(ptimer_trigger, NULL);
-    ptimer_state *ptimer = ptimer_init(bh, *policy);
+    ptimer_state *ptimer = ptimer_init(ptimer_trigger, NULL, *policy);
     bool no_immediate_trigger = (*policy & PTIMER_POLICY_NO_IMMEDIATE_TRIGGER);
+    bool trig_only_on_dec = (*policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT);
 
     triggered = false;
 
+    ptimer_transaction_begin(ptimer);
     ptimer_set_period(ptimer, 2000000);
     ptimer_run(ptimer, 1);
+    ptimer_transaction_commit(ptimer);
 
     g_assert_cmpuint(ptimer_get_count(ptimer), ==, 0);
 
-    if (no_immediate_trigger) {
+    if (no_immediate_trigger || trig_only_on_dec) {
         g_assert_false(triggered);
     } else {
         g_assert_true(triggered);
@@ -723,6 +790,10 @@ static void add_ptimer_tests(uint8_t policy)
 
     if (policy & PTIMER_POLICY_NO_COUNTER_ROUND_DOWN) {
         g_strlcat(policy_name, "no_counter_rounddown,", 256);
+    }
+
+    if (policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT) {
+        g_strlcat(policy_name, "trigger_only_on_decrement,", 256);
     }
 
     g_test_add_data_func_full(
@@ -790,10 +861,15 @@ static void add_ptimer_tests(uint8_t policy)
 
 static void add_all_ptimer_policies_comb_tests(void)
 {
-    int last_policy = PTIMER_POLICY_NO_COUNTER_ROUND_DOWN;
+    int last_policy = PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT;
     int policy = PTIMER_POLICY_DEFAULT;
 
     for (; policy < (last_policy << 1); policy++) {
+        if ((policy & PTIMER_POLICY_TRIGGER_ONLY_ON_DECREMENT) &&
+            (policy & PTIMER_POLICY_NO_IMMEDIATE_TRIGGER)) {
+            /* Incompatible policy flag settings -- don't try to test them */
+            continue;
+        }
         add_ptimer_tests(policy);
     }
 }

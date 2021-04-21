@@ -24,22 +24,21 @@
 /* Ported SDL 1.2 code to 2.0 by Dave Airlie. */
 
 #include "qemu/osdep.h"
-#include "qemu-common.h"
+#include "qemu/module.h"
 #include "ui/console.h"
 #include "ui/input.h"
 #include "ui/sdl2.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
 
 static int sdl2_num_outputs;
 static struct sdl2_console *sdl2_console;
-static DisplayOptions *opts;
 
 static SDL_Surface *guest_sprite_surface;
 static int gui_grab; /* if true, all keyboard/mouse events are grabbed */
 
 static int gui_saved_grab;
 static int gui_fullscreen;
-static int gui_keysym;
 static int gui_grab_code = KMOD_LALT | KMOD_LCTRL;
 static SDL_Cursor *sdl_cursor_normal;
 static SDL_Cursor *sdl_cursor_hidden;
@@ -162,9 +161,9 @@ static void sdl_update_caption(struct sdl2_console *scon)
     }
 }
 
-static void sdl_hide_cursor(void)
+static void sdl_hide_cursor(struct sdl2_console *scon)
 {
-    if (!cursor_hide) {
+    if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
         return;
     }
 
@@ -176,9 +175,9 @@ static void sdl_hide_cursor(void)
     }
 }
 
-static void sdl_show_cursor(void)
+static void sdl_show_cursor(struct sdl2_console *scon)
 {
-    if (!cursor_hide) {
+    if (scon->opts->has_show_cursor && scon->opts->show_cursor) {
         return;
     }
 
@@ -217,7 +216,7 @@ static void sdl_grab_start(struct sdl2_console *scon)
             SDL_WarpMouseInWindow(scon->real_window, guest_x, guest_y);
         }
     } else {
-        sdl_hide_cursor();
+        sdl_hide_cursor(scon);
     }
     SDL_SetWindowGrab(scon->real_window, SDL_TRUE);
     gui_grab = 1;
@@ -228,7 +227,7 @@ static void sdl_grab_end(struct sdl2_console *scon)
 {
     SDL_SetWindowGrab(scon->real_window, SDL_FALSE);
     gui_grab = 0;
-    sdl_show_cursor();
+    sdl_show_cursor(scon);
     sdl_update_caption(scon);
 }
 
@@ -331,6 +330,7 @@ static void handle_keydown(SDL_Event *ev)
     int win;
     struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
     int gui_key_modifier_pressed = get_mod_state();
+    int gui_keysym = 0;
 
     if (!scon->ignore_hotkeys && gui_key_modifier_pressed && !ev->key.repeat) {
         switch (ev->key.keysym.scancode) {
@@ -372,8 +372,7 @@ static void handle_keydown(SDL_Event *ev)
             }
             break;
         case SDL_SCANCODE_U:
-            sdl2_window_destroy(scon);
-            sdl2_window_create(scon);
+            sdl2_window_resize(scon);
             if (!scon->opengl) {
                 /* re-create scon->texture */
                 sdl2_2d_switch(&scon->dcl, scon->surface);
@@ -412,21 +411,14 @@ static void handle_keydown(SDL_Event *ev)
 static void handle_keyup(SDL_Event *ev)
 {
     struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
-    int gui_key_modifier_pressed = get_mod_state();
 
     scon->ignore_hotkeys = false;
-
-    if (!gui_key_modifier_pressed) {
-        gui_keysym = 0;
-    }
-    if (!gui_keysym) {
-        sdl2_process_key(scon, &ev->key);
-    }
+    sdl2_process_key(scon, &ev->key);
 }
 
 static void handle_textinput(SDL_Event *ev)
 {
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->text.windowID);
     QemuConsole *con = scon ? scon->dcl.con : NULL;
 
     if (qemu_console_is_graphic(con)) {
@@ -438,9 +430,9 @@ static void handle_textinput(SDL_Event *ev)
 static void handle_mousemotion(SDL_Event *ev)
 {
     int max_x, max_y;
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->motion.windowID);
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -470,9 +462,9 @@ static void handle_mousebutton(SDL_Event *ev)
 {
     int buttonstate = SDL_GetMouseState(NULL, NULL);
     SDL_MouseButtonEvent *bev;
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->button.windowID);
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -494,11 +486,11 @@ static void handle_mousebutton(SDL_Event *ev)
 
 static void handle_mousewheel(SDL_Event *ev)
 {
-    struct sdl2_console *scon = get_scon_from_window(ev->key.windowID);
+    struct sdl2_console *scon = get_scon_from_window(ev->wheel.windowID);
     SDL_MouseWheelEvent *wev = &ev->wheel;
     InputButton btn;
 
-    if (!qemu_console_is_graphic(scon->dcl.con)) {
+    if (!scon || !qemu_console_is_graphic(scon->dcl.con)) {
         return;
     }
 
@@ -566,7 +558,7 @@ static void handle_windowevent(SDL_Event *ev)
         break;
     case SDL_WINDOWEVENT_CLOSE:
         if (qemu_console_is_graphic(scon->dcl.con)) {
-            if (opts->has_window_close && !opts->window_close) {
+            if (scon->opts->has_window_close && !scon->opts->window_close) {
                 allow_close = false;
             }
             if (allow_close) {
@@ -613,7 +605,7 @@ void sdl2_poll_events(struct sdl2_console *scon)
             handle_textinput(ev);
             break;
         case SDL_QUIT:
-            if (opts->has_window_close && !opts->window_close) {
+            if (scon->opts->has_window_close && !scon->opts->window_close) {
                 allow_close = false;
             }
             if (allow_close) {
@@ -666,7 +658,7 @@ static void sdl_mouse_warp(DisplayChangeListener *dcl,
 
     if (on) {
         if (!guest_cursor) {
-            sdl_show_cursor();
+            sdl_show_cursor(scon);
         }
         if (gui_grab || qemu_input_is_absolute() || absolute_enabled) {
             SDL_SetCursor(guest_sprite);
@@ -675,7 +667,7 @@ static void sdl_mouse_warp(DisplayChangeListener *dcl,
             }
         }
     } else if (gui_grab) {
-        sdl_hide_cursor();
+        sdl_hide_cursor(scon);
     }
     guest_cursor = on;
     guest_x = x, guest_y = y;
@@ -763,14 +755,12 @@ static void sdl2_display_early_init(DisplayOptions *o)
 
 static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 {
-    int flags;
     uint8_t data = 0;
-    char *filename;
     int i;
     SDL_SysWMinfo info;
+    SDL_Surface *icon = NULL;
 
     assert(o->type == DISPLAY_TYPE_SDL);
-    opts = o;
 
 #ifdef __linux__
     /* on Linux, SDL may use fbcon|directfb|svgalib when run without
@@ -782,18 +772,22 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
      * This is a bit hackish but saves us from bigger problem.
      * Maybe it's a good idea to fix this in SDL instead.
      */
-    setenv("SDL_VIDEODRIVER", "x11", 0);
+    g_setenv("SDL_VIDEODRIVER", "x11", 0);
 #endif
 
-    flags = SDL_INIT_VIDEO | SDL_INIT_NOPARACHUTE;
-    if (SDL_Init(flags)) {
+    if (SDL_Init(SDL_INIT_VIDEO)) {
         fprintf(stderr, "Could not initialize SDL(%s) - exiting\n",
                 SDL_GetError());
         exit(1);
     }
+#ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR /* only available since SDL 2.0.8 */
+    SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+#endif
     SDL_SetHint(SDL_HINT_GRAB_KEYBOARD, "1");
     memset(&info, 0, sizeof(info));
     SDL_VERSION(&info.version);
+
+    gui_fullscreen = o->has_full_screen && o->full_screen;
 
     for (i = 0;; i++) {
         QemuConsole *con = qemu_console_lookup_by_index(i);
@@ -809,10 +803,12 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
     for (i = 0; i < sdl2_num_outputs; i++) {
         QemuConsole *con = qemu_console_lookup_by_index(i);
         assert(con != NULL);
-        if (!qemu_console_is_graphic(con)) {
+        if (!qemu_console_is_graphic(con) &&
+            qemu_console_get_index(con) != 0) {
             sdl2_console[i].hidden = true;
         }
         sdl2_console[i].idx = i;
+        sdl2_console[i].opts = o;
 #ifdef CONFIG_OPENGL
         sdl2_console[i].opengl = display_opengl;
         sdl2_console[i].dcl.ops = display_opengl ? &dcl_gl_ops : &dcl_2d_ops;
@@ -821,6 +817,7 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
         sdl2_console[i].dcl.ops = &dcl_2d_ops;
 #endif
         sdl2_console[i].dcl.con = con;
+        sdl2_console[i].kbd = qkbd_state_init(con);
         register_displaychangelistener(&sdl2_console[i].dcl);
 
 #if defined(SDL_VIDEO_DRIVER_WINDOWS) || defined(SDL_VIDEO_DRIVER_X11)
@@ -834,27 +831,27 @@ static void sdl2_display_init(DisplayState *ds, DisplayOptions *o)
 #endif
     }
 
+#ifdef CONFIG_SDL_IMAGE
+    icon = IMG_Load(CONFIG_QEMU_ICONDIR "/hicolor/128x128/apps/qemu.png");
+#else
     /* Load a 32x32x4 image. White pixels are transparent. */
-    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, "qemu-icon.bmp");
-    if (filename) {
-        SDL_Surface *image = SDL_LoadBMP(filename);
-        if (image) {
-            uint32_t colorkey = SDL_MapRGB(image->format, 255, 255, 255);
-            SDL_SetColorKey(image, SDL_TRUE, colorkey);
-            SDL_SetWindowIcon(sdl2_console[0].real_window, image);
-        }
-        g_free(filename);
+    icon = SDL_LoadBMP(CONFIG_QEMU_ICONDIR "/hicolor/32x32/apps/qemu.bmp");
+    if (icon) {
+        uint32_t colorkey = SDL_MapRGB(icon->format, 255, 255, 255);
+        SDL_SetColorKey(icon, SDL_TRUE, colorkey);
+    }
+#endif
+    if (icon) {
+        SDL_SetWindowIcon(sdl2_console[0].real_window, icon);
     }
 
-    if (opts->has_full_screen && opts->full_screen) {
-        gui_fullscreen = 1;
+    gui_grab = 0;
+    if (gui_fullscreen) {
         sdl_grab_start(0);
     }
 
     mouse_mode_notifier.notify = sdl_mouse_mode_change;
     qemu_add_mouse_mode_change_notifier(&mouse_mode_notifier);
-
-    gui_grab = 0;
 
     sdl_cursor_hidden = SDL_CreateCursor(&data, &data, 8, 1, 0, 0);
     sdl_cursor_normal = SDL_GetCursor();

@@ -32,12 +32,13 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
+#include "hw/irq.h"
 #include "hw/net/mii.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 #include "net/net.h"
+#include "qemu/module.h"
 #include "net/eth.h"
-#include "sysemu/sysemu.h"
 #include "trace.h"
 
 /* RECSMALL is not used because it breaks tap networking in linux:
@@ -348,12 +349,11 @@ static void open_eth_reset(void *opaque)
     open_eth_set_link_status(qemu_get_queue(s->nic));
 }
 
-static int open_eth_can_receive(NetClientState *nc)
+static bool open_eth_can_receive(NetClientState *nc)
 {
     OpenEthState *s = qemu_get_nic_opaque(nc);
 
-    return GET_REGBIT(s, MODER, RXEN) &&
-        (s->regs[TX_BD_NUM] < 0x80);
+    return GET_REGBIT(s, MODER, RXEN) && (s->regs[TX_BD_NUM] < 0x80);
 }
 
 static ssize_t open_eth_receive(NetClientState *nc,
@@ -715,9 +715,9 @@ static const MemoryRegionOps open_eth_desc_ops = {
     .write = open_eth_desc_write,
 };
 
-static int sysbus_open_eth_init(SysBusDevice *sbd)
+static void sysbus_open_eth_realize(DeviceState *dev, Error **errp)
 {
-    DeviceState *dev = DEVICE(sbd);
+    SysBusDevice *sbd = SYS_BUS_DEVICE(dev);
     OpenEthState *s = OPEN_ETH(dev);
 
     memory_region_init_io(&s->reg_io, OBJECT(dev), &open_eth_reg_ops, s,
@@ -732,7 +732,6 @@ static int sysbus_open_eth_init(SysBusDevice *sbd)
 
     s->nic = qemu_new_nic(&net_open_eth_info, &s->conf,
                           object_get_typename(OBJECT(s)), dev->id, s);
-    return 0;
 }
 
 static void qdev_open_eth_reset(DeviceState *dev)
@@ -750,13 +749,12 @@ static Property open_eth_properties[] = {
 static void open_eth_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
-    SysBusDeviceClass *k = SYS_BUS_DEVICE_CLASS(klass);
 
-    k->init = sysbus_open_eth_init;
+    dc->realize = sysbus_open_eth_realize;
     set_bit(DEVICE_CATEGORY_NETWORK, dc->categories);
     dc->desc = "Opencores 10/100 Mbit Ethernet";
     dc->reset = qdev_open_eth_reset;
-    dc->props = open_eth_properties;
+    device_class_set_props(dc, open_eth_properties);
 }
 
 static const TypeInfo open_eth_info = {

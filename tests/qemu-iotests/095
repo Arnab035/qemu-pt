@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Test for commit of larger active layer
 #
@@ -27,14 +27,14 @@ owner=jcody@redhat.com
 seq=`basename $0`
 echo "QA output created by $seq"
 
-here=`pwd`
 status=1	# failure is the default!
 
 _cleanup()
 {
     _cleanup_qemu
-    rm  -f "${TEST_IMG}.base" "${TEST_IMG}.snp1"
-	_cleanup_test_img
+    _rm_test_img "${TEST_IMG}.base"
+    _rm_test_img "${TEST_IMG}.snp1"
+    _cleanup_test_img
 }
 trap "_cleanup; exit \$status" 0 1 2 3 15
 
@@ -45,7 +45,6 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 
 _supported_fmt qcow2
 _supported_proto file
-_supported_os Linux
 
 size_smaller=5M
 size_larger=100M
@@ -72,7 +71,7 @@ _send_qemu_cmd $h "{ 'execute': 'qmp_capabilities' }" "return"
 
 _send_qemu_cmd $h "{ 'execute': 'block-commit',
                                  'arguments': { 'device': 'test',
-                                 'top': '"${TEST_IMG}.snp1"' } }" "BLOCK_JOB_COMPLETED"
+                                 'top': '"${TEST_IMG}.snp1"' } }" '"status": "null"'
 
 _cleanup_qemu
 

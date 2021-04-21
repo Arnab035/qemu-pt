@@ -16,14 +16,11 @@
  * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef HW_SPIKE_H
-#define HW_SPIKE_H
+#ifndef HW_RISCV_SPIKE_H
+#define HW_RISCV_SPIKE_H
 
-#define TYPE_RISCV_SPIKE_V1_09_1_BOARD "riscv.spike_v1_9_1"
-#define TYPE_RISCV_SPIKE_V1_10_0_BOARD "riscv.spike_v1_10"
-
-#define SPIKE(obj) \
-    OBJECT_CHECK(SpikeState, (obj), TYPE_RISCV_SPIKE_BOARD)
+#include "hw/riscv/riscv_hart.h"
+#include "hw/sysbus.h"
 
 typedef struct {
     /*< private >*/
@@ -34,7 +31,6 @@ typedef struct {
     void *fdt;
     int fdt_size;
 } SpikeState;
-
 
 enum {
     SPIKE_MROM,

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Commit changes into backing chains and empty the top image if the
 # backing image is not explicitly specified.
@@ -29,7 +29,6 @@ owner=mreitz@redhat.com
 seq="$(basename $0)"
 echo "QA output created by $seq"
 
-here="$PWD"
 status=1	# failure is the default!
 
 _cleanup()
@@ -48,10 +47,13 @@ trap "_cleanup; exit \$status" 0 1 2 3 15
 _supported_fmt qcow2
 _supported_proto file
 _supported_os Linux
-# Persistent dirty bitmaps require compat=1.1
-_unsupported_imgopts 'compat=0.10'
+# Persistent dirty bitmaps require compat=1.1;
+# Internal snapshots forbid using an external data file
+# (they work with refcount_bits=1 here, though, because there actually
+# is no data when creating the snapshot)
+_unsupported_imgopts 'compat=0.10' data_file
 
-function run_qemu()
+run_qemu()
 {
     $QEMU -nographic -qmp stdio -serial none "$@" 2>&1 \
 	| _filter_testdir | _filter_qmp | _filter_qemu \

@@ -24,13 +24,17 @@
  */
 
 #include "qemu/osdep.h"
-#include "qapi/error.h"
 #include "qemu-common.h"
+#include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "ui/console.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
+#include "hw/irq.h"
 #include "hw/loader.h"
+#include "hw/qdev-properties.h"
 #include "qemu/log.h"
+#include "qemu/module.h"
 
 /* Change to 1 to enable debugging */
 #define DEBUG_CG3 0
@@ -232,6 +236,7 @@ static void cg3_reg_write(void *opaque, hwaddr addr, uint64_t val,
                 s->b[s->dac_index] = regval;
                 /* Index autoincrement */
                 s->dac_index = (s->dac_index + 1) & 0xff;
+                /* fall through */
             default:
                 s->dac_state = 0;
                 break;
@@ -282,9 +287,8 @@ static void cg3_initfn(Object *obj)
     SysBusDevice *sbd = SYS_BUS_DEVICE(obj);
     CG3State *s = CG3(obj);
 
-    memory_region_init_ram_nomigrate(&s->rom, obj, "cg3.prom", FCODE_MAX_ROM_SIZE,
-                           &error_fatal);
-    memory_region_set_readonly(&s->rom, true);
+    memory_region_init_rom_nomigrate(&s->rom, obj, "cg3.prom",
+                                     FCODE_MAX_ROM_SIZE, &error_fatal);
     sysbus_init_mmio(sbd, &s->rom);
 
     memory_region_init_io(&s->reg, obj, &cg3_reg_ops, s, "cg3.reg",
@@ -306,7 +310,7 @@ static void cg3_realizefn(DeviceState *dev, Error **errp)
         ret = load_image_mr(fcode_filename, &s->rom);
         g_free(fcode_filename);
         if (ret < 0 || ret > FCODE_MAX_ROM_SIZE) {
-            error_report("cg3: could not load prom '%s'", CG3_ROM_FILE);
+            warn_report("cg3: could not load prom '%s'", CG3_ROM_FILE);
         }
     }
 
@@ -377,7 +381,7 @@ static void cg3_class_init(ObjectClass *klass, void *data)
     dc->realize = cg3_realizefn;
     dc->reset = cg3_reset;
     dc->vmsd = &vmstate_cg3;
-    dc->props = cg3_properties;
+    device_class_set_props(dc, cg3_properties);
 }
 
 static const TypeInfo cg3_info = {

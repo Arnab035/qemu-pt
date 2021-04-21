@@ -19,7 +19,8 @@
 #ifndef MIPS_TARGET_CPU_H
 #define MIPS_TARGET_CPU_H
 
-static inline void cpu_clone_regs(CPUMIPSState *env, target_ulong newsp)
+static inline void cpu_clone_regs_child(CPUMIPSState *env, target_ulong newsp,
+                                        unsigned flags)
 {
     if (newsp) {
         env->active_tc.gpr[29] = newsp;
@@ -28,9 +29,17 @@ static inline void cpu_clone_regs(CPUMIPSState *env, target_ulong newsp)
     env->active_tc.gpr[2] = 0;
 }
 
+static inline void cpu_clone_regs_parent(CPUMIPSState *env, unsigned flags)
+{
+}
+
 static inline void cpu_set_tls(CPUMIPSState *env, target_ulong newtls)
 {
     env->active_tc.CP0_UserLocal = newtls;
 }
 
+static inline abi_ulong get_sp_from_cpustate(CPUMIPSState *state)
+{
+    return state->active_tc.gpr[29];
+}
 #endif

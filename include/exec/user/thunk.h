@@ -16,10 +16,12 @@
  * You should have received a copy of the GNU Lesser General Public
  * License along with this library; if not, see <http://www.gnu.org/licenses/>.
  */
+
 #ifndef THUNK_H
 #define THUNK_H
 
 #include "cpu.h"
+#include "exec/user/abitypes.h"
 
 /* types enums definitions */
 
@@ -135,7 +137,7 @@ static inline int thunk_type_size(const argtype *type_ptr, int is_host)
         se = struct_entries + type_ptr[1];
         return se->size[is_host];
     default:
-        return -1;
+        g_assert_not_reached();
     }
 }
 
@@ -149,20 +151,32 @@ static inline int thunk_type_align(const argtype *type_ptr, int is_host)
     case TYPE_CHAR:
         return 1;
     case TYPE_SHORT:
-        return 2;
+        if (is_host) {
+            return __alignof__(short);
+        } else {
+            return ABI_SHORT_ALIGNMENT;
+        }
     case TYPE_INT:
-        return 4;
+        if (is_host) {
+            return __alignof__(int);
+        } else {
+            return ABI_INT_ALIGNMENT;
+        }
     case TYPE_LONGLONG:
     case TYPE_ULONGLONG:
-        return 8;
+        if (is_host) {
+            return __alignof__(long long);
+        } else {
+            return ABI_LLONG_ALIGNMENT;
+        }
     case TYPE_LONG:
     case TYPE_ULONG:
     case TYPE_PTRVOID:
     case TYPE_PTR:
         if (is_host) {
-            return sizeof(void *);
+            return __alignof__(long);
         } else {
-            return TARGET_ABI_BITS / 8;
+            return ABI_LONG_ALIGNMENT;
         }
         break;
     case TYPE_OLDDEVT:
@@ -173,7 +187,7 @@ static inline int thunk_type_align(const argtype *type_ptr, int is_host)
         se = struct_entries + type_ptr[1];
         return se->align[is_host];
     default:
-        return -1;
+        g_assert_not_reached();
     }
 }
 

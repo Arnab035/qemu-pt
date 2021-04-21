@@ -23,8 +23,12 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/irq.h"
+#include "hw/qdev-properties.h"
 #include "hw/sparc/sun4m_iommu.h"
 #include "hw/sysbus.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "exec/address-spaces.h"
 #include "trace.h"
 
@@ -282,7 +286,8 @@ static void iommu_bad_addr(IOMMUState *s, hwaddr addr,
 /* Called from RCU critical section */
 static IOMMUTLBEntry sun4m_translate_iommu(IOMMUMemoryRegion *iommu,
                                            hwaddr addr,
-                                           IOMMUAccessFlags flags)
+                                           IOMMUAccessFlags flags,
+                                           int iommu_idx)
 {
     IOMMUState *is = container_of(iommu, IOMMUState, iommu);
     hwaddr page, pa;
@@ -374,7 +379,7 @@ static void iommu_class_init(ObjectClass *klass, void *data)
 
     dc->reset = iommu_reset;
     dc->vmsd = &vmstate_iommu;
-    dc->props = iommu_properties;
+    device_class_set_props(dc, iommu_properties);
 }
 
 static const TypeInfo iommu_info = {

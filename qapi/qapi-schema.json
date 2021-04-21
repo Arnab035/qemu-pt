@@ -49,28 +49,7 @@
 #
 ##
 
-{ 'pragma': { 'doc-required': true } }
-
-# Whitelists to permit QAPI rule violations; think twice before you
-# add to them!
-{ 'pragma': {
-    # Commands allowed to return a non-dictionary:
-    'returns-whitelist': [
-        'human-monitor-command',
-        'qom-get',
-        'query-migrate-cache-size',
-        'query-tpm-models',
-        'query-tpm-types',
-        'ringbuf-read' ],
-    'name-case-whitelist': [
-        'ACPISlotType',         # DIMM, visible through query-acpi-ospm-status
-        'CpuInfoMIPS',          # PC, visible through query-cpu
-        'CpuInfoTricore',       # PC, visible through query-cpu
-        'QapiErrorClass',       # all members, visible through errors
-        'UuidInfo',             # UUID, visible through query-uuid
-        'X86CPURegister32',     # all members, visible indirectly through qom-get
-        'q_obj_CpuInfo-base'    # CPU, visible through query-cpu
-    ] } }
+{ 'include': 'pragma.json' }
 
 # Documentation generated with qapi-gen.py is in source order, with
 # included sub-schemas inserted at the first include directive
@@ -78,18 +57,30 @@
 # stable order, it's best to include each sub-schema just once, or
 # include it first right here.
 
+{ 'include': 'error.json' }
 { 'include': 'common.json' }
 { 'include': 'sockets.json' }
 { 'include': 'run-state.json' }
 { 'include': 'crypto.json' }
 { 'include': 'block.json' }
 { 'include': 'char.json' }
+{ 'include': 'dump.json' }
+{ 'include': 'job.json' }
 { 'include': 'net.json' }
+{ 'include': 'rdma.json' }
 { 'include': 'rocker.json' }
 { 'include': 'tpm.json' }
 { 'include': 'ui.json' }
+{ 'include': 'authz.json' }
 { 'include': 'migration.json' }
 { 'include': 'transaction.json' }
 { 'include': 'trace.json' }
+{ 'include': 'control.json' }
 { 'include': 'introspect.json' }
+{ 'include': 'qom.json' }
+{ 'include': 'qdev.json' }
+{ 'include': 'machine.json' }
+{ 'include': 'machine-target.json' }
 { 'include': 'misc.json' }
+{ 'include': 'misc-target.json' }
+{ 'include': 'audio.json' }

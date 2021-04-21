@@ -57,12 +57,15 @@
 #include <sys/ioctl.h>
 
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
 #include "hw/xen/xen.h"
 #include "hw/i386/pc.h"
-#include "hw/xen/xen_backend.h"
+#include "hw/xen/xen-legacy-backend.h"
 #include "xen_pt.h"
 #include "qemu/range.h"
 #include "exec/address-spaces.h"
+
+bool has_igd_gfx_passthru;
 
 #define XEN_PT_NR_IRQS (256)
 static uint8_t xen_pt_mapped_machine_irq[XEN_PT_NR_IRQS] = {0};
@@ -830,7 +833,7 @@ static void xen_pt_realize(PCIDevice *d, Error **errp)
     xen_pt_config_init(s, &err);
     if (err) {
         error_append_hint(&err, "PCI Config space initialisation failed");
-        error_report_err(err);
+        error_propagate(errp, err);
         rc = -1;
         goto err_out;
     }
@@ -847,6 +850,12 @@ static void xen_pt_realize(PCIDevice *d, Error **errp)
     }
 
     machine_irq = s->real_device.irq;
+    if (machine_irq == 0) {
+        XEN_PT_LOG(d, "machine irq is 0\n");
+        cmd |= PCI_COMMAND_INTX_DISABLE;
+        goto out;
+    }
+
     rc = xc_physdev_map_pirq(xen_xc, xen_domid, machine_irq, &pirq);
     if (rc < 0) {
         error_setg_errno(errp, errno, "Mapping machine irq %u to"
@@ -907,7 +916,7 @@ out:
         }
     }
 
-    memory_listener_register(&s->memory_listener, &s->dev.bus_master_as);
+    memory_listener_register(&s->memory_listener, &address_space_memory);
     memory_listener_register(&s->io_listener, &address_space_io);
     s->listener_set = true;
     XEN_PT_LOG(d,
@@ -955,7 +964,7 @@ static void xen_pci_passthrough_class_init(ObjectClass *klass, void *data)
     k->config_write = xen_pt_pci_write_config;
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     dc->desc = "Assign an host PCI device with Xen";
-    dc->props = xen_pci_passthrough_properties;
+    device_class_set_props(dc, xen_pci_passthrough_properties);
 };
 
 static void xen_pci_passthrough_finalize(Object *obj)

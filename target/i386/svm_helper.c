@@ -62,6 +62,7 @@ void helper_invlpga(CPUX86State *env, int aflag)
 void cpu_vmexit(CPUX86State *nenv, uint32_t exit_code, uint64_t exit_info_1,
                 uintptr_t retaddr)
 {
+    assert(0);
 }
 
 void helper_svm_check_intercept_param(CPUX86State *env, uint32_t type,
@@ -83,7 +84,7 @@ void helper_svm_check_io(CPUX86State *env, uint32_t port, uint32_t param,
 static inline void svm_save_seg(CPUX86State *env, hwaddr addr,
                                 const SegmentCache *sc)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
 
     x86_stw_phys(cs, addr + offsetof(struct vmcb_seg, selector),
              sc->selector);
@@ -98,7 +99,7 @@ static inline void svm_save_seg(CPUX86State *env, hwaddr addr,
 static inline void svm_load_seg(CPUX86State *env, hwaddr addr,
                                 SegmentCache *sc)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     unsigned int flags;
 
     sc->selector = x86_lduw_phys(cs,
@@ -121,8 +122,9 @@ static inline void svm_load_seg_cache(CPUX86State *env, hwaddr addr,
 
 void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     target_ulong addr;
+    uint64_t nested_ctl;
     uint32_t event_inj;
     uint32_t int_ctl;
 
@@ -205,8 +207,28 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
                                                   control.intercept_exceptions
                                                   ));
 
+    nested_ctl = x86_ldq_phys(cs, env->vm_vmcb + offsetof(struct vmcb,
+                                                          control.nested_ctl));
+    if (nested_ctl & SVM_NPT_ENABLED) {
+        env->nested_cr3 = x86_ldq_phys(cs,
+                                env->vm_vmcb + offsetof(struct vmcb,
+                                                        control.nested_cr3));
+        env->hflags2 |= HF2_NPT_MASK;
+
+        env->nested_pg_mode = 0;
+        if (env->cr[4] & CR4_PAE_MASK) {
+            env->nested_pg_mode |= SVM_NPT_PAE;
+        }
+        if (env->hflags & HF_LMA_MASK) {
+            env->nested_pg_mode |= SVM_NPT_LMA;
+        }
+        if (env->efer & MSR_EFER_NXE) {
+            env->nested_pg_mode |= SVM_NPT_NXE;
+        }
+    }
+
     /* enable intercepts */
-    env->hflags |= HF_SVMI_MASK;
+    env->hflags |= HF_GUEST_MASK;
 
     env->tsc_offset = x86_ldq_phys(cs, env->vm_vmcb +
                                offsetof(struct vmcb, control.tsc_offset));
@@ -292,7 +314,7 @@ void helper_vmrun(CPUX86State *env, int aflag, int next_eip_addend)
     env->hflags2 |= HF2_GIF_MASK;
 
     if (int_ctl & V_IRQ_MASK) {
-        CPUState *cs = CPU(x86_env_get_cpu(env));
+        CPUState *cs = env_cpu(env);
 
         cs->interrupt_request |= CPU_INTERRUPT_VIRQ;
     }
@@ -357,7 +379,7 @@ void helper_vmmcall(CPUX86State *env)
 
 void helper_vmload(CPUX86State *env, int aflag)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     target_ulong addr;
 
     cpu_svm_check_intercept_param(env, SVM_EXIT_VMLOAD, 0, GETPC());
@@ -397,7 +419,7 @@ void helper_vmload(CPUX86State *env, int aflag)
 
 void helper_vmsave(CPUX86State *env, int aflag)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     target_ulong addr;
 
     cpu_svm_check_intercept_param(env, SVM_EXIT_VMSAVE, 0, GETPC());
@@ -460,7 +482,7 @@ void helper_skinit(CPUX86State *env)
 
 void helper_invlpga(CPUX86State *env, int aflag)
 {
-    X86CPU *cpu = x86_env_get_cpu(env);
+    X86CPU *cpu = env_archcpu(env);
     target_ulong addr;
 
     cpu_svm_check_intercept_param(env, SVM_EXIT_INVLPGA, 0, GETPC());
@@ -479,9 +501,9 @@ void helper_invlpga(CPUX86State *env, int aflag)
 void cpu_svm_check_intercept_param(CPUX86State *env, uint32_t type,
                                    uint64_t param, uintptr_t retaddr)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
 
-    if (likely(!(env->hflags & HF_SVMI_MASK))) {
+    if (likely(!(env->hflags & HF_GUEST_MASK))) {
         return;
     }
     switch (type) {
@@ -561,7 +583,7 @@ void helper_svm_check_intercept_param(CPUX86State *env, uint32_t type,
 void helper_svm_check_io(CPUX86State *env, uint32_t port, uint32_t param,
                          uint32_t next_eip_addend)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
 
     if (env->intercept & (1ULL << (SVM_EXIT_IOIO - SVM_EXIT_INTR))) {
         /* FIXME: this should be read in at vmrun (faster this way?) */
@@ -582,9 +604,9 @@ void helper_svm_check_io(CPUX86State *env, uint32_t port, uint32_t param,
 void cpu_vmexit(CPUX86State *env, uint32_t exit_code, uint64_t exit_info_1,
                 uintptr_t retaddr)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
 
-    cpu_restore_state(cs, retaddr);
+    cpu_restore_state(cs, retaddr, true);
 
     qemu_log_mask(CPU_LOG_TB_IN_ASM, "vmexit(%08x, %016" PRIx64 ", %016"
                   PRIx64 ", " TARGET_FMT_lx ")!\n",
@@ -603,7 +625,7 @@ void cpu_vmexit(CPUX86State *env, uint32_t exit_code, uint64_t exit_info_1,
 
 void do_vmexit(CPUX86State *env, uint32_t exit_code, uint64_t exit_info_1)
 {
-    CPUState *cs = CPU(x86_env_get_cpu(env));
+    CPUState *cs = env_cpu(env);
     uint32_t int_ctl;
 
     if (env->hflags & HF_INHIBIT_IRQ_MASK) {
@@ -615,6 +637,7 @@ void do_vmexit(CPUX86State *env, uint32_t exit_code, uint64_t exit_info_1)
         x86_stl_phys(cs,
                  env->vm_vmcb + offsetof(struct vmcb, control.int_state), 0);
     }
+    env->hflags2 &= ~HF2_NPT_MASK;
 
     /* Save the VM state in the vmcb */
     svm_save_seg(env, env->vm_vmcb + offsetof(struct vmcb, save.es),
@@ -674,7 +697,7 @@ void do_vmexit(CPUX86State *env, uint32_t exit_code, uint64_t exit_info_1)
 
     /* Reload the host state from vm_hsave */
     env->hflags2 &= ~(HF2_HIF_MASK | HF2_VINTR_MASK);
-    env->hflags &= ~HF_SVMI_MASK;
+    env->hflags &= ~HF_GUEST_MASK;
     env->intercept = 0;
     env->intercept_exceptions = 0;
     cs->interrupt_request &= ~CPU_INTERRUPT_VIRQ;

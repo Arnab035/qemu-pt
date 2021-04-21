@@ -20,7 +20,7 @@
 #ifndef QEMU_SPARC_CPU_QOM_H
 #define QEMU_SPARC_CPU_QOM_H
 
-#include "qom/cpu.h"
+#include "hw/core/cpu.h"
 
 #ifdef TARGET_SPARC64
 #define TYPE_SPARC_CPU "sparc64-cpu"
@@ -49,7 +49,7 @@ typedef struct SPARCCPUClass {
     /*< public >*/
 
     DeviceRealize parent_realize;
-    void (*parent_reset)(CPUState *cpu);
+    DeviceReset parent_reset;
     sparc_def_t *cpu_def;
 } SPARCCPUClass;
 

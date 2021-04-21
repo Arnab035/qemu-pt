@@ -26,7 +26,7 @@
 #ifndef ADB_H
 #define ADB_H
 
-#include "hw/qdev.h"
+#include "hw/qdev-core.h"
 
 #define MAX_ADB_DEVICES 16
 
@@ -49,6 +49,7 @@ struct ADBDevice {
 
     int devaddr;
     int handler;
+    bool disable_direct_reg3_writes;
 };
 
 #define ADB_DEVICE_CLASS(cls) \

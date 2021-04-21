@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 import sys
 import struct
@@ -9,7 +9,7 @@ class QcowHeaderExtension:
     def __init__(self, magic, length, data):
         if length % 8 != 0:
             padding = 8 - (length % 8)
-            data += "\0" * padding
+            data += b"\0" * padding
 
         self.magic  = magic
         self.length = length
@@ -41,9 +41,9 @@ class QcowHeader:
         [ uint64_t, '%#x',  'snapshot_offset' ],
 
         # Version 3 header fields
-        [ uint64_t, '%#x',  'incompatible_features' ],
-        [ uint64_t, '%#x',  'compatible_features' ],
-        [ uint64_t, '%#x',  'autoclear_features' ],
+        [ uint64_t, 'mask', 'incompatible_features' ],
+        [ uint64_t, 'mask', 'compatible_features' ],
+        [ uint64_t, 'mask', 'autoclear_features' ],
         [ uint32_t, '%d',   'refcount_order' ],
         [ uint32_t, '%d',   'header_length' ],
     ];
@@ -102,7 +102,7 @@ class QcowHeader:
 
         fd.seek(self.header_length)
         extensions = self.extensions
-        extensions.append(QcowHeaderExtension(0, 0, ""))
+        extensions.append(QcowHeaderExtension(0, 0, b""))
         for ex in extensions:
             buf = struct.pack('>II', ex.magic, ex.length)
             fd.write(buf)
@@ -129,23 +129,33 @@ class QcowHeader:
 
     def dump(self):
         for f in QcowHeader.fields:
-            print "%-25s" % f[2], f[1] % self.__dict__[f[2]]
-        print ""
+            value = self.__dict__[f[2]]
+            if f[1] == 'mask':
+                bits = []
+                for bit in range(64):
+                    if value & (1 << bit):
+                        bits.append(bit)
+                value_str = str(bits)
+            else:
+                value_str = f[1] % value
+
+            print("%-25s" % f[2], value_str)
+        print("")
 
     def dump_extensions(self):
         for ex in self.extensions:
 
             data = ex.data[:ex.length]
-            if all(c in string.printable for c in data):
-                data = "'%s'" % data
+            if all(c in string.printable.encode('ascii') for c in data):
+                data = "'%s'" % data.decode('ascii')
             else:
                 data = "<binary>"
 
-            print "Header extension:"
-            print "%-25s %#x" % ("magic", ex.magic)
-            print "%-25s %d" % ("length", ex.length)
-            print "%-25s %s" % ("data", data)
-            print ""
+            print("Header extension:")
+            print("%-25s %#x" % ("magic", ex.magic))
+            print("%-25s %d" % ("length", ex.length))
+            print("%-25s %s" % ("data", data))
+            print("")
 
 
 def cmd_dump_header(fd):
@@ -153,16 +163,20 @@ def cmd_dump_header(fd):
     h.dump()
     h.dump_extensions()
 
+def cmd_dump_header_exts(fd):
+    h = QcowHeader(fd)
+    h.dump_extensions()
+
 def cmd_set_header(fd, name, value):
     try:
         value = int(value, 0)
     except:
-        print "'%s' is not a valid number" % value
+        print("'%s' is not a valid number" % value)
         sys.exit(1)
 
     fields = (field[2] for field in QcowHeader.fields)
     if not name in fields:
-        print "'%s' is not a known header field" % name
+        print("'%s' is not a known header field" % name)
         sys.exit(1)
 
     h = QcowHeader(fd)
@@ -173,11 +187,11 @@ def cmd_add_header_ext(fd, magic, data):
     try:
         magic = int(magic, 0)
     except:
-        print "'%s' is not a valid magic number" % magic
+        print("'%s' is not a valid magic number" % magic)
         sys.exit(1)
 
     h = QcowHeader(fd)
-    h.extensions.append(QcowHeaderExtension.create(magic, data))
+    h.extensions.append(QcowHeaderExtension.create(magic, data.encode('ascii')))
     h.update(fd)
 
 def cmd_add_header_ext_stdio(fd, magic):
@@ -188,7 +202,7 @@ def cmd_del_header_ext(fd, magic):
     try:
         magic = int(magic, 0)
     except:
-        print "'%s' is not a valid magic number" % magic
+        print("'%s' is not a valid magic number" % magic)
         sys.exit(1)
 
     h = QcowHeader(fd)
@@ -200,7 +214,7 @@ def cmd_del_header_ext(fd, magic):
             h.extensions.remove(ex)
 
     if not found:
-        print "No such header extension"
+        print("No such header extension")
         return
 
     h.update(fd)
@@ -211,7 +225,7 @@ def cmd_set_feature_bit(fd, group, bit):
         if bit < 0 or bit >= 64:
             raise ValueError
     except:
-        print "'%s' is not a valid bit number in range [0, 64)" % bit
+        print("'%s' is not a valid bit number in range [0, 64)" % bit)
         sys.exit(1)
 
     h = QcowHeader(fd)
@@ -222,13 +236,14 @@ def cmd_set_feature_bit(fd, group, bit):
     elif group == 'autoclear':
         h.autoclear_features |= 1 << bit
     else:
-        print "'%s' is not a valid group, try 'incompatible', 'compatible', or 'autoclear'" % group
+        print("'%s' is not a valid group, try 'incompatible', 'compatible', or 'autoclear'" % group)
         sys.exit(1)
 
     h.update(fd)
 
 cmds = [
     [ 'dump-header',          cmd_dump_header,          0, 'Dump image header and header extensions' ],
+    [ 'dump-header-exts',     cmd_dump_header_exts,     0, 'Dump image header extensions' ],
     [ 'set-header',           cmd_set_header,           2, 'Set a field in the header'],
     [ 'add-header-ext',       cmd_add_header_ext,       2, 'Add a header extension' ],
     [ 'add-header-ext-stdio', cmd_add_header_ext_stdio, 1, 'Add a header extension, data from stdin' ],
@@ -248,16 +263,16 @@ def main(filename, cmd, args):
             else:
                 handler(fd, *args)
                 return
-        print "Unknown command '%s'" % cmd
+        print("Unknown command '%s'" % cmd)
     finally:
         fd.close()
 
 def usage():
-    print "Usage: %s <file> <cmd> [<arg>, ...]" % sys.argv[0]
-    print ""
-    print "Supported commands:"
+    print("Usage: %s <file> <cmd> [<arg>, ...]" % sys.argv[0])
+    print("")
+    print("Supported commands:")
     for name, handler, num_args, desc in cmds:
-        print "    %-20s - %s" % (name, desc)
+        print("    %-20s - %s" % (name, desc))
 
 if __name__ == '__main__':
     if len(sys.argv) < 3:

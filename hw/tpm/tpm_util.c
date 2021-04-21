@@ -26,8 +26,8 @@
 #include "tpm_util.h"
 #include "tpm_int.h"
 #include "exec/memory.h"
+#include "hw/qdev-properties.h"
 #include "sysemu/tpm_backend.h"
-#include "hw/qdev.h"
 #include "trace.h"
 
 /* tpm backend property */
@@ -349,4 +349,29 @@ void tpm_sized_buffer_reset(TPMSizedBuffer *tsb)
     g_free(tsb->buffer);
     tsb->buffer = NULL;
     tsb->size = 0;
+}
+
+void tpm_util_show_buffer(const unsigned char *buffer,
+                          size_t buffer_size, const char *string)
+{
+    size_t len, i;
+    char *line_buffer, *p;
+
+    len = MIN(tpm_cmd_get_size(buffer), buffer_size);
+
+    /*
+     * allocate enough room for 3 chars per buffer entry plus a
+     * newline after every 16 chars and a final null terminator.
+     */
+    line_buffer = g_malloc(len * 3 + (len / 16) + 1);
+
+    for (i = 0, p = line_buffer; i < len; i++) {
+        if (i && !(i % 16)) {
+            p += sprintf(p, "\n");
+        }
+        p += sprintf(p, "%.2X ", buffer[i]);
+    }
+    trace_tpm_util_show_buffer(string, len, line_buffer);
+
+    g_free(line_buffer);
 }

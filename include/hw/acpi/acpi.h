@@ -22,7 +22,6 @@
 
 #include "qemu/notify.h"
 #include "exec/memory.h"
-#include "hw/irq.h"
 #include "hw/acpi/acpi_dev_interface.h"
 
 /*
@@ -69,13 +68,13 @@
 #define ACPI_BITMASK_WAKE_STATUS                0x8000
 
 #define ACPI_BITMASK_ALL_FIXED_STATUS           (\
-	ACPI_BITMASK_TIMER_STATUS          | \
-	ACPI_BITMASK_BUS_MASTER_STATUS     | \
-	ACPI_BITMASK_GLOBAL_LOCK_STATUS    | \
-	ACPI_BITMASK_POWER_BUTTON_STATUS   | \
-	ACPI_BITMASK_SLEEP_BUTTON_STATUS   | \
-	ACPI_BITMASK_RT_CLOCK_STATUS       | \
-	ACPI_BITMASK_WAKE_STATUS)
+        ACPI_BITMASK_TIMER_STATUS          | \
+        ACPI_BITMASK_BUS_MASTER_STATUS     | \
+        ACPI_BITMASK_GLOBAL_LOCK_STATUS    | \
+        ACPI_BITMASK_POWER_BUTTON_STATUS   | \
+        ACPI_BITMASK_SLEEP_BUTTON_STATUS   | \
+        ACPI_BITMASK_RT_CLOCK_STATUS       | \
+        ACPI_BITMASK_WAKE_STATUS)
 
 /* PM1x_EN */
 #define ACPI_BITMASK_TIMER_ENABLE               0x0001
@@ -182,7 +181,6 @@ void acpi_send_gpe_event(ACPIREGS *ar, qemu_irq irq,
 void acpi_update_sci(ACPIREGS *acpi_regs, qemu_irq irq);
 
 /* acpi.c */
-extern int acpi_enabled;
 extern char unsigned *acpi_tables;
 extern size_t acpi_tables_len;
 
@@ -190,7 +188,6 @@ uint8_t *acpi_table_first(void);
 uint8_t *acpi_table_next(uint8_t *current);
 unsigned acpi_table_len(void *current);
 void acpi_table_add(const QemuOpts *opts, Error **errp);
-void acpi_table_add_builtin(const QemuOpts *opts, Error **errp);
 
 typedef struct AcpiSlicOem AcpiSlicOem;
 struct AcpiSlicOem {

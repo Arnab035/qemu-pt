@@ -21,18 +21,17 @@
 
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "hw/sysbus.h"
 #include "target/riscv/cpu.h"
+#include "hw/qdev-properties.h"
 #include "hw/riscv/sifive_clint.h"
 #include "qemu/timer.h"
 
-/* See: riscv-pk/machine/sbi_entry.S and arch/riscv/kernel/time.c */
-#define TIMER_FREQ (10 * 1000 * 1000)
-
 static uint64_t cpu_riscv_read_rtc(void)
 {
-    return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), TIMER_FREQ,
-                    NANOSECONDS_PER_SECOND);
+    return muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        SIFIVE_CLINT_TIMEBASE_FREQ, NANOSECONDS_PER_SECOND);
 }
 
 /*
@@ -50,16 +49,16 @@ static void sifive_clint_write_timecmp(RISCVCPU *cpu, uint64_t value)
     if (cpu->env.timecmp <= rtc_r) {
         /* if we're setting an MTIMECMP value in the "past",
            immediately raise the timer interrupt */
-        riscv_set_local_interrupt(cpu, MIP_MTIP, 1);
+        riscv_cpu_update_mip(cpu, MIP_MTIP, BOOL_TO_MASK(1));
         return;
     }
 
     /* otherwise, set up the future timer interrupt */
-    riscv_set_local_interrupt(cpu, MIP_MTIP, 0);
+    riscv_cpu_update_mip(cpu, MIP_MTIP, BOOL_TO_MASK(0));
     diff = cpu->env.timecmp - rtc_r;
     /* back to ns (note args switched in muldiv64) */
     next = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-        muldiv64(diff, NANOSECONDS_PER_SECOND, TIMER_FREQ);
+        muldiv64(diff, NANOSECONDS_PER_SECOND, SIFIVE_CLINT_TIMEBASE_FREQ);
     timer_mod(cpu->env.timer, next);
 }
 
@@ -70,7 +69,7 @@ static void sifive_clint_write_timecmp(RISCVCPU *cpu, uint64_t value)
 static void sifive_clint_timer_cb(void *opaque)
 {
     RISCVCPU *cpu = opaque;
-    riscv_set_local_interrupt(cpu, MIP_MTIP, 1);
+    riscv_cpu_update_mip(cpu, MIP_MTIP, BOOL_TO_MASK(1));
 }
 
 /* CPU wants to read rtc or timecmp register */
@@ -135,7 +134,7 @@ static void sifive_clint_write(void *opaque, hwaddr addr, uint64_t value,
         if (!env) {
             error_report("clint: invalid timecmp hartid: %zu", hartid);
         } else if ((addr & 0x3) == 0) {
-            riscv_set_local_interrupt(RISCV_CPU(cpu), MIP_MSIP, value != 0);
+            riscv_cpu_update_mip(RISCV_CPU(cpu), MIP_MSIP, BOOL_TO_MASK(value));
         } else {
             error_report("clint: invalid sip write: %08x", (uint32_t)addr);
         }
@@ -149,15 +148,15 @@ static void sifive_clint_write(void *opaque, hwaddr addr, uint64_t value,
             error_report("clint: invalid timecmp hartid: %zu", hartid);
         } else if ((addr & 0x7) == 0) {
             /* timecmp_lo */
-            uint64_t timecmp = env->timecmp;
+            uint64_t timecmp_hi = env->timecmp >> 32;
             sifive_clint_write_timecmp(RISCV_CPU(cpu),
-                timecmp << 32 | (value & 0xFFFFFFFF));
+                timecmp_hi << 32 | (value & 0xFFFFFFFF));
             return;
         } else if ((addr & 0x7) == 4) {
             /* timecmp_hi */
-            uint64_t timecmp = env->timecmp;
+            uint64_t timecmp_lo = env->timecmp;
             sifive_clint_write_timecmp(RISCV_CPU(cpu),
-                value << 32 | (timecmp & 0xFFFFFFFF));
+                value << 32 | (timecmp_lo & 0xFFFFFFFF));
         } else {
             error_report("clint: invalid timecmp write: %08x", (uint32_t)addr);
         }
@@ -181,7 +180,7 @@ static const MemoryRegionOps sifive_clint_ops = {
     .endianness = DEVICE_LITTLE_ENDIAN,
     .valid = {
         .min_access_size = 4,
-        .max_access_size = 4
+        .max_access_size = 8
     }
 };
 
@@ -206,7 +205,7 @@ static void sifive_clint_class_init(ObjectClass *klass, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     dc->realize = sifive_clint_realize;
-    dc->props = sifive_clint_properties;
+    device_class_set_props(dc, sifive_clint_properties);
 }
 
 static const TypeInfo sifive_clint_info = {
@@ -228,7 +227,8 @@ type_init(sifive_clint_register_types)
  * Create CLINT device.
  */
 DeviceState *sifive_clint_create(hwaddr addr, hwaddr size, uint32_t num_harts,
-    uint32_t sip_base, uint32_t timecmp_base, uint32_t time_base)
+    uint32_t sip_base, uint32_t timecmp_base, uint32_t time_base,
+    bool provide_rdtime)
 {
     int i;
     for (i = 0; i < num_harts; i++) {
@@ -236,6 +236,9 @@ DeviceState *sifive_clint_create(hwaddr addr, hwaddr size, uint32_t num_harts,
         CPURISCVState *env = cpu ? cpu->env_ptr : NULL;
         if (!env) {
             continue;
+        }
+        if (provide_rdtime) {
+            riscv_cpu_set_rdtime_fn(env, cpu_riscv_read_rtc);
         }
         env->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                   &sifive_clint_timer_cb, cpu);

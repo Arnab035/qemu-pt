@@ -1,7 +1,5 @@
-#ifndef TARGET_SIGNAL_H
-#define TARGET_SIGNAL_H
-
-#include "cpu.h"
+#ifndef RISCV_TARGET_SIGNAL_H
+#define RISCV_TARGET_SIGNAL_H
 
 typedef struct target_sigaltstack {
     abi_ulong ss_sp;
@@ -15,9 +13,6 @@ typedef struct target_sigaltstack {
 #define TARGET_MINSIGSTKSZ 2048
 #define TARGET_SIGSTKSZ 8192
 
-static inline abi_ulong get_sp_from_cpustate(CPURISCVState *state)
-{
-   return state->gpr[xSP];
-}
+#include "../generic/signal.h"
 
-#endif /* TARGET_SIGNAL_H */
+#endif /* RISCV_TARGET_SIGNAL_H */

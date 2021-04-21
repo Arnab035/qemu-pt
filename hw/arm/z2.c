@@ -12,16 +12,14 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/arm/pxa.h"
-#include "hw/arm/arm.h"
-#include "hw/devices.h"
+#include "hw/arm/boot.h"
 #include "hw/i2c/i2c.h"
+#include "hw/irq.h"
 #include "hw/ssi/ssi.h"
+#include "migration/vmstate.h"
 #include "hw/boards.h"
-#include "sysemu/sysemu.h"
 #include "hw/block/flash.h"
-#include "sysemu/block-backend.h"
 #include "ui/console.h"
 #include "hw/audio/wm8750.h"
 #include "audio/audio.h"
@@ -244,7 +242,7 @@ static int aer915_event(I2CSlave *i2c, enum i2c_event event)
     return 0;
 }
 
-static int aer915_recv(I2CSlave *slave)
+static uint8_t aer915_recv(I2CSlave *slave)
 {
     AER915State *s = AER915(slave);
     int retval = 0x00;
@@ -298,14 +296,10 @@ static const TypeInfo aer915_info = {
 
 static void z2_init(MachineState *machine)
 {
-    const char *kernel_filename = machine->kernel_filename;
-    const char *kernel_cmdline = machine->kernel_cmdline;
-    const char *initrd_filename = machine->initrd_filename;
     MemoryRegion *address_space_mem = get_system_memory();
     uint32_t sector_len = 0x10000;
     PXA2xxState *mpu;
     DriveInfo *dinfo;
-    int be;
     void *z2_lcd;
     I2CBus *bus;
     DeviceState *wm;
@@ -313,23 +307,10 @@ static void z2_init(MachineState *machine)
     /* Setup CPU & memory */
     mpu = pxa270_init(address_space_mem, z2_binfo.ram_size, machine->cpu_type);
 
-#ifdef TARGET_WORDS_BIGENDIAN
-    be = 1;
-#else
-    be = 0;
-#endif
     dinfo = drive_get(IF_PFLASH, 0, 0);
-    if (!dinfo && !qtest_enabled()) {
-        error_report("Flash image must be given with the "
-                     "'pflash' parameter");
-        exit(1);
-    }
-
-    if (!pflash_cfi01_register(Z2_FLASH_BASE,
-                               NULL, "z2.flash0", Z2_FLASH_SIZE,
+    if (!pflash_cfi01_register(Z2_FLASH_BASE, "z2.flash0", Z2_FLASH_SIZE,
                                dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                               sector_len, Z2_FLASH_SIZE / sector_len,
-                               4, 0, 0, 0, 0, be)) {
+                               sector_len, 4, 0, 0, 0, 0, 0)) {
         error_report("Error registering flash memory");
         exit(1);
     }
@@ -356,11 +337,8 @@ static void z2_init(MachineState *machine)
     qdev_connect_gpio_out(mpu->gpio, Z2_GPIO_LCD_CS,
                           qemu_allocate_irq(z2_lcd_cs, z2_lcd, 0));
 
-    z2_binfo.kernel_filename = kernel_filename;
-    z2_binfo.kernel_cmdline = kernel_cmdline;
-    z2_binfo.initrd_filename = initrd_filename;
     z2_binfo.board_id = 0x6dd;
-    arm_load_kernel(mpu->cpu, &z2_binfo);
+    arm_load_kernel(mpu->cpu, machine, &z2_binfo);
 }
 
 static void z2_machine_init(MachineClass *mc)

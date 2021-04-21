@@ -46,7 +46,7 @@ struct NetPacket {
     unsigned flags;
     int size;
     NetPacketSent *sent_cb;
-    uint8_t data[0];
+    uint8_t data[];
 };
 
 struct NetQueue {
@@ -55,7 +55,7 @@ struct NetQueue {
     uint32_t nq_count;
     NetQueueDeliverFunc *deliver;
 
-    QTAILQ_HEAD(packets, NetPacket) packets;
+    QTAILQ_HEAD(, NetPacket) packets;
 
     unsigned delivering : 1;
 };

@@ -22,7 +22,6 @@
 #ifndef NMI_H
 #define NMI_H
 
-#include "qemu-common.h"
 #include "qom/object.h"
 
 #define TYPE_NMI "nmi"
@@ -32,11 +31,9 @@
 #define NMI_GET_CLASS(obj) \
     OBJECT_GET_CLASS(NMIClass, (obj), TYPE_NMI)
 #define NMI(obj) \
-     INTERFACE_CHECK(NMI, (obj), TYPE_NMI)
+     INTERFACE_CHECK(NMIState, (obj), TYPE_NMI)
 
-typedef struct NMIState {
-    Object parent_obj;
-} NMIState;
+typedef struct NMIState NMIState;
 
 typedef struct NMIClass {
     InterfaceClass parent_class;

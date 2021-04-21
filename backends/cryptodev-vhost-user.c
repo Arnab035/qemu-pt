@@ -22,10 +22,10 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/boards.h"
 #include "qapi/error.h"
 #include "qapi/qmp/qerror.h"
 #include "qemu/error-report.h"
+#include "hw/virtio/vhost-user.h"
 #include "standard-headers/linux/virtio_crypto.h"
 #include "sysemu/cryptodev-vhost.h"
 #include "chardev/char-fe.h"
@@ -46,6 +46,7 @@
 typedef struct CryptoDevBackendVhostUser {
     CryptoDevBackend parent_obj;
 
+    VhostUserState vhost_user;
     CharBackend chr;
     char *chr_name;
     bool opened;
@@ -102,7 +103,7 @@ cryptodev_vhost_user_start(int queues,
             continue;
         }
 
-        options.opaque = &s->chr;
+        options.opaque = &s->vhost_user;
         options.backend_type = VHOST_BACKEND_TYPE_USER;
         options.cc = b->conf.peers.ccs[i];
         s->vhost_crypto[i] = cryptodev_vhost_init(&options);
@@ -151,11 +152,10 @@ cryptodev_vhost_claim_chardev(CryptoDevBackendVhostUser *s,
     return chr;
 }
 
-static void cryptodev_vhost_user_event(void *opaque, int event)
+static void cryptodev_vhost_user_event(void *opaque, QEMUChrEvent event)
 {
     CryptoDevBackendVhostUser *s = opaque;
     CryptoDevBackend *b = CRYPTODEV_BACKEND(s);
-    Error *err = NULL;
     int queues = b->conf.peers.queues;
 
     assert(queues < MAX_CRYPTO_QUEUE_NUM);
@@ -171,10 +171,11 @@ static void cryptodev_vhost_user_event(void *opaque, int event)
         b->ready = false;
         cryptodev_vhost_user_stop(queues, s);
         break;
-    }
-
-    if (err) {
-        error_report_err(err);
+    case CHR_EVENT_BREAK:
+    case CHR_EVENT_MUX_IN:
+    case CHR_EVENT_MUX_OUT:
+        /* Ignore */
+        break;
     }
 }
 
@@ -213,6 +214,10 @@ static void cryptodev_vhost_user_init(
                 return;
             }
         }
+    }
+
+    if (!vhost_user_init(&s->vhost_user, &s->chr, errp)) {
+        return;
     }
 
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL,
@@ -299,6 +304,8 @@ static void cryptodev_vhost_user_cleanup(
             backend->conf.peers.ccs[i] = NULL;
         }
     }
+
+    vhost_user_cleanup(&s->vhost_user);
 }
 
 static void cryptodev_vhost_user_set_chardev(Object *obj,

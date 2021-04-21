@@ -22,13 +22,13 @@
  * THE SOFTWARE.
  */
 #include "qemu/osdep.h"
-#include "qemu-common.h"
 #include "cpu.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/arch_init.h"
 #include "hw/pci/pci.h"
 #include "hw/audio/soundhw.h"
 #include "qapi/qapi-commands-misc.h"
+#include "qapi/error.h"
 #include "qemu/config-file.h"
 #include "qemu/error-report.h"
 #include "hw/acpi/acpi.h"
@@ -37,6 +37,10 @@
 #ifdef TARGET_SPARC
 int graphic_width = 1024;
 int graphic_height = 768;
+int graphic_depth = 8;
+#elif defined(TARGET_M68K)
+int graphic_width = 800;
+int graphic_height = 600;
 int graphic_depth = 8;
 #else
 int graphic_width = 800;
@@ -51,14 +55,14 @@ int graphic_depth = 32;
 #define QEMU_ARCH QEMU_ARCH_ARM
 #elif defined(TARGET_CRIS)
 #define QEMU_ARCH QEMU_ARCH_CRIS
-#elif defined(TARGET_I386)
-#define QEMU_ARCH QEMU_ARCH_I386
 #elif defined(TARGET_HPPA)
 #define QEMU_ARCH QEMU_ARCH_HPPA
-#elif defined(TARGET_M68K)
-#define QEMU_ARCH QEMU_ARCH_M68K
+#elif defined(TARGET_I386)
+#define QEMU_ARCH QEMU_ARCH_I386
 #elif defined(TARGET_LM32)
 #define QEMU_ARCH QEMU_ARCH_LM32
+#elif defined(TARGET_M68K)
+#define QEMU_ARCH QEMU_ARCH_M68K
 #elif defined(TARGET_MICROBLAZE)
 #define QEMU_ARCH QEMU_ARCH_MICROBLAZE
 #elif defined(TARGET_MIPS)
@@ -73,18 +77,20 @@ int graphic_depth = 32;
 #define QEMU_ARCH QEMU_ARCH_PPC
 #elif defined(TARGET_RISCV)
 #define QEMU_ARCH QEMU_ARCH_RISCV
+#elif defined(TARGET_RX)
+#define QEMU_ARCH QEMU_ARCH_RX
 #elif defined(TARGET_S390X)
 #define QEMU_ARCH QEMU_ARCH_S390X
 #elif defined(TARGET_SH4)
 #define QEMU_ARCH QEMU_ARCH_SH4
 #elif defined(TARGET_SPARC)
 #define QEMU_ARCH QEMU_ARCH_SPARC
-#elif defined(TARGET_XTENSA)
-#define QEMU_ARCH QEMU_ARCH_XTENSA
-#elif defined(TARGET_UNICORE32)
-#define QEMU_ARCH QEMU_ARCH_UNICORE32
 #elif defined(TARGET_TRICORE)
 #define QEMU_ARCH QEMU_ARCH_TRICORE
+#elif defined(TARGET_UNICORE32)
+#define QEMU_ARCH QEMU_ARCH_UNICORE32
+#elif defined(TARGET_XTENSA)
+#define QEMU_ARCH QEMU_ARCH_XTENSA
 #endif
 
 const uint32_t arch_type = QEMU_ARCH;
@@ -105,14 +111,4 @@ int xen_available(void)
 #else
     return 0;
 #endif
-}
-
-
-TargetInfo *qmp_query_target(Error **errp)
-{
-    TargetInfo *info = g_malloc0(sizeof(*info));
-
-    info->arch = g_strdup(TARGET_NAME);
-
-    return info;
 }

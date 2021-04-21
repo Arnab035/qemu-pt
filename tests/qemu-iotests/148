@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 #
 # Test the rate limit of QMP events
 #
@@ -137,4 +137,5 @@ class TestFifoQuorumEvents(TestQuorumEvents):
 
 if __name__ == '__main__':
     iotests.verify_quorum()
-    iotests.main(supported_fmts=["raw"])
+    iotests.main(supported_fmts=["raw"],
+                 supported_protocols=["file"])

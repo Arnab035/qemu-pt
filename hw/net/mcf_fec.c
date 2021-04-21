@@ -5,16 +5,19 @@
  *
  * This code is licensed under the GPL
  */
+
 #include "qemu/osdep.h"
 #include "hw/hw.h"
+#include "hw/irq.h"
 #include "net/net.h"
+#include "qemu/module.h"
 #include "hw/m68k/mcf.h"
 #include "hw/m68k/mcf_fec.h"
 #include "hw/net/mii.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 /* For crc32 */
 #include <zlib.h>
-#include "exec/address-spaces.h"
 
 //#define DEBUG_FEC 1
 
@@ -667,7 +670,7 @@ static void mcf_fec_class_init(ObjectClass *oc, void *data)
     dc->realize = mcf_fec_realize;
     dc->desc = "MCF Fast Ethernet Controller network device";
     dc->reset = mcf_fec_reset;
-    dc->props = mcf_fec_properties;
+    device_class_set_props(dc, mcf_fec_properties);
 }
 
 static const TypeInfo mcf_fec_info = {

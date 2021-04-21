@@ -3,16 +3,16 @@
 #ifndef HW_HPPA_SYS_H
 #define HW_HPPA_SYS_H
 
-#include "target/hppa/cpu-qom.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
-#include "hw/ide.h"
-#include "hw/i386/pc.h"
-#include "hw/irq.h"
+#include "hw/boards.h"
+#include "hw/intc/i8259.h"
 
-#include "hw/hppa/hppa_hardware.h"
+#include "hppa_hardware.h"
 
 PCIBus *dino_init(MemoryRegion *, qemu_irq *, qemu_irq *);
+DeviceState *lasi_init(MemoryRegion *);
+#define enable_lasi_lan()       0
 
 #define TYPE_DINO_PCI_HOST_BRIDGE "dino-pcihost"
 

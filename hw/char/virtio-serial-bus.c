@@ -21,9 +21,13 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/iov.h"
+#include "qemu/main-loop.h"
+#include "qemu/module.h"
+#include "migration/qemu-file-types.h"
 #include "monitor/monitor.h"
 #include "qemu/error-report.h"
 #include "qemu/queue.h"
+#include "hw/qdev-properties.h"
 #include "hw/sysbus.h"
 #include "trace.h"
 #include "hw/virtio/virtio-serial.h"
@@ -580,13 +584,16 @@ static void set_config(VirtIODevice *vdev, const uint8_t *config_data)
     VirtIOSerial *vser = VIRTIO_SERIAL(vdev);
     struct virtio_console_config *config =
         (struct virtio_console_config *)config_data;
-    uint8_t emerg_wr_lo = le32_to_cpu(config->emerg_wr);
     VirtIOSerialPort *port = find_first_connected_console(vser);
     VirtIOSerialPortClass *vsc;
+    uint8_t emerg_wr_lo;
 
-    if (!config->emerg_wr) {
+    if (!virtio_has_feature(vser->host_features,
+        VIRTIO_CONSOLE_F_EMERG_WRITE) || !config->emerg_wr) {
         return;
     }
+
+    emerg_wr_lo = le32_to_cpu(config->emerg_wr);
     /* Make sure we don't misdetect an emergency write when the guest
      * does a short config write after an emergency write. */
     config->emerg_wr = 0;
@@ -664,9 +671,9 @@ static void virtio_serial_save_device(VirtIODevice *vdev, QEMUFile *f)
 
     /* The config space (ignored on the far end in current versions) */
     get_config(vdev, (uint8_t *)&config);
-    qemu_put_be16s(f, &config.cols);
-    qemu_put_be16s(f, &config.rows);
-    qemu_put_be32s(f, &config.max_nr_ports);
+    qemu_put_be16(f, config.cols);
+    qemu_put_be16(f, config.rows);
+    qemu_put_be32(f, config.max_nr_ports);
 
     /* The ports map */
     max_nr_ports = s->serial.max_virtserial_ports;
@@ -693,7 +700,7 @@ static void virtio_serial_save_device(VirtIODevice *vdev, QEMUFile *f)
         qemu_put_byte(f, port->guest_connected);
         qemu_put_byte(f, port->host_connected);
 
-	elem_popped = 0;
+        elem_popped = 0;
         if (port->elem) {
             elem_popped = 1;
         }
@@ -701,7 +708,7 @@ static void virtio_serial_save_device(VirtIODevice *vdev, QEMUFile *f)
         if (elem_popped) {
             qemu_put_be32s(f, &port->iov_idx);
             qemu_put_be64s(f, &port->iov_offset);
-            qemu_put_virtqueue_element(f, port->elem);
+            qemu_put_virtqueue_element(vdev, f, port->elem);
         }
     }
 }
@@ -936,7 +943,6 @@ static void virtser_port_device_realize(DeviceState *dev, Error **errp)
     Error *err = NULL;
 
     port->vser = bus->vser;
-    port->bh = qemu_bh_new(flush_queued_data_bh, port);
 
     assert(vsc->have_data);
 
@@ -985,6 +991,7 @@ static void virtser_port_device_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    port->bh = qemu_bh_new(flush_queued_data_bh, port);
     port->elem = NULL;
 }
 
@@ -1049,7 +1056,7 @@ static void virtio_serial_device_realize(DeviceState *dev, Error **errp)
     /* Spawn a new virtio-serial bus on which the ports will ride as devices */
     qbus_create_inplace(&vser->bus, sizeof(vser->bus), TYPE_VIRTIO_SERIAL_BUS,
                         dev, vdev->bus_name);
-    qbus_set_hotplug_handler(BUS(&vser->bus), DEVICE(vser), errp);
+    qbus_set_hotplug_handler(BUS(&vser->bus), OBJECT(vser), errp);
     vser->bus.vser = vser;
     QTAILQ_INIT(&vser->ports);
 
@@ -1103,7 +1110,7 @@ static void virtio_serial_port_class_init(ObjectClass *klass, void *data)
     k->bus_type = TYPE_VIRTIO_SERIAL_BUS;
     k->realize = virtser_port_device_realize;
     k->unrealize = virtser_port_device_unrealize;
-    k->props = virtser_props;
+    device_class_set_props(k, virtser_props);
 }
 
 static const TypeInfo virtio_serial_port_type_info = {
@@ -1119,8 +1126,16 @@ static void virtio_serial_device_unrealize(DeviceState *dev, Error **errp)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(dev);
     VirtIOSerial *vser = VIRTIO_SERIAL(dev);
+    int i;
 
     QLIST_REMOVE(vser, next);
+
+    virtio_delete_queue(vser->c_ivq);
+    virtio_delete_queue(vser->c_ovq);
+    for (i = 0; i < vser->bus.max_nr_ports; i++) {
+        virtio_delete_queue(vser->ivqs[i]);
+        virtio_delete_queue(vser->ovqs[i]);
+    }
 
     g_free(vser->ivqs);
     g_free(vser->ovqs);
@@ -1164,7 +1179,7 @@ static void virtio_serial_class_init(ObjectClass *klass, void *data)
 
     QLIST_INIT(&vserdevices.devices);
 
-    dc->props = virtio_serial_properties;
+    device_class_set_props(dc, virtio_serial_properties);
     dc->vmsd = &vmstate_virtio_console;
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     vdc->realize = virtio_serial_device_realize;

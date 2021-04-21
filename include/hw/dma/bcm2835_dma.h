@@ -1,13 +1,13 @@
 /*
  * Raspberry Pi emulation (c) 2012 Gregory Estrade
- * This code is licensed under the GNU GPLv2 and later.
+ *
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
+ * See the COPYING file in the top-level directory.
  */
 
 #ifndef BCM2835_DMA_H
 #define BCM2835_DMA_H
 
-#include "qemu-common.h"
-#include "exec/address-spaces.h"
 #include "hw/sysbus.h"
 
 typedef struct {

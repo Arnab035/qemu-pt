@@ -9,9 +9,14 @@
  */
 
 #include "qemu/osdep.h"
-#include <cacard/vscard_common.h>
+#include "qemu-common.h"
+#include "qemu/units.h"
+#include <libcacard.h>
 #include "chardev/char-fe.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "qemu/sockets.h"
 #include "ccid.h"
 #include "qapi/error.h"
@@ -40,7 +45,7 @@ static const uint8_t DEFAULT_ATR[] = {
  0x13, 0x08
 };
 
-#define VSCARD_IN_SIZE 65536
+#define VSCARD_IN_SIZE      (64 * KiB)
 
 /* maximum size of ATR - from 7816-3 */
 #define MAX_ATR_SIZE        40
@@ -275,9 +280,9 @@ static void ccid_card_vscard_read(void *opaque, const uint8_t *buf, int size)
     VSCMsgHeader *hdr;
 
     if (card->vscard_in_pos + size > VSCARD_IN_SIZE) {
-        error_report(
-            "no room for data: pos %d +  size %d > %d. dropping connection.",
-            card->vscard_in_pos, size, VSCARD_IN_SIZE);
+        error_report("no room for data: pos %u +  size %d > %" PRId64 "."
+                     " dropping connection.",
+                     card->vscard_in_pos, size, VSCARD_IN_SIZE);
         ccid_card_vscard_drop_connection(card);
         return;
     }
@@ -302,7 +307,7 @@ static void ccid_card_vscard_read(void *opaque, const uint8_t *buf, int size)
     }
 }
 
-static void ccid_card_vscard_event(void *opaque, int event)
+static void ccid_card_vscard_event(void *opaque, QEMUChrEvent event)
 {
     PassthruState *card = opaque;
 
@@ -312,6 +317,11 @@ static void ccid_card_vscard_event(void *opaque, int event)
         break;
     case CHR_EVENT_OPENED:
         DPRINTF(card, D_INFO, "%s: CHR_EVENT_OPENED\n", __func__);
+        break;
+    case CHR_EVENT_MUX_IN:
+    case CHR_EVENT_MUX_OUT:
+    case CHR_EVENT_CLOSED:
+        /* Ignore */
         break;
     }
 }
@@ -345,7 +355,7 @@ static void passthru_realize(CCIDCardState *base, Error **errp)
     card->vscard_in_pos = 0;
     card->vscard_in_hdr = 0;
     if (qemu_chr_fe_backend_connected(&card->cs)) {
-        error_setg(errp, "ccid-card-passthru: initing chardev");
+        DPRINTF(card, D_INFO, "ccid-card-passthru: initing chardev");
         qemu_chr_fe_set_handlers(&card->cs,
             ccid_card_vscard_can_read,
             ccid_card_vscard_read,
@@ -393,7 +403,7 @@ static void passthru_class_initfn(ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_INPUT, dc->categories);
     dc->desc = "passthrough smartcard";
     dc->vmsd = &passthru_vmstate;
-    dc->props = passthru_card_properties;
+    device_class_set_props(dc, passthru_card_properties);
 }
 
 static const TypeInfo passthru_card_info = {

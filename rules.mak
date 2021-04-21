@@ -1,4 +1,7 @@
 
+# These are used when we want to do substitutions without confusing Make
+NULL  :=
+SPACE := $(NULL) #
 COMMA := ,
 
 # Don't use implicit rules or variables
@@ -73,7 +76,7 @@ expand-objs = $(strip $(sort $(filter %.o,$1)) \
 # must link with the C++ compiler, not the plain C compiler.
 LINKPROG = $(or $(CXX),$(CC))
 
-LINK = $(call quiet-command, $(LINKPROG) $(QEMU_CFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ \
+LINK = $(call quiet-command, $(LINKPROG) $(CFLAGS) $(QEMU_LDFLAGS) -o $@ \
        $(call process-archive-undefs, $1) \
        $(version-obj-y) $(call extract-libs,$1) $(LIBS),"LINK","$(TARGET_DIR)$@")
 
@@ -102,7 +105,7 @@ LINK = $(call quiet-command, $(LINKPROG) $(QEMU_CFLAGS) $(CFLAGS) $(LDFLAGS) -o 
 
 DSO_OBJ_CFLAGS := -fPIC -DBUILD_DSO
 module-common.o: CFLAGS += $(DSO_OBJ_CFLAGS)
-%$(DSOSUF): LDFLAGS += $(LDFLAGS_SHARED)
+%$(DSOSUF): QEMU_LDFLAGS += $(LDFLAGS_SHARED)
 %$(DSOSUF): %.mo
 	$(call LINK,$^)
 	@# Copy to build root so modules can be loaded when program started without install
@@ -129,7 +132,9 @@ modules:
 #  otherwise print the 'quiet' output in the format "  NAME     args to print"
 # NAME should be a short name of the command, 7 letters or fewer.
 # If called with only a single argument, will print nothing in quiet mode.
-quiet-command = $(if $(V),$1,$(if $(2),@printf "  %-7s %s\n" $2 $3 && $1, @$1))
+quiet-command-run = $(if $(V),,$(if $2,printf "  %-7s %s\n" $2 $3 && ))$1
+quiet-@ = $(if $(V),,@)
+quiet-command = $(quiet-@)$(call quiet-command-run,$1,$2,$3)
 
 # cc-option
 # Usage: CFLAGS+=$(call cc-option, -falign-functions=0, -malign-functions=0)
@@ -139,7 +144,7 @@ cc-option = $(if $(shell $(CC) $1 $2 -S -o /dev/null -xc /dev/null \
 cc-c-option = $(if $(shell $(CC) $1 $2 -c -o /dev/null -xc /dev/null \
                 >/dev/null 2>&1 && echo OK), $2, $3)
 
-VPATH_SUFFIXES = %.c %.h %.S %.cc %.cpp %.m %.mak %.texi %.sh %.rc
+VPATH_SUFFIXES = %.c %.h %.S %.cc %.cpp %.m %.mak %.texi %.sh %.rc Kconfig% %.json.in
 set-vpath = $(if $1,$(foreach PATTERN,$(VPATH_SUFFIXES),$(eval vpath $(PATTERN) $1)))
 
 # install-prog list, dir
@@ -322,7 +327,7 @@ endef
 #     ../water/ice.mo-libs = -licemaker
 #     ../water/ice.mo-objs = ../water/ice1.o ../water/ice2.o
 #
-# Note that 'hot' didn't include 'season/' in the input, so 'summer.o' is not
+# Note that 'hot' didn't include 'water/' in the input, so 'steam.o' is not
 # included.
 #
 define unnest-vars
@@ -387,3 +392,49 @@ TEXI2MAN = $(call quiet-command, \
 	$(call TEXI2MAN)
 %.8:
 	$(call TEXI2MAN)
+
+GEN_SUBST = $(call quiet-command, \
+	sed -e "s!@libexecdir@!$(libexecdir)!g" < $< > $@, \
+	"GEN","$@")
+
+%.json: %.json.in
+	$(call GEN_SUBST)
+
+# Support for building multiple output files by atomically executing
+# a single rule which depends on several input files (so the rule
+# will be executed exactly once, not once per output file, and
+# not multiple times in parallel.) For more explanation see:
+# https://www.cmcrossroads.com/article/atomic-rules-gnu-make
+
+# Given a space-separated list of filenames, create the name of
+# a 'sentinel' file to use to indicate that they have been built.
+# We use fixed text on the end to avoid accidentally triggering
+# automatic pattern rules, and . on the start to make the file
+# not show up in ls output.
+sentinel = .$(subst $(SPACE),_,$(subst /,_,$1)).sentinel.
+
+# Define an atomic rule that builds multiple outputs from multiple inputs.
+# To use:
+#    $(call atomic,out1 out2 ...,in1 in2 ...)
+#    <TAB>rule to do the operation
+#
+# Make 4.3 will have native support for this, and you would be able
+# to instead write:
+#    out1 out2 ... &: in1 in2 ...
+#    <TAB>rule to do the operation
+#
+# The way this works is that it creates a make rule
+# "out1 out2 ... : sentinel-file ; @:" which says that the sentinel
+# depends on the dependencies, and the rule to do that is "do nothing".
+# Then we have a rule
+# "sentinel-file : in1 in2 ..."
+# whose commands start with "touch sentinel-file" and then continue
+# with the rule text provided by the user of this 'atomic' function.
+# The foreach... is there to delete the sentinel file if any of the
+# output files don't exist, so that we correctly rebuild in that situation.
+atomic = $(eval $1: $(call sentinel,$1) ; @:) \
+         $(call sentinel,$1) : $2 ; @touch $$@ \
+         $(foreach t,$1,$(if $(wildcard $t),,$(shell rm -f $(call sentinel,$1))))
+
+print-%:
+	@echo '$*=$($*)'

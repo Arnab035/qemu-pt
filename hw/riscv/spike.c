@@ -27,7 +27,6 @@
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qapi/error.h"
-#include "hw/hw.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/sysbus.h"
@@ -36,46 +35,24 @@
 #include "hw/riscv/riscv_hart.h"
 #include "hw/riscv/sifive_clint.h"
 #include "hw/riscv/spike.h"
+#include "hw/riscv/boot.h"
 #include "chardev/char.h"
 #include "sysemu/arch_init.h"
 #include "sysemu/device_tree.h"
+#include "sysemu/qtest.h"
+#include "sysemu/sysemu.h"
 #include "exec/address-spaces.h"
-#include "elf.h"
+
+#include <libfdt.h>
 
 static const struct MemmapEntry {
     hwaddr base;
     hwaddr size;
 } spike_memmap[] = {
-    [SPIKE_MROM] =     {     0x1000,     0x2000 },
+    [SPIKE_MROM] =     {     0x1000,    0x11000 },
     [SPIKE_CLINT] =    {  0x2000000,    0x10000 },
     [SPIKE_DRAM] =     { 0x80000000,        0x0 },
 };
-
-static void copy_le32_to_phys(hwaddr pa, uint32_t *rom, size_t len)
-{
-    int i;
-    for (i = 0; i < (len >> 2); i++) {
-        stl_phys(&address_space_memory, pa + (i << 2), rom[i]);
-    }
-}
-
-static uint64_t identity_translate(void *opaque, uint64_t addr)
-{
-    return addr;
-}
-
-static uint64_t load_kernel(const char *kernel_filename)
-{
-    uint64_t kernel_entry, kernel_high;
-
-    if (load_elf_ram_sym(kernel_filename, identity_translate, NULL,
-            &kernel_entry, NULL, &kernel_high, 0, ELF_MACHINE, 1, 0,
-            NULL, true, htif_symbol_callback) < 0) {
-        error_report("qemu: could not load kernel '%s'", kernel_filename);
-        exit(1);
-    }
-    return kernel_entry;
-}
 
 static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
     uint64_t mem_size, const char *cmdline)
@@ -101,7 +78,7 @@ static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
 
     qemu_fdt_add_subnode(fdt, "/soc");
     qemu_fdt_setprop(fdt, "/soc", "ranges", NULL, 0);
-    qemu_fdt_setprop_string(fdt, "/soc", "compatible", "ucbbar,spike-bare-soc");
+    qemu_fdt_setprop_string(fdt, "/soc", "compatible", "simple-bus");
     qemu_fdt_setprop_cell(fdt, "/soc", "#size-cells", 0x2);
     qemu_fdt_setprop_cell(fdt, "/soc", "#address-cells", 0x2);
 
@@ -115,7 +92,8 @@ static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
     g_free(nodename);
 
     qemu_fdt_add_subnode(fdt, "/cpus");
-    qemu_fdt_setprop_cell(fdt, "/cpus", "timebase-frequency", 10000000);
+    qemu_fdt_setprop_cell(fdt, "/cpus", "timebase-frequency",
+        SIFIVE_CLINT_TIMEBASE_FREQ);
     qemu_fdt_setprop_cell(fdt, "/cpus", "#size-cells", 0x0);
     qemu_fdt_setprop_cell(fdt, "/cpus", "#address-cells", 0x1);
 
@@ -124,7 +102,6 @@ static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
         char *intc = g_strdup_printf("/cpus/cpu@%d/interrupt-controller", cpu);
         char *isa = riscv_isa_string(&s->soc.harts[cpu]);
         qemu_fdt_add_subnode(fdt, nodename);
-        qemu_fdt_setprop_cell(fdt, nodename, "clock-frequency", 1000000000);
         qemu_fdt_setprop_string(fdt, nodename, "mmu-type", "riscv,sv48");
         qemu_fdt_setprop_string(fdt, nodename, "riscv,isa", isa);
         qemu_fdt_setprop_string(fdt, nodename, "compatible", "riscv");
@@ -133,7 +110,6 @@ static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
         qemu_fdt_setprop_string(fdt, nodename, "device_type", "cpu");
         qemu_fdt_add_subnode(fdt, intc);
         qemu_fdt_setprop_cell(fdt, intc, "phandle", 1);
-        qemu_fdt_setprop_cell(fdt, intc, "linux,phandle", 1);
         qemu_fdt_setprop_string(fdt, intc, "compatible", "riscv,cpu-intc");
         qemu_fdt_setprop(fdt, intc, "interrupt-controller", NULL, 0);
         qemu_fdt_setprop_cell(fdt, intc, "#interrupt-cells", 1);
@@ -165,24 +141,27 @@ static void create_fdt(SpikeState *s, const struct MemmapEntry *memmap,
     g_free(cells);
     g_free(nodename);
 
-    qemu_fdt_add_subnode(fdt, "/chosen");
-    qemu_fdt_setprop_string(fdt, "/chosen", "bootargs", cmdline);
- }
+    if (cmdline) {
+        qemu_fdt_add_subnode(fdt, "/chosen");
+        qemu_fdt_setprop_string(fdt, "/chosen", "bootargs", cmdline);
+    }
+}
 
-static void spike_v1_10_0_board_init(MachineState *machine)
+static void spike_board_init(MachineState *machine)
 {
     const struct MemmapEntry *memmap = spike_memmap;
 
     SpikeState *s = g_new0(SpikeState, 1);
     MemoryRegion *system_memory = get_system_memory();
     MemoryRegion *main_mem = g_new(MemoryRegion, 1);
-    MemoryRegion *boot_rom = g_new(MemoryRegion, 1);
+    MemoryRegion *mask_rom = g_new(MemoryRegion, 1);
+    int i;
+    unsigned int smp_cpus = machine->smp.cpus;
 
     /* Initialize SOC */
-    object_initialize(&s->soc, sizeof(s->soc), TYPE_RISCV_HART_ARRAY);
-    object_property_add_child(OBJECT(machine), "soc", OBJECT(&s->soc),
-                              &error_abort);
-    object_property_set_str(OBJECT(&s->soc), SPIKE_V1_10_0_CPU, "cpu-type",
+    object_initialize_child(OBJECT(machine), "soc", &s->soc, sizeof(s->soc),
+                            TYPE_RISCV_HART_ARRAY, &error_abort, NULL);
+    object_property_set_str(OBJECT(&s->soc), machine->cpu_type, "cpu-type",
                             &error_abort);
     object_property_set_int(OBJECT(&s->soc), smp_cpus, "num-harts",
                             &error_abort);
@@ -199,12 +178,13 @@ static void spike_v1_10_0_board_init(MachineState *machine)
     create_fdt(s, memmap, machine->ram_size, machine->kernel_cmdline);
 
     /* boot rom */
-    memory_region_init_ram(boot_rom, NULL, "riscv.spike.bootrom",
-                           s->fdt_size + 0x2000, &error_fatal);
-    memory_region_add_subregion(system_memory, 0x0, boot_rom);
+    memory_region_init_rom(mask_rom, NULL, "riscv.spike.mrom",
+                           memmap[SPIKE_MROM].size, &error_fatal);
+    memory_region_add_subregion(system_memory, memmap[SPIKE_MROM].base,
+                                mask_rom);
 
     if (machine->kernel_filename) {
-        load_kernel(machine->kernel_filename);
+        riscv_load_kernel(machine->kernel_filename, htif_symbol_callback);
     }
 
     /* reset vector */
@@ -224,20 +204,121 @@ static void spike_v1_10_0_board_init(MachineState *machine)
                                      /* dtb: */
     };
 
-    /* copy in the reset vector */
-    copy_le32_to_phys(memmap[SPIKE_MROM].base, reset_vec, sizeof(reset_vec));
+    /* copy in the reset vector in little_endian byte order */
+    for (i = 0; i < sizeof(reset_vec) >> 2; i++) {
+        reset_vec[i] = cpu_to_le32(reset_vec[i]);
+    }
+    rom_add_blob_fixed_as("mrom.reset", reset_vec, sizeof(reset_vec),
+                          memmap[SPIKE_MROM].base, &address_space_memory);
 
     /* copy in the device tree */
-    qemu_fdt_dumpdtb(s->fdt, s->fdt_size);
-    cpu_physical_memory_write(memmap[SPIKE_MROM].base + sizeof(reset_vec),
-        s->fdt, s->fdt_size);
+    if (fdt_pack(s->fdt) || fdt_totalsize(s->fdt) >
+            memmap[SPIKE_MROM].size - sizeof(reset_vec)) {
+        error_report("not enough space to store device-tree");
+        exit(1);
+    }
+    qemu_fdt_dumpdtb(s->fdt, fdt_totalsize(s->fdt));
+    rom_add_blob_fixed_as("mrom.fdt", s->fdt, fdt_totalsize(s->fdt),
+                          memmap[SPIKE_MROM].base + sizeof(reset_vec),
+                          &address_space_memory);
 
     /* initialize HTIF using symbols found in load_kernel */
-    htif_mm_init(system_memory, boot_rom, &s->soc.harts[0].env, serial_hds[0]);
+    htif_mm_init(system_memory, mask_rom, &s->soc.harts[0].env, serial_hd(0));
 
     /* Core Local Interruptor (timer and IPI) */
     sifive_clint_create(memmap[SPIKE_CLINT].base, memmap[SPIKE_CLINT].size,
-        smp_cpus, SIFIVE_SIP_BASE, SIFIVE_TIMECMP_BASE, SIFIVE_TIME_BASE);
+        smp_cpus, SIFIVE_SIP_BASE, SIFIVE_TIMECMP_BASE, SIFIVE_TIME_BASE,
+        false);
+}
+
+static void spike_v1_10_0_board_init(MachineState *machine)
+{
+    const struct MemmapEntry *memmap = spike_memmap;
+
+    SpikeState *s = g_new0(SpikeState, 1);
+    MemoryRegion *system_memory = get_system_memory();
+    MemoryRegion *main_mem = g_new(MemoryRegion, 1);
+    MemoryRegion *mask_rom = g_new(MemoryRegion, 1);
+    int i;
+    unsigned int smp_cpus = machine->smp.cpus;
+
+    if (!qtest_enabled()) {
+        info_report("The Spike v1.10.0 machine has been deprecated. "
+                    "Please use the generic spike machine and specify the ISA "
+                    "versions using -cpu.");
+    }
+
+    /* Initialize SOC */
+    object_initialize_child(OBJECT(machine), "soc", &s->soc, sizeof(s->soc),
+                            TYPE_RISCV_HART_ARRAY, &error_abort, NULL);
+    object_property_set_str(OBJECT(&s->soc), SPIKE_V1_10_0_CPU, "cpu-type",
+                            &error_abort);
+    object_property_set_int(OBJECT(&s->soc), smp_cpus, "num-harts",
+                            &error_abort);
+    object_property_set_bool(OBJECT(&s->soc), true, "realized",
+                            &error_abort);
+
+    /* register system main memory (actual RAM) */
+    memory_region_init_ram(main_mem, NULL, "riscv.spike.ram",
+                           machine->ram_size, &error_fatal);
+    memory_region_add_subregion(system_memory, memmap[SPIKE_DRAM].base,
+        main_mem);
+
+    /* create device tree */
+    create_fdt(s, memmap, machine->ram_size, machine->kernel_cmdline);
+
+    /* boot rom */
+    memory_region_init_rom(mask_rom, NULL, "riscv.spike.mrom",
+                           memmap[SPIKE_MROM].size, &error_fatal);
+    memory_region_add_subregion(system_memory, memmap[SPIKE_MROM].base,
+                                mask_rom);
+
+    if (machine->kernel_filename) {
+        riscv_load_kernel(machine->kernel_filename, htif_symbol_callback);
+    }
+
+    /* reset vector */
+    uint32_t reset_vec[8] = {
+        0x00000297,                  /* 1:  auipc  t0, %pcrel_hi(dtb) */
+        0x02028593,                  /*     addi   a1, t0, %pcrel_lo(1b) */
+        0xf1402573,                  /*     csrr   a0, mhartid  */
+#if defined(TARGET_RISCV32)
+        0x0182a283,                  /*     lw     t0, 24(t0) */
+#elif defined(TARGET_RISCV64)
+        0x0182b283,                  /*     ld     t0, 24(t0) */
+#endif
+        0x00028067,                  /*     jr     t0 */
+        0x00000000,
+        memmap[SPIKE_DRAM].base,     /* start: .dword DRAM_BASE */
+        0x00000000,
+                                     /* dtb: */
+    };
+
+    /* copy in the reset vector in little_endian byte order */
+    for (i = 0; i < sizeof(reset_vec) >> 2; i++) {
+        reset_vec[i] = cpu_to_le32(reset_vec[i]);
+    }
+    rom_add_blob_fixed_as("mrom.reset", reset_vec, sizeof(reset_vec),
+                          memmap[SPIKE_MROM].base, &address_space_memory);
+
+    /* copy in the device tree */
+    if (fdt_pack(s->fdt) || fdt_totalsize(s->fdt) >
+            memmap[SPIKE_MROM].size - sizeof(reset_vec)) {
+        error_report("not enough space to store device-tree");
+        exit(1);
+    }
+    qemu_fdt_dumpdtb(s->fdt, fdt_totalsize(s->fdt));
+    rom_add_blob_fixed_as("mrom.fdt", s->fdt, fdt_totalsize(s->fdt),
+                          memmap[SPIKE_MROM].base + sizeof(reset_vec),
+                          &address_space_memory);
+
+    /* initialize HTIF using symbols found in load_kernel */
+    htif_mm_init(system_memory, mask_rom, &s->soc.harts[0].env, serial_hd(0));
+
+    /* Core Local Interruptor (timer and IPI) */
+    sifive_clint_create(memmap[SPIKE_CLINT].base, memmap[SPIKE_CLINT].size,
+        smp_cpus, SIFIVE_SIP_BASE, SIFIVE_TIMECMP_BASE, SIFIVE_TIME_BASE,
+        false);
 }
 
 static void spike_v1_09_1_board_init(MachineState *machine)
@@ -247,12 +328,19 @@ static void spike_v1_09_1_board_init(MachineState *machine)
     SpikeState *s = g_new0(SpikeState, 1);
     MemoryRegion *system_memory = get_system_memory();
     MemoryRegion *main_mem = g_new(MemoryRegion, 1);
-    MemoryRegion *boot_rom = g_new(MemoryRegion, 1);
+    MemoryRegion *mask_rom = g_new(MemoryRegion, 1);
+    int i;
+    unsigned int smp_cpus = machine->smp.cpus;
+
+    if (!qtest_enabled()) {
+        info_report("The Spike v1.09.1 machine has been deprecated. "
+                    "Please use the generic spike machine and specify the ISA "
+                    "versions using -cpu.");
+    }
 
     /* Initialize SOC */
-    object_initialize(&s->soc, sizeof(s->soc), TYPE_RISCV_HART_ARRAY);
-    object_property_add_child(OBJECT(machine), "soc", OBJECT(&s->soc),
-                              &error_abort);
+    object_initialize_child(OBJECT(machine), "soc", &s->soc, sizeof(s->soc),
+                            TYPE_RISCV_HART_ARRAY, &error_abort, NULL);
     object_property_set_str(OBJECT(&s->soc), SPIKE_V1_09_1_CPU, "cpu-type",
                             &error_abort);
     object_property_set_int(OBJECT(&s->soc), smp_cpus, "num-harts",
@@ -267,12 +355,13 @@ static void spike_v1_09_1_board_init(MachineState *machine)
         main_mem);
 
     /* boot rom */
-    memory_region_init_ram(boot_rom, NULL, "riscv.spike.bootrom",
-                           0x40000, &error_fatal);
-    memory_region_add_subregion(system_memory, 0x0, boot_rom);
+    memory_region_init_rom(mask_rom, NULL, "riscv.spike.mrom",
+                           memmap[SPIKE_MROM].size, &error_fatal);
+    memory_region_add_subregion(system_memory, memmap[SPIKE_MROM].base,
+                                mask_rom);
 
     if (machine->kernel_filename) {
-        load_kernel(machine->kernel_filename);
+        riscv_load_kernel(machine->kernel_filename, htif_symbol_callback);
     }
 
     /* reset vector */
@@ -311,9 +400,7 @@ static void spike_v1_09_1_board_init(MachineState *machine)
 
     /* build config string with supplied memory size */
     char *isa = riscv_isa_string(&s->soc.harts[0]);
-    size_t config_string_size = strlen(config_string_tmpl) + 48;
-    char *config_string = malloc(config_string_size);
-    snprintf(config_string, config_string_size, config_string_tmpl,
+    char *config_string = g_strdup_printf(config_string_tmpl,
         (uint64_t)memmap[SPIKE_CLINT].base + SIFIVE_TIME_BASE,
         (uint64_t)memmap[SPIKE_DRAM].base,
         (uint64_t)ram_size, isa,
@@ -322,32 +409,28 @@ static void spike_v1_09_1_board_init(MachineState *machine)
     g_free(isa);
     size_t config_string_len = strlen(config_string);
 
-    /* copy in the reset vector */
-    copy_le32_to_phys(memmap[SPIKE_MROM].base, reset_vec, sizeof(reset_vec));
+    /* copy in the reset vector in little_endian byte order */
+    for (i = 0; i < sizeof(reset_vec) >> 2; i++) {
+        reset_vec[i] = cpu_to_le32(reset_vec[i]);
+    }
+    rom_add_blob_fixed_as("mrom.reset", reset_vec, sizeof(reset_vec),
+                          memmap[SPIKE_MROM].base, &address_space_memory);
 
     /* copy in the config string */
-    cpu_physical_memory_write(memmap[SPIKE_MROM].base + sizeof(reset_vec),
-        config_string, config_string_len);
+    rom_add_blob_fixed_as("mrom.reset", config_string, config_string_len,
+                          memmap[SPIKE_MROM].base + sizeof(reset_vec),
+                          &address_space_memory);
 
     /* initialize HTIF using symbols found in load_kernel */
-    htif_mm_init(system_memory, boot_rom, &s->soc.harts[0].env, serial_hds[0]);
+    htif_mm_init(system_memory, mask_rom, &s->soc.harts[0].env, serial_hd(0));
 
     /* Core Local Interruptor (timer and IPI) */
     sifive_clint_create(memmap[SPIKE_CLINT].base, memmap[SPIKE_CLINT].size,
-        smp_cpus, SIFIVE_SIP_BASE, SIFIVE_TIMECMP_BASE, SIFIVE_TIME_BASE);
+        smp_cpus, SIFIVE_SIP_BASE, SIFIVE_TIMECMP_BASE, SIFIVE_TIME_BASE,
+        false);
+
+    g_free(config_string);
 }
-
-static const TypeInfo spike_v_1_09_1_device = {
-    .name          = TYPE_RISCV_SPIKE_V1_09_1_BOARD,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SpikeState),
-};
-
-static const TypeInfo spike_v_1_10_0_device = {
-    .name          = TYPE_RISCV_SPIKE_V1_10_0_BOARD,
-    .parent        = TYPE_SYS_BUS_DEVICE,
-    .instance_size = sizeof(SpikeState),
-};
 
 static void spike_v1_09_1_machine_init(MachineClass *mc)
 {
@@ -361,16 +444,17 @@ static void spike_v1_10_0_machine_init(MachineClass *mc)
     mc->desc = "RISC-V Spike Board (Privileged ISA v1.10)";
     mc->init = spike_v1_10_0_board_init;
     mc->max_cpus = 1;
-    mc->is_default = 1;
+}
+
+static void spike_machine_init(MachineClass *mc)
+{
+    mc->desc = "RISC-V Spike Board";
+    mc->init = spike_board_init;
+    mc->max_cpus = 1;
+    mc->is_default = true;
+    mc->default_cpu_type = SPIKE_V1_10_0_CPU;
 }
 
 DEFINE_MACHINE("spike_v1.9.1", spike_v1_09_1_machine_init)
 DEFINE_MACHINE("spike_v1.10", spike_v1_10_0_machine_init)
-
-static void riscv_spike_board_register_types(void)
-{
-    type_register_static(&spike_v_1_09_1_device);
-    type_register_static(&spike_v_1_10_0_device);
-}
-
-type_init(riscv_spike_board_register_types);
+DEFINE_MACHINE("spike", spike_machine_init)

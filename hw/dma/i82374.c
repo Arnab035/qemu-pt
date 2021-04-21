@@ -23,7 +23,11 @@
  */
 
 #include "qemu/osdep.h"
+#include "qapi/error.h"
+#include "qemu/module.h"
 #include "hw/isa/isa.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "hw/dma/i8257.h"
 
 #define TYPE_I82374 "i82374"
@@ -118,13 +122,19 @@ static const MemoryRegionPortio i82374_portio_list[] = {
 static void i82374_realize(DeviceState *dev, Error **errp)
 {
     I82374State *s = I82374(dev);
+    ISABus *isa_bus = isa_bus_from_device(ISA_DEVICE(dev));
+
+    if (isa_get_dma(isa_bus, 0)) {
+        error_setg(errp, "DMA already initialized on ISA bus");
+        return;
+    }
+    i8257_dma_init(isa_bus, true);
 
     portio_list_init(&s->port_list, OBJECT(s), i82374_portio_list, s,
                      "i82374");
     portio_list_add(&s->port_list, isa_address_space_io(&s->parent_obj),
                     s->iobase);
 
-    i8257_dma_init(isa_bus_from_device(ISA_DEVICE(dev)), true);
     memset(s->commands, 0, sizeof(s->commands));
 }
 
@@ -139,7 +149,7 @@ static void i82374_class_init(ObjectClass *klass, void *data)
     
     dc->realize = i82374_realize;
     dc->vmsd = &vmstate_i82374;
-    dc->props = i82374_properties;
+    device_class_set_props(dc, i82374_properties);
 }
 
 static const TypeInfo i82374_info = {

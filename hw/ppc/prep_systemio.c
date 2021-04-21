@@ -23,10 +23,14 @@
  */
 
 #include "qemu/osdep.h"
+#include "hw/irq.h"
 #include "hw/isa/isa.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
 #include "exec/address-spaces.h"
 #include "qemu/error-report.h" /* for error_report() */
-#include "sysemu/sysemu.h" /* for vm_stop() */
+#include "qemu/module.h"
+#include "sysemu/runstate.h"
 #include "cpu.h"
 #include "trace.h"
 
@@ -285,7 +289,7 @@ static void prep_systemio_class_initfn(ObjectClass *klass, void *data)
 
     dc->realize = prep_systemio_realize;
     dc->vmsd = &vmstate_prep_systemio;
-    dc->props = prep_systemio_properties;
+    device_class_set_props(dc, prep_systemio_properties);
 }
 
 static TypeInfo prep_systemio800_info = {

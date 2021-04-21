@@ -5,18 +5,20 @@
  * Copyright (c) 2011-2012 Andreas Färber
  * Copyright (c) 2018 Philippe Mathieu-Daudé
  *
- * This code is licensed under the GNU GPLv2 and later.
+ * This work is licensed under the terms of the GNU GPL, version 2 or later.
  * See the COPYING file in the top-level directory.
  * SPDX-License-Identifier: GPL-2.0-or-later
  */
+
 #include "qemu/osdep.h"
 #include "qemu/error-report.h"
+#include "qemu/module.h"
 #include "qapi/error.h"
 #include "sysemu/sysemu.h"
-#include "sysemu/block-backend.h"
 #include "sysemu/blockdev.h"
 #include "chardev/char.h"
 #include "hw/isa/superio.h"
+#include "hw/qdev-properties.h"
 #include "hw/input/i8042.h"
 #include "hw/char/serial.h"
 #include "trace.h"
@@ -43,9 +45,9 @@ static void isa_superio_realize(DeviceState *dev, Error **errp)
         if (!k->parallel.is_enabled || k->parallel.is_enabled(sio, i)) {
             /* FIXME use a qdev chardev prop instead of parallel_hds[] */
             chr = parallel_hds[i];
-            if (chr == NULL || chr->be) {
+            if (chr == NULL) {
                 name = g_strdup_printf("discarding-parallel%d", i);
-                chr = qemu_chr_new(name, "null");
+                chr = qemu_chr_new(name, "null", NULL);
             } else {
                 name = g_strdup_printf("parallel%d", i);
             }
@@ -81,11 +83,11 @@ static void isa_superio_realize(DeviceState *dev, Error **errp)
             break;
         }
         if (!k->serial.is_enabled || k->serial.is_enabled(sio, i)) {
-            /* FIXME use a qdev chardev prop instead of serial_hds[] */
-            chr = serial_hds[i];
-            if (chr == NULL || chr->be) {
+            /* FIXME use a qdev chardev prop instead of serial_hd() */
+            chr = serial_hd(i);
+            if (chr == NULL) {
                 name = g_strdup_printf("discarding-serial%d", i);
-                chr = qemu_chr_new(name, "null");
+                chr = qemu_chr_new(name, "null", NULL);
             } else {
                 name = g_strdup_printf("serial%d", i);
             }

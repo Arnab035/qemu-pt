@@ -18,10 +18,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "hw/hw.h"
 #include "hw/audio/soundhw.h"
 #include "audio/audio.h"
 #include "hw/pci/pci.h"
+#include "hw/qdev-properties.h"
+#include "migration/vmstate.h"
+#include "qemu/module.h"
 #include "sysemu/dma.h"
 
 enum {
@@ -123,6 +125,10 @@ enum {
 
 #define MUTE_SHIFT 15
 
+#define TYPE_AC97 "AC97"
+#define AC97(obj) \
+    OBJECT_CHECK(AC97LinkState, (obj), TYPE_AC97)
+
 #define REC_MASK 7
 enum {
     REC_MIC = 0,
@@ -155,7 +161,6 @@ typedef struct AC97BusMasterRegs {
 typedef struct AC97LinkState {
     PCIDevice dev;
     QEMUSoundCard card;
-    uint32_t use_broken_id;
     uint32_t glob_cnt;
     uint32_t glob_sta;
     uint32_t cas;
@@ -361,7 +366,7 @@ static void open_voice (AC97LinkState *s, int index, int freq)
 
     as.freq = freq;
     as.nchannels = 2;
-    as.fmt = AUD_FMT_S16;
+    as.fmt = AUDIO_FORMAT_S16;
     as.endianness = 0;
 
     if (freq > 0) {
@@ -959,7 +964,7 @@ static int write_audio (AC97LinkState *s, AC97BusMasterRegs *r,
     uint32_t temp = r->picb << 1;
     uint32_t written = 0;
     int to_copy = 0;
-    temp = audio_MIN (temp, max);
+    temp = MIN (temp, max);
 
     if (!temp) {
         *stop = 1;
@@ -968,7 +973,7 @@ static int write_audio (AC97LinkState *s, AC97BusMasterRegs *r,
 
     while (temp) {
         int copied;
-        to_copy = audio_MIN (temp, sizeof (tmpbuf));
+        to_copy = MIN (temp, sizeof (tmpbuf));
         pci_dma_read (&s->dev, addr, tmpbuf, to_copy);
         copied = AUD_write (s->voice_po, tmpbuf, to_copy);
         dolog ("write_audio max=%x to_copy=%x copied=%x\n",
@@ -1014,7 +1019,7 @@ static void write_bup (AC97LinkState *s, int elapsed)
     }
 
     while (elapsed) {
-        int temp = audio_MIN (elapsed, sizeof (s->silence));
+        int temp = MIN (elapsed, sizeof (s->silence));
         while (temp) {
             int copied = AUD_write (s->voice_po, s->silence, temp);
             if (!copied)
@@ -1035,7 +1040,7 @@ static int read_audio (AC97LinkState *s, AC97BusMasterRegs *r,
     int to_copy = 0;
     SWVoiceIn *voice = (r - s->bm_regs) == MC_INDEX ? s->voice_mc : s->voice_pi;
 
-    temp = audio_MIN (temp, max);
+    temp = MIN (temp, max);
 
     if (!temp) {
         *stop = 1;
@@ -1044,7 +1049,7 @@ static int read_audio (AC97LinkState *s, AC97BusMasterRegs *r,
 
     while (temp) {
         int acquired;
-        to_copy = audio_MIN (temp, sizeof (tmpbuf));
+        to_copy = MIN (temp, sizeof (tmpbuf));
         acquired = AUD_read (voice, tmpbuf, to_copy);
         if (!acquired) {
             *stop = 1;
@@ -1340,7 +1345,7 @@ static void ac97_on_reset (DeviceState *dev)
 
 static void ac97_realize(PCIDevice *dev, Error **errp)
 {
-    AC97LinkState *s = DO_UPCAST (AC97LinkState, dev, dev);
+    AC97LinkState *s = AC97(dev);
     uint8_t *c = s->dev.config;
 
     /* TODO: no need to override */
@@ -1367,13 +1372,6 @@ static void ac97_realize(PCIDevice *dev, Error **errp)
     c[PCI_BASE_ADDRESS_0 + 6] = 0x00;
     c[PCI_BASE_ADDRESS_0 + 7] = 0x00;
 
-    if (s->use_broken_id) {
-        c[PCI_SUBSYSTEM_VENDOR_ID] = 0x86;
-        c[PCI_SUBSYSTEM_VENDOR_ID + 1] = 0x80;
-        c[PCI_SUBSYSTEM_ID] = 0x00;
-        c[PCI_SUBSYSTEM_ID + 1] = 0x00;
-    }
-
     c[PCI_INTERRUPT_LINE] = 0x00;      /* intr_ln interrupt line rw */
     c[PCI_INTERRUPT_PIN] = 0x01;      /* intr_pn interrupt pin ro */
 
@@ -1384,12 +1382,12 @@ static void ac97_realize(PCIDevice *dev, Error **errp)
     pci_register_bar (&s->dev, 0, PCI_BASE_ADDRESS_SPACE_IO, &s->io_nam);
     pci_register_bar (&s->dev, 1, PCI_BASE_ADDRESS_SPACE_IO, &s->io_nabm);
     AUD_register_card ("ac97", &s->card);
-    ac97_on_reset (&s->dev.qdev);
+    ac97_on_reset(DEVICE(s));
 }
 
 static void ac97_exit(PCIDevice *dev)
 {
-    AC97LinkState *s = DO_UPCAST(AC97LinkState, dev, dev);
+    AC97LinkState *s = AC97(dev);
 
     AUD_close_in(&s->card, s->voice_pi);
     AUD_close_out(&s->card, s->voice_po);
@@ -1399,12 +1397,12 @@ static void ac97_exit(PCIDevice *dev)
 
 static int ac97_init (PCIBus *bus)
 {
-    pci_create_simple (bus, -1, "AC97");
+    pci_create_simple(bus, -1, TYPE_AC97);
     return 0;
 }
 
 static Property ac97_properties[] = {
-    DEFINE_PROP_UINT32 ("use_broken_id", AC97LinkState, use_broken_id, 0),
+    DEFINE_AUDIO_PROPERTIES(AC97LinkState, card),
     DEFINE_PROP_END_OF_LIST (),
 };
 
@@ -1422,12 +1420,12 @@ static void ac97_class_init (ObjectClass *klass, void *data)
     set_bit(DEVICE_CATEGORY_SOUND, dc->categories);
     dc->desc = "Intel 82801AA AC97 Audio";
     dc->vmsd = &vmstate_ac97;
-    dc->props = ac97_properties;
+    device_class_set_props(dc, ac97_properties);
     dc->reset = ac97_on_reset;
 }
 
 static const TypeInfo ac97_info = {
-    .name          = "AC97",
+    .name          = TYPE_AC97,
     .parent        = TYPE_PCI_DEVICE,
     .instance_size = sizeof (AC97LinkState),
     .class_init    = ac97_class_init,

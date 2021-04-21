@@ -11,16 +11,21 @@
 #include "qapi/error.h"
 #include "hw/sysbus.h"
 #include "hw/ssi/ssi.h"
-#include "hw/arm/arm.h"
-#include "hw/devices.h"
+#include "hw/arm/boot.h"
 #include "qemu/timer.h"
 #include "hw/i2c/i2c.h"
 #include "net/net.h"
 #include "hw/boards.h"
 #include "qemu/log.h"
 #include "exec/address-spaces.h"
+#include "sysemu/runstate.h"
 #include "sysemu/sysemu.h"
+#include "hw/arm/armv7m.h"
 #include "hw/char/pl011.h"
+#include "hw/input/gamepad.h"
+#include "hw/irq.h"
+#include "hw/watchdog/cmsdk-apb-watchdog.h"
+#include "migration/vmstate.h"
 #include "hw/misc/unimp.h"
 #include "cpu.h"
 
@@ -130,7 +135,7 @@ static void gptm_tick(void *opaque)
         s->state |= 1;
         if ((s->control & 0x20)) {
             /* Output trigger.  */
-	    qemu_irq_pulse(s->trigger);
+            qemu_irq_pulse(s->trigger);
         }
         if (s->mode[0] & 1) {
             /* One-shot.  */
@@ -203,15 +208,16 @@ static uint64_t gptm_read(void *opaque, hwaddr offset,
             return s->rtc;
         }
         qemu_log_mask(LOG_UNIMP,
-                      "GPTM: read of TAR but timer read not supported");
+                      "GPTM: read of TAR but timer read not supported\n");
         return 0;
     case 0x4c: /* TBR */
         qemu_log_mask(LOG_UNIMP,
-                      "GPTM: read of TBR but timer read not supported");
+                      "GPTM: read of TBR but timer read not supported\n");
         return 0;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "GPTM: read at bad offset 0x%x\n", (int)offset);
+                      "GPTM: read at bad offset 0x02%" HWADDR_PRIx "\n",
+                      offset);
         return 0;
     }
 }
@@ -293,7 +299,8 @@ static void gptm_write(void *opaque, hwaddr offset,
         break;
     default:
         qemu_log_mask(LOG_GUEST_ERROR,
-                      "GPTM: read at bad offset 0x%x\n", (int)offset);
+                      "GPTM: write at bad offset 0x02%" HWADDR_PRIx "\n",
+                      offset);
     }
     gptm_update_irq(s);
 }
@@ -340,10 +347,14 @@ static void stellaris_gptm_init(Object *obj)
     sysbus_init_mmio(sbd, &s->iomem);
 
     s->opaque[0] = s->opaque[1] = s;
+}
+
+static void stellaris_gptm_realize(DeviceState *dev, Error **errp)
+{
+    gptm_state *s = STELLARIS_GPTM(dev);
     s->timer[0] = timer_new_ns(QEMU_CLOCK_VIRTUAL, gptm_tick, &s->opaque[0]);
     s->timer[1] = timer_new_ns(QEMU_CLOCK_VIRTUAL, gptm_tick, &s->opaque[1]);
 }
-
 
 /* System controller.  */
 
@@ -559,7 +570,7 @@ static void ssys_write(void *opaque, hwaddr offset,
     case 0x040: /* SRCR0 */
     case 0x044: /* SRCR1 */
     case 0x048: /* SRCR2 */
-        fprintf(stderr, "Peripheral reset not implemented\n");
+        qemu_log_mask(LOG_UNIMP, "Peripheral reset not implemented\n");
         break;
     case 0x054: /* IMC */
         s->int_mask = value & 0x7f;
@@ -701,7 +712,7 @@ static int stellaris_sys_init(uint32_t base, qemu_irq irq,
     memory_region_init_io(&s->iomem, NULL, &ssys_ops, s, "ssys", 0x00001000);
     memory_region_add_subregion(get_system_memory(), base, &s->iomem);
     ssys_reset(s);
-    vmstate_register(NULL, -1, &vmstate_stellaris_sys, s);
+    vmstate_register(NULL, VMSTATE_INSTANCE_ID_ANY, &vmstate_stellaris_sys, s);
     return 0;
 }
 
@@ -808,7 +819,7 @@ static void stellaris_i2c_write(void *opaque, hwaddr offset,
             /* TODO: Handle errors.  */
             if (s->msa & 1) {
                 /* Recv */
-                s->mdr = i2c_recv(s->bus) & 0xff;
+                s->mdr = i2c_recv(s->bus);
             } else {
                 /* Send */
                 i2c_send(s->bus, s->mdr);
@@ -836,11 +847,12 @@ static void stellaris_i2c_write(void *opaque, hwaddr offset,
         break;
     case 0x20: /* MCR */
         if (value & 1) {
-            qemu_log_mask(LOG_UNIMP, "stellaris_i2c: Loopback not implemented");
+            qemu_log_mask(LOG_UNIMP,
+                          "stellaris_i2c: Loopback not implemented\n");
         }
         if (value & 0x20) {
             qemu_log_mask(LOG_UNIMP,
-                          "stellaris_i2c: Slave mode not implemented");
+                          "stellaris_i2c: Slave mode not implemented\n");
         }
         s->mcr = value & 0x31;
         break;
@@ -1124,7 +1136,7 @@ static void stellaris_adc_write(void *opaque, hwaddr offset,
         s->sspri = value;
         break;
     case 0x28: /* PSSI */
-        qemu_log_mask(LOG_UNIMP, "ADC: sample initiate unimplemented");
+        qemu_log_mask(LOG_UNIMP, "ADC: sample initiate unimplemented\n");
         break;
     case 0x30: /* SAC */
         s->sac = value;
@@ -1239,7 +1251,7 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
      * Stellaris LM3S6965 Microcontroller Data Sheet (rev I)
      * http://www.ti.com/lit/ds/symlink/lm3s6965.pdf
      *
-     * 40000000 wdtimer (unimplemented)
+     * 40000000 wdtimer
      * 40002000 i2c (unimplemented)
      * 40004000 GPIO
      * 40005000 GPIO
@@ -1288,17 +1300,22 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
     sram_size = ((board->dc0 >> 18) + 1) * 1024;
 
     /* Flash programming is done via the SCU, so pretend it is ROM.  */
-    memory_region_init_ram(flash, NULL, "stellaris.flash", flash_size,
+    memory_region_init_rom(flash, NULL, "stellaris.flash", flash_size,
                            &error_fatal);
-    memory_region_set_readonly(flash, true);
     memory_region_add_subregion(system_memory, 0, flash);
 
     memory_region_init_ram(sram, NULL, "stellaris.sram", sram_size,
                            &error_fatal);
     memory_region_add_subregion(system_memory, 0x20000000, sram);
 
-    nvic = armv7m_init(system_memory, flash_size, NUM_IRQ_LINES,
-                       ms->kernel_filename, ms->cpu_type);
+    nvic = qdev_create(NULL, TYPE_ARMV7M);
+    qdev_prop_set_uint32(nvic, "num-irq", NUM_IRQ_LINES);
+    qdev_prop_set_string(nvic, "cpu-type", ms->cpu_type);
+    qdev_prop_set_bit(nvic, "enable-bitband", true);
+    object_property_set_link(OBJECT(nvic), OBJECT(get_system_memory()),
+                                     "memory", &error_abort);
+    /* This will exit with an error if the user passed us a bad cpu_type */
+    qdev_init_nofail(nvic);
 
     qdev_connect_gpio_out_named(nvic, "SYSRESETREQ", 0,
                                 qemu_allocate_irq(&do_sys_reset, NULL, 0));
@@ -1328,6 +1345,24 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
     stellaris_sys_init(0x400fe000, qdev_get_gpio_in(nvic, 28),
                        board, nd_table[0].macaddr.a);
 
+
+    if (board->dc1 & (1 << 3)) { /* watchdog present */
+        dev = qdev_create(NULL, TYPE_LUMINARY_WATCHDOG);
+
+        /* system_clock_scale is valid now */
+        uint32_t mainclk = NANOSECONDS_PER_SECOND / system_clock_scale;
+        qdev_prop_set_uint32(dev, "wdogclk-frq", mainclk);
+
+        qdev_init_nofail(dev);
+        sysbus_mmio_map(SYS_BUS_DEVICE(dev),
+                        0,
+                        0x40000000u);
+        sysbus_connect_irq(SYS_BUS_DEVICE(dev),
+                           0,
+                           qdev_get_gpio_in(nvic, 18));
+    }
+
+
     for (i = 0; i < 7; i++) {
         if (board->dc4 & (1 << i)) {
             gpio_dev[i] = sysbus_create_simple("pl061_luminary", gpio_addr[i],
@@ -1353,7 +1388,7 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
         if (board->dc2 & (1 << i)) {
             pl011_luminary_create(0x4000c000 + i * 0x1000,
                                   qdev_get_gpio_in(nvic, uart_irq[i]),
-                                  serial_hds[i]);
+                                  serial_hd(i));
         }
     }
     if (board->dc2 & (1 << 4)) {
@@ -1421,7 +1456,6 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
     /* Add dummy regions for the devices we don't implement yet,
      * so guest accesses don't cause unlogged crashes.
      */
-    create_unimplemented_device("wdtimer", 0x40000000, 0x1000);
     create_unimplemented_device("i2c-0", 0x40002000, 0x1000);
     create_unimplemented_device("i2c-2", 0x40021000, 0x1000);
     create_unimplemented_device("PWM", 0x40028000, 0x1000);
@@ -1430,6 +1464,8 @@ static void stellaris_init(MachineState *ms, stellaris_board_info *board)
     create_unimplemented_device("analogue-comparator", 0x4003c000, 0x1000);
     create_unimplemented_device("hibernation", 0x400fc000, 0x1000);
     create_unimplemented_device("flash-control", 0x400fd000, 0x1000);
+
+    armv7m_load_kernel(ARM_CPU(first_cpu), ms->kernel_filename, flash_size);
 }
 
 /* FIXME: Figure out how to generate these from stellaris_boards.  */
@@ -1503,6 +1539,7 @@ static void stellaris_gptm_class_init(ObjectClass *klass, void *data)
     DeviceClass *dc = DEVICE_CLASS(klass);
 
     dc->vmsd = &vmstate_stellaris_gptm;
+    dc->realize = stellaris_gptm_realize;
 }
 
 static const TypeInfo stellaris_gptm_info = {

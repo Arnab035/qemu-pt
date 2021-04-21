@@ -22,7 +22,6 @@
 #ifndef QEMU_IOAPIC_INTERNAL_H
 #define QEMU_IOAPIC_INTERNAL_H
 
-#include "hw/hw.h"
 #include "exec/memory.h"
 #include "hw/sysbus.h"
 #include "qemu/notify.h"
@@ -96,6 +95,7 @@ typedef struct IOAPICCommonClass {
     SysBusDeviceClass parent_class;
 
     DeviceRealize realize;
+    DeviceUnrealize unrealize;
     void (*pre_save)(IOAPICCommonState *s);
     void (*post_load)(IOAPICCommonState *s);
 } IOAPICCommonClass;
@@ -109,10 +109,15 @@ struct IOAPICCommonState {
     uint64_t ioredtbl[IOAPIC_NUM_PINS];
     Notifier machine_done;
     uint8_t version;
+    uint64_t irq_count[IOAPIC_NUM_PINS];
+    int irq_level[IOAPIC_NUM_PINS];
+    int irq_eoi[IOAPIC_NUM_PINS];
+    QEMUTimer *delayed_ioapic_service_timer;
 };
 
 void ioapic_reset_common(DeviceState *dev);
 
 void ioapic_print_redtbl(Monitor *mon, IOAPICCommonState *s);
+void ioapic_stat_update_irq(IOAPICCommonState *s, int irq, int level);
 
 #endif /* QEMU_IOAPIC_INTERNAL_H */

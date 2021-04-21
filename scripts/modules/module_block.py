@@ -10,7 +10,6 @@
 # This work is licensed under the terms of the GNU GPL, version 2.
 # See the COPYING file in the top-level directory.
 
-from __future__ import print_function
 import sys
 import os
 
@@ -67,8 +66,6 @@ def print_top(fheader):
 
     fheader.write('''#ifndef QEMU_MODULE_BLOCK_H
 #define QEMU_MODULE_BLOCK_H
-
-#include "qemu-common.h"
 
 static const struct {
     const char *format_name;

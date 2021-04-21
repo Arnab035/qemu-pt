@@ -23,14 +23,15 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu-common.h"
+#include "qemu/units.h"
 #include "cpu.h"
 #include "hw/sysbus.h"
-#include "hw/hw.h"
 #include "hw/char/serial.h"
 #include "hw/block/flash.h"
 #include "sysemu/sysemu.h"
 #include "sysemu/qtest.h"
-#include "hw/devices.h"
+#include "sysemu/reset.h"
 #include "hw/boards.h"
 #include "sysemu/device_tree.h"
 #include "hw/loader.h"
@@ -42,12 +43,11 @@
 
 #include "hw/ppc/ppc.h"
 #include "hw/ppc/ppc4xx.h"
+#include "hw/qdev-properties.h"
 #include "ppc405.h"
 
-#include "sysemu/block-backend.h"
-
 #define EPAPR_MAGIC    (0x45504150)
-#define FLASH_SIZE     (16 * 1024 * 1024)
+#define FLASH_SIZE     (16 * MiB)
 
 #define INTC_BASEADDR       0x81800000
 #define UART16550_BASEADDR  0x83e01003
@@ -89,10 +89,7 @@ static void mmubooke_create_initial_mapping(CPUPPCState *env,
     tlb->PID = 0;
 }
 
-static PowerPCCPU *ppc440_init_xilinx(ram_addr_t *ram_size,
-                                      int do_init,
-                                      const char *cpu_type,
-                                      uint32_t sysclk)
+static PowerPCCPU *ppc440_init_xilinx(const char *cpu_type, uint32_t sysclk)
 {
     PowerPCCPU *cpu;
     CPUPPCState *env;
@@ -106,7 +103,7 @@ static PowerPCCPU *ppc440_init_xilinx(ram_addr_t *ram_size,
     ppc_dcr_init(env, NULL, NULL);
 
     /* interrupt controller */
-    irqs = g_malloc0(sizeof(qemu_irq) * PPCUIC_OUTPUT_NB);
+    irqs = g_new0(qemu_irq, PPCUIC_OUTPUT_NB);
     irqs[PPCUIC_OUTPUT_INT] = ((qemu_irq *)env->irq_inputs)[PPC40x_INPUT_INT];
     irqs[PPCUIC_OUTPUT_CINT] = ((qemu_irq *)env->irq_inputs)[PPC40x_INPUT_CINT];
     ppcuic_init(env, irqs, 0x0C0, 0, 1);
@@ -129,7 +126,7 @@ static void main_cpu_reset(void *opaque)
        *   r8: 0
        *   r9: 0
     */
-    env->gpr[1] = (16<<20) - 8;
+    env->gpr[1] = (16 * MiB) - 8;
     /* Provide a device-tree.  */
     env->gpr[3] = bi->fdt;
     env->nip = bi->bootstrap_pc;
@@ -191,12 +188,12 @@ static int xilinx_load_device_tree(hwaddr addr,
     if (r < 0)
         fprintf(stderr, "couldn't set /chosen/bootargs\n");
     cpu_physical_memory_write(addr, fdt, fdt_size);
+    g_free(fdt);
     return fdt_size;
 }
 
 static void virtex_init(MachineState *machine)
 {
-    ram_addr_t ram_size = machine->ram_size;
     const char *kernel_filename = machine->kernel_filename;
     const char *kernel_cmdline = machine->kernel_cmdline;
     hwaddr initrd_base = 0;
@@ -207,20 +204,12 @@ static void virtex_init(MachineState *machine)
     CPUPPCState *env;
     hwaddr ram_base = 0;
     DriveInfo *dinfo;
-    MemoryRegion *phys_ram = g_new(MemoryRegion, 1);
     qemu_irq irq[32], *cpu_irq;
     int kernel_size;
     int i;
 
-#ifdef TARGET_PPCEMB
-    if (!qtest_enabled()) {
-        warn_report("qemu-system-ppcemb is deprecated, "
-                    "please use qemu-system-ppc instead.");
-    }
-#endif
-
     /* init CPUs */
-    cpu = ppc440_init_xilinx(&ram_size, 1, machine->cpu_type, 400000000);
+    cpu = ppc440_init_xilinx(machine->cpu_type, 400000000);
     env = &cpu->env;
 
     if (env->mmu_model != POWERPC_MMU_BOOKE) {
@@ -231,14 +220,12 @@ static void virtex_init(MachineState *machine)
 
     qemu_register_reset(main_cpu_reset, cpu);
 
-    memory_region_allocate_system_memory(phys_ram, NULL, "ram", ram_size);
-    memory_region_add_subregion(address_space_mem, ram_base, phys_ram);
+    memory_region_add_subregion(address_space_mem, ram_base, machine->ram);
 
     dinfo = drive_get(IF_PFLASH, 0, 0);
-    pflash_cfi01_register(PFLASH_BASEADDR, NULL, "virtex.flash", FLASH_SIZE,
+    pflash_cfi01_register(PFLASH_BASEADDR, "virtex.flash", FLASH_SIZE,
                           dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                          (64 * 1024), FLASH_SIZE >> 16,
-                          1, 0x89, 0x18, 0x0000, 0x0, 1);
+                          64 * KiB, 1, 0x89, 0x18, 0x0000, 0x0, 1);
 
     cpu_irq = (qemu_irq *) &env->irq_inputs[PPC40x_INPUT_INT];
     dev = qdev_create(NULL, "xlnx.xps-intc");
@@ -251,7 +238,7 @@ static void virtex_init(MachineState *machine)
     }
 
     serial_mm_init(address_space_mem, UART16550_BASEADDR, 2, irq[UART16550_IRQ],
-                   115200, serial_hds[0], DEVICE_LITTLE_ENDIAN);
+                   115200, serial_hd(0), DEVICE_LITTLE_ENDIAN);
 
     /* 2 timers at irq 2 @ 62 Mhz.  */
     dev = qdev_create(NULL, "xlnx.xps-timer");
@@ -266,8 +253,8 @@ static void virtex_init(MachineState *machine)
         hwaddr boot_offset;
 
         /* Boots a kernel elf binary.  */
-        kernel_size = load_elf(kernel_filename, NULL, NULL,
-                               &entry, &low, &high, 1, PPC_ELF_MACHINE,
+        kernel_size = load_elf(kernel_filename, NULL, NULL, NULL,
+                               &entry, &low, &high, NULL, 1, PPC_ELF_MACHINE,
                                0, 0);
         boot_info.bootstrap_pc = entry & 0x00ffffff;
 
@@ -276,7 +263,7 @@ static void virtex_init(MachineState *machine)
             /* If we failed loading ELF's try a raw image.  */
             kernel_size = load_image_targphys(kernel_filename,
                                               boot_offset,
-                                              ram_size);
+                                              machine->ram_size);
             boot_info.bootstrap_pc = boot_offset;
             high = boot_info.bootstrap_pc + kernel_size + 8192;
         }
@@ -287,7 +274,7 @@ static void virtex_init(MachineState *machine)
         if (machine->initrd_filename) {
             initrd_base = high = ROUND_UP(high, 4);
             initrd_size = load_image_targphys(machine->initrd_filename,
-                                              high, ram_size - high);
+                                              high, machine->ram_size - high);
 
             if (initrd_size < 0) {
                 error_report("couldn't load ram disk '%s'",
@@ -301,7 +288,7 @@ static void virtex_init(MachineState *machine)
         boot_info.fdt = high + (8192 * 2);
         boot_info.fdt &= ~8191;
 
-        xilinx_load_device_tree(boot_info.fdt, ram_size,
+        xilinx_load_device_tree(boot_info.fdt, machine->ram_size,
                                 initrd_base, initrd_size,
                                 kernel_cmdline);
     }
@@ -313,6 +300,7 @@ static void virtex_machine_init(MachineClass *mc)
     mc->desc = "Xilinx Virtex ML507 reference design";
     mc->init = virtex_init;
     mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("440-xilinx");
+    mc->default_ram_id = "ram";
 }
 
 DEFINE_MACHINE("virtex-ml507", virtex_machine_init)

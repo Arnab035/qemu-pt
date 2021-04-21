@@ -35,11 +35,13 @@ struct VirtIOBlkConf
     BlockConf conf;
     IOThread *iothread;
     char *serial;
-    uint32_t scsi;
-    uint32_t config_wce;
     uint32_t request_merging;
     uint16_t num_queues;
     uint16_t queue_size;
+    bool seg_max_adjust;
+    uint32_t max_discard_sectors;
+    uint32_t max_write_zeroes_sectors;
+    bool x_enable_wce_if_config_wce;
 };
 
 struct VirtIOBlockDataPlane;
@@ -57,6 +59,8 @@ typedef struct VirtIOBlock {
     bool dataplane_disabled;
     bool dataplane_started;
     struct VirtIOBlockDataPlane *dataplane;
+    uint64_t host_features;
+    size_t config_size;
 } VirtIOBlock;
 
 typedef struct VirtIOBlockReq {

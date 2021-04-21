@@ -31,10 +31,12 @@
 
 #include <glib/gprintf.h>
 
+#include "qemu-common.h"
 #include "sysemu/sysemu.h"
 #include "trace.h"
 #include "qapi/error.h"
 #include "qemu/sockets.h"
+#include "qemu/thread.h"
 #include <libgen.h>
 #include <sys/signal.h>
 #include "qemu/cutils.h"
@@ -74,6 +76,10 @@ static MemsetThread *memset_thread;
 static int memset_num_threads;
 static bool memset_thread_failed;
 
+static QemuMutex page_mutex;
+static QemuCond page_cond;
+static bool threads_created_flag;
+
 int qemu_get_thread_id(void)
 {
 #if defined(__linux__)
@@ -86,6 +92,79 @@ int qemu_get_thread_id(void)
 int qemu_daemon(int nochdir, int noclose)
 {
     return daemon(nochdir, noclose);
+}
+
+bool qemu_write_pidfile(const char *path, Error **errp)
+{
+    int fd;
+    char pidstr[32];
+
+    while (1) {
+        struct stat a, b;
+        struct flock lock = {
+            .l_type = F_WRLCK,
+            .l_whence = SEEK_SET,
+            .l_len = 0,
+        };
+
+        fd = qemu_open(path, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR);
+        if (fd == -1) {
+            error_setg_errno(errp, errno, "Cannot open pid file");
+            return false;
+        }
+
+        if (fstat(fd, &b) < 0) {
+            error_setg_errno(errp, errno, "Cannot stat file");
+            goto fail_close;
+        }
+
+        if (fcntl(fd, F_SETLK, &lock)) {
+            error_setg_errno(errp, errno, "Cannot lock pid file");
+            goto fail_close;
+        }
+
+        /*
+         * Now make sure the path we locked is the same one that now
+         * exists on the filesystem.
+         */
+        if (stat(path, &a) < 0) {
+            /*
+             * PID file disappeared, someone else must be racing with
+             * us, so try again.
+             */
+            close(fd);
+            continue;
+        }
+
+        if (a.st_ino == b.st_ino) {
+            break;
+        }
+
+        /*
+         * PID file was recreated, someone else must be racing with
+         * us, so try again.
+         */
+        close(fd);
+    }
+
+    if (ftruncate(fd, 0) < 0) {
+        error_setg_errno(errp, errno, "Failed to truncate pid file");
+        goto fail_unlink;
+    }
+
+    snprintf(pidstr, sizeof(pidstr), FMT_pid "\n", getpid());
+    if (write(fd, pidstr, strlen(pidstr)) != strlen(pidstr)) {
+        error_setg(errp, "Failed to write pid file");
+        goto fail_unlink;
+    }
+
+    return true;
+
+fail_unlink:
+    unlink(path);
+fail_close:
+    close(fd);
+    return false;
 }
 
 void *qemu_oom_check(void *ptr)
@@ -130,7 +209,7 @@ void *qemu_memalign(size_t alignment, size_t size)
 void *qemu_anon_ram_alloc(size_t size, uint64_t *alignment, bool shared)
 {
     size_t align = QEMU_VMALLOC_ALIGN;
-    void *ptr = qemu_ram_mmap(-1, size, align, shared);
+    void *ptr = qemu_ram_mmap(-1, size, align, shared, false);
 
     if (ptr == MAP_FAILED) {
         return NULL;
@@ -153,21 +232,37 @@ void qemu_vfree(void *ptr)
 void qemu_anon_ram_free(void *ptr, size_t size)
 {
     trace_qemu_anon_ram_free(ptr, size);
-    qemu_ram_munmap(ptr, size);
+    qemu_ram_munmap(-1, ptr, size);
 }
 
 void qemu_set_block(int fd)
 {
     int f;
     f = fcntl(fd, F_GETFL);
-    fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
+    assert(f != -1);
+    f = fcntl(fd, F_SETFL, f & ~O_NONBLOCK);
+    assert(f != -1);
 }
 
 void qemu_set_nonblock(int fd)
 {
     int f;
     f = fcntl(fd, F_GETFL);
-    fcntl(fd, F_SETFL, f | O_NONBLOCK);
+    assert(f != -1);
+    f = fcntl(fd, F_SETFL, f | O_NONBLOCK);
+#ifdef __OpenBSD__
+    if (f == -1) {
+        /*
+         * Previous to OpenBSD 6.3, fcntl(F_SETFL) is not permitted on
+         * memory devices and sets errno to ENODEV.
+         * It's OK if we fail to set O_NONBLOCK on devices like /dev/null,
+         * because they will never block anyway.
+         */
+        assert(errno == ENODEV);
+    }
+#else
+    assert(f != -1);
+#endif
 }
 
 int socket_set_fast_reuse(int fd)
@@ -312,6 +407,17 @@ static void *do_touch_pages(void *arg)
     MemsetThread *memset_args = (MemsetThread *)arg;
     sigset_t set, oldset;
 
+    /*
+     * On Linux, the page faults from the loop below can cause mmap_sem
+     * contention with allocation of the thread stacks.  Do not start
+     * clearing until all threads have been created.
+     */
+    qemu_mutex_lock(&page_mutex);
+    while(!threads_created_flag){
+        qemu_cond_wait(&page_cond, &page_mutex);
+    }
+    qemu_mutex_unlock(&page_mutex);
+
     /* unblock SIGBUS */
     sigemptyset(&set);
     sigaddset(&set, SIGBUS);
@@ -360,27 +466,38 @@ static inline int get_memset_num_threads(int smp_cpus)
 static bool touch_all_pages(char *area, size_t hpagesize, size_t numpages,
                             int smp_cpus)
 {
-    size_t numpages_per_thread;
-    size_t size_per_thread;
+    static gsize initialized = 0;
+    size_t numpages_per_thread, leftover;
     char *addr = area;
     int i = 0;
 
+    if (g_once_init_enter(&initialized)) {
+        qemu_mutex_init(&page_mutex);
+        qemu_cond_init(&page_cond);
+        g_once_init_leave(&initialized, 1);
+    }
+
     memset_thread_failed = false;
+    threads_created_flag = false;
     memset_num_threads = get_memset_num_threads(smp_cpus);
     memset_thread = g_new0(MemsetThread, memset_num_threads);
-    numpages_per_thread = (numpages / memset_num_threads);
-    size_per_thread = (hpagesize * numpages_per_thread);
+    numpages_per_thread = numpages / memset_num_threads;
+    leftover = numpages % memset_num_threads;
     for (i = 0; i < memset_num_threads; i++) {
         memset_thread[i].addr = addr;
-        memset_thread[i].numpages = (i == (memset_num_threads - 1)) ?
-                                    numpages : numpages_per_thread;
+        memset_thread[i].numpages = numpages_per_thread + (i < leftover);
         memset_thread[i].hpagesize = hpagesize;
         qemu_thread_create(&memset_thread[i].pgthread, "touch_pages",
                            do_touch_pages, &memset_thread[i],
                            QEMU_THREAD_JOINABLE);
-        addr += size_per_thread;
-        numpages -= numpages_per_thread;
+        addr += memset_thread[i].numpages * hpagesize;
     }
+
+    qemu_mutex_lock(&page_mutex);
+    threads_created_flag = true;
+    qemu_cond_broadcast(&page_cond);
+    qemu_mutex_unlock(&page_mutex);
+
     for (i = 0; i < memset_num_threads; i++) {
         qemu_thread_join(&memset_thread[i].pgthread);
     }
@@ -422,7 +539,6 @@ void os_mem_prealloc(int fd, char *area, size_t memory, int smp_cpus,
         exit(1);
     }
 }
-
 
 char *qemu_get_pid_name(pid_t pid)
 {
@@ -523,10 +639,11 @@ pid_t qemu_fork(Error **errp)
 void *qemu_alloc_stack(size_t *sz)
 {
     void *ptr, *guardpage;
+    int flags;
 #ifdef CONFIG_DEBUG_STACK_USAGE
     void *ptr2;
 #endif
-    size_t pagesz = getpagesize();
+    size_t pagesz = qemu_real_host_page_size;
 #ifdef _SC_THREAD_STACK_MIN
     /* avoid stacks smaller than _SC_THREAD_STACK_MIN */
     long min_stack_sz = sysconf(_SC_THREAD_STACK_MIN);
@@ -537,8 +654,18 @@ void *qemu_alloc_stack(size_t *sz)
     /* allocate one extra page for the guard page */
     *sz += pagesz;
 
-    ptr = mmap(NULL, *sz, PROT_READ | PROT_WRITE,
-               MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(MAP_STACK) && defined(__OpenBSD__)
+    /* Only enable MAP_STACK on OpenBSD. Other OS's such as
+     * Linux/FreeBSD/NetBSD have a flag with the same name
+     * but have differing functionality. OpenBSD will SEGV
+     * if it spots execution with a stack pointer pointing
+     * at memory that was not allocated with MAP_STACK.
+     */
+    flags |= MAP_STACK;
+#endif
+
+    ptr = mmap(NULL, *sz, PROT_READ | PROT_WRITE, flags, -1, 0);
     if (ptr == MAP_FAILED) {
         perror("failed to allocate memory for stack");
         abort();
@@ -578,7 +705,7 @@ void qemu_free_stack(void *stack, size_t sz)
     unsigned int usage;
     void *ptr;
 
-    for (ptr = stack + getpagesize(); ptr < stack + sz;
+    for (ptr = stack + qemu_real_host_page_size; ptr < stack + sz;
          ptr += sizeof(uint32_t)) {
         if (*(uint32_t *)ptr != 0xdeadbeaf) {
             break;
@@ -624,4 +751,39 @@ void sigaction_invoke(struct sigaction *action,
         si.si_uid = info->ssi_uid;
     }
     action->sa_sigaction(info->ssi_signo, &si, NULL);
+}
+
+#ifndef HOST_NAME_MAX
+# ifdef _POSIX_HOST_NAME_MAX
+#  define HOST_NAME_MAX _POSIX_HOST_NAME_MAX
+# else
+#  define HOST_NAME_MAX 255
+# endif
+#endif
+
+char *qemu_get_host_name(Error **errp)
+{
+    long len = -1;
+    g_autofree char *hostname = NULL;
+
+#ifdef _SC_HOST_NAME_MAX
+    len = sysconf(_SC_HOST_NAME_MAX);
+#endif /* _SC_HOST_NAME_MAX */
+
+    if (len < 0) {
+        len = HOST_NAME_MAX;
+    }
+
+    /* Unfortunately, gethostname() below does not guarantee a
+     * NULL terminated string. Therefore, allocate one byte more
+     * to be sure. */
+    hostname = g_new0(char, len + 1);
+
+    if (gethostname(hostname, len) < 0) {
+        error_setg_errno(errp, errno,
+                         "cannot get hostname");
+        return NULL;
+    }
+
+    return g_steal_pointer(&hostname);
 }

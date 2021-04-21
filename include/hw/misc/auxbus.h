@@ -25,7 +25,8 @@
 #ifndef HW_MISC_AUXBUS_H
 #define HW_MISC_AUXBUS_H
 
-#include "hw/qdev.h"
+#include "exec/memory.h"
+#include "hw/qdev-core.h"
 
 typedef struct AUXBus AUXBus;
 typedef struct AUXSlave AUXSlave;
@@ -123,6 +124,18 @@ I2CBus *aux_get_i2c_bus(AUXBus *bus);
  */
 void aux_init_mmio(AUXSlave *aux_slave, MemoryRegion *mmio);
 
-DeviceState *aux_create_slave(AUXBus *bus, const char *name, uint32_t addr);
+/* aux_create_slave: Create a new device on an AUX bus
+ *
+ * @bus The AUX bus for the new device.
+ * @name The type of the device to be created.
+ */
+DeviceState *aux_create_slave(AUXBus *bus, const char *name);
+
+/* aux_map_slave: Map the mmio for an AUX slave on the bus.
+ *
+ * @dev The AUX slave.
+ * @addr The address for the slave's mmio.
+ */
+void aux_map_slave(AUXSlave *dev, hwaddr addr);
 
 #endif /* HW_MISC_AUXBUS_H */
