@@ -3892,32 +3892,29 @@ DEF("arnab_network_replay", HAS_ARG, QEMU_OPTION_NETWORK_rr, \
     "-arnab_network_replay [mode=record|replay,file=<filename>]\n"
     "		     record and replay network packets without using -icount\n", QEMU_ARCH_ALL)
 
-STEXI
-@item -arnab_network_replay [mode=record|replay][,rrfile=@var{filename}]
-@findex -arnab_network_replay
+SRST
+``-arnab_network_replay [mode=record|replay][,rrfile=@var{filename}]``
 This option records and replays network packets. Network packets are written to a file. And during the process of replay, these network packets are read and replayed. The replay happens when there is a hardware interrupt(indicating a network I/O event) in the guest flow. 
-ETEXI
+ERST
 
 DEF("arnab_clock_replay", HAS_ARG, QEMU_OPTION_CLOCK_rr, \
     "-arnab_clock_replay [mode=record|replay,file=<filename>,host-clock-file=<filename>]\n"
     "                    option to record and replay hpet clock values and host clock values\n", QEMU_ARCH_ALL)
 
-STEXI
-@item -arnab_clock_replay [mode=record|replay][,rrfile=@var{filename},host-clock-file=@var{filename}]
-@findex -arnab_clock_replay
+SRST
+``-arnab_clock_replay [mode=record|replay,file=<filename>,host-clock-file=<filename>]``
 This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix the guest to use the hpet clock, we'll record and replay hpet clock values.
 We also need to record the host clock values when they are accessed, host clocks being non-deterministic in nature.
-ETEXI
+ERST
 
 DEF("arnab_disk_replay", HAS_ARG, QEMU_OPTION_DISK_rr, \
     "-arnab_disk_replay [mode=record|replay,file=<filename>]\n"
     "                   option to record and replay disk events\n", QEMU_ARCH_ALL)
 
-STEXI
-@item -arnab_disk_replay [mode=record|replay][,rrfile=@var{filename}]
-@findex -arnab_disk_replay
+SRST
+``-arnab_disk_replay [mode=record|replay][,rrfile=@var{filename}]``
 This option records and replays disk I/O events. Record and replay of disk I/O events will re-use the record and replay design that has already been designed for QEMU. The only change being that there will be no -icount to indicate when to inject events. This will be taken care of by looking at hardware interrupts and injecting I/O events at the correct hardware interrupt.
-ETEXI
+ERST
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
     "-icount [shift=N|auto][,align=on|off][,sleep=on|off,rr=record|replay,rrfile=<filename>,rrsnapshot=<snapshot>]\n" \

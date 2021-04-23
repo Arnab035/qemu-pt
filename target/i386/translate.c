@@ -4545,7 +4545,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
             printf("VMEXIT here\n");
             index_array++;
             index_fup_address++;
-            gen_jmp_im(do_strtoul(tip_addresses[index_tip_address].address));
+            gen_jmp_im(s, do_strtoul(tip_addresses[index_tip_address].address));
             gen_eob(s);
             return do_strtoul(tip_addresses[index_tip_address++].address);
         } else {

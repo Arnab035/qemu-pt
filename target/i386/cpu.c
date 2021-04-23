@@ -4343,7 +4343,6 @@ static void mark_unavailable_features(X86CPU *cpu, FeatureWord w, uint64_t mask,
     CPUX86State *env = &cpu->env;
     FeatureWordInfo *f = &feature_word_info[w];
     int i;
-    char *feat_word_str;
 
     if (!cpu->force_features) {
         env->features[w] &= ~mask;

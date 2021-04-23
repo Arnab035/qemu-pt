@@ -1320,7 +1320,7 @@ static int64_t tcg_get_icount_limit(void)
 {
     int64_t deadline;
 
-    if (replay_mode != REPLAY_MODE_PLAY) {
+    //if (replay_mode != REPLAY_MODE_PLAY) {
         /*
          * Include all the timers, because they may need an attention.
          * Too long CPU execution may create unnecessary delay in UI.

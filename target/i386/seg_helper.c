@@ -866,6 +866,7 @@ static inline target_ulong get_rsp_from_tss(CPUX86State *env, int level)
  * parameters : eip is the instruction pointer where page fault occurs
  * */
 
+/*
 static int return_index_of_instruction(target_ulong eip) {
   int index=0;
   while(index < size_of_tb_insn_array) {
@@ -875,7 +876,7 @@ static int return_index_of_instruction(target_ulong eip) {
     index++;
   }
   return -1;
-}
+}*/
 
 
 /*  convert a string address to an unsigned long integer
@@ -911,7 +912,7 @@ unsigned long do_strtoul(char *address) {
 }
 
 
-void do_interrupt64(CPUX86State *env, int intno, int is_int,
+static void do_interrupt64(CPUX86State *env, int intno, int is_int,
                            int error_code, target_ulong next_eip, int is_hw)
 {
     SegmentCache *dt;

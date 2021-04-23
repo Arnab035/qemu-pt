@@ -15,6 +15,8 @@
 #define HW_HPET_H
 
 #include "qom/object.h"
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
 
 #define HPET_BASE               0xfed00000
 #define HPET_LEN                0x400

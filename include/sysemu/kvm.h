@@ -470,8 +470,6 @@ uint32_t kvm_arch_get_supported_cpuid(KVMState *env, uint32_t function,
 uint64_t kvm_arch_get_supported_msr_feature(KVMState *s, uint32_t index);
 
 
-uint32_t kvm_arch_get_supported_msr_feature(KVMState *s, uint32_t index);
-
 void kvm_set_sigmask_len(KVMState *s, unsigned int sigmask_len);
 
 #if !defined(CONFIG_USER_ONLY)

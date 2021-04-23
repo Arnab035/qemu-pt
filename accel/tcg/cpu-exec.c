@@ -51,6 +51,7 @@
 #include "events.h"
 #include "qemu/iov.h"
 
+/*
 #ifdef CONFIG_USER_ONLY
 #define MEMSUFFIX _kernel
 #define DATA_SIZE 1
@@ -82,6 +83,7 @@
 #undef CPU_MMU_INDEX
 #undef MEMSUFFIX
 #endif
+*/
 
 /* definition of tb_insn_array */
 
@@ -400,7 +402,7 @@ char *get_array_of_tnt_bits(void) {
 	      // enter TIP addresses into global tip_address_array //
 	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
 	      tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-	      strncpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	      memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
 	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
 	      tip_addresses[count_tip].is_useful=1;
 	      /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
@@ -410,7 +412,7 @@ char *get_array_of_tnt_bits(void) {
 	    else {
 	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
 	      tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
-	      strncpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	      memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
 	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
 	      tip_addresses[count_tip].is_useful=0;
 	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
@@ -425,7 +427,7 @@ char *get_array_of_tnt_bits(void) {
             count++;
             fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
             fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
-            strncpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+            memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
             fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
             fup_addresses[count_fup].type = 'I';
             count_fup++;
@@ -738,13 +740,13 @@ static inline void tb_add_jump(TranslationBlock *tb, int n,
  * parameters : integer index of the hash table
  */
 
+
+/*
 int is_hash_table_conflict(int index) {
   if(interrupt_hash_table[index].interrupt_handler_address != NULL) { 
-    //printf("there are conflicts\n");
     return 1;
   }
   else {
-    //printf("there are no conflicts\n");
     return 0;
   }
 }
@@ -765,15 +767,16 @@ int compute_hash(char *interrupt_handler_pointer) {
   hash = (((p[0]-'0')+(p[1]-'0')+(p[2]-'0')+(p[3]-'0')) % 256);
   //printf("hash : %d\n", hash);
   return hash;
-}
+}*/
 
 /* this function fills up the interrupt hash tables
  * parameters : pointer to CPUX86State 
  * returns : void
  */
 
+/*
 void fill_interrupt_hash_table(CPUX86State *env) {
-  /* 256 interrupt handlers in linux */
+   
   uint32_t e1, e2, e3;
   SegmentCache *dt;
   target_ulong ptr;
@@ -830,13 +833,14 @@ void fill_interrupt_hash_table(CPUX86State *env) {
     }
   }
 }
-
+*/
 
 /* this function returns the interrupt vector number
  * from the interrupt hash table - 
  * parameters : interrupt_handler_pointer in string format
  */
 
+/*
 int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
     int hash_index = compute_hash(interrupt_handler_pointer);
     int diff;
@@ -886,15 +890,12 @@ int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
     }
   
    return -1;   
-}
+}*/
 
 static inline TranslationBlock *tb_find(CPUState *cpu,
                                         TranslationBlock *last_tb,
                                         int tb_exit, uint32_t cf_mask)
 {
-
-    X86CPU *x86_cpu = X86_CPU(cpu);
-    CPUX86State *env = &x86_cpu->env;
 
     TranslationBlock *tb;
     target_ulong cs_base, pc;

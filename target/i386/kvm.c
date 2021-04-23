@@ -127,41 +127,6 @@ int kvm_has_pit_state2(void)
     return has_pit_state2;
 }
 
-uint32_t kvm_arch_get_supported_msr_feature(KVMState *s, uint32_t index)
-{
-    struct {
-        struct kvm_msrs info;
-        struct kvm_msr_entry entries[1];
-    } msr_data;
-    uint32_t ret;
-
-    if (kvm_feature_msrs == NULL) { /* Host doesn't support feature MSRs */
-        return 0;
-    }
-
-    /* Check if requested MSR is supported feature MSR */
-    int i;
-    for (i = 0; i < kvm_feature_msrs->nmsrs; i++)
-        if (kvm_feature_msrs->indices[i] == index) {
-            break;
-        }
-    if (i == kvm_feature_msrs->nmsrs) {
-        return 0; /* if the feature MSR is not supported, simply return 0 */
-    }
-
-    msr_data.info.nmsrs = 1;
-    msr_data.entries[0].index = index;
-
-    ret = kvm_ioctl(s, KVM_GET_MSRS, &msr_data);
-    if (ret != 1) {
-        error_report("KVM get MSR (index=0x%x) feature failed, %s",
-            index, strerror(-ret));
-        exit(1);
-    }
-
-    return msr_data.entries[0].data;
-}
-
 bool kvm_has_smm(void)
 {
     return kvm_check_extension(kvm_state, KVM_CAP_X86_SMM);
@@ -1999,47 +1964,6 @@ void kvm_arch_do_init_vcpu(X86CPU *cpu)
     if (env->mp_state == KVM_MP_STATE_UNINITIALIZED) {
         env->mp_state = KVM_MP_STATE_INIT_RECEIVED;
     }
-}
-
-static int kvm_get_supported_feature_msrs(KVMState *s)
-{
-    int ret = 0;
-
-    if (kvm_feature_msrs != NULL) {
-        return 0;
-    }
-
-    if (!kvm_check_extension(s, KVM_CAP_GET_MSR_FEATURES)) {
-        return 0;
-    }
-
-    struct kvm_msr_list msr_list;
-
-    msr_list.nmsrs = 0;
-    ret = kvm_ioctl(s, KVM_GET_MSR_FEATURE_INDEX_LIST, &msr_list);
-    if (ret < 0 && ret != -E2BIG) {
-        error_report("Fetch KVM feature MSR list failed: %s",
-            strerror(-ret));
-        return ret;
-    }
-
-    assert(msr_list.nmsrs > 0);
-    kvm_feature_msrs = (struct kvm_msr_list *) \
-        g_malloc0(sizeof(msr_list) +
-                 msr_list.nmsrs * sizeof(msr_list.indices[0]));
-
-    kvm_feature_msrs->nmsrs = msr_list.nmsrs;
-    ret = kvm_ioctl(s, KVM_GET_MSR_FEATURE_INDEX_LIST, kvm_feature_msrs);
-
-    if (ret < 0) {
-        error_report("Fetch KVM feature MSR list failed: %s",
-            strerror(-ret));
-        g_free(kvm_feature_msrs);
-        kvm_feature_msrs = NULL;
-        return ret;
-    }
-
-    return 0;
 }
 
 static int kvm_get_supported_msrs(KVMState *s)
