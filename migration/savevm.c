@@ -68,6 +68,8 @@
 
 const unsigned int postcopy_ram_discard_version = 0;
 
+bool start_recording = false;
+
 /* Subcommands for QEMU_VM_COMMAND */
 enum qemu_vm_cmd {
     MIG_CMD_INVALID = 0,   /* Must be 0 */
