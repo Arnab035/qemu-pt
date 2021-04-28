@@ -442,6 +442,57 @@ static QemuOptsList qemu_mem_opts = {
     },
 };
 
+static QemuOptsList qemu_arnab_clock_record_replay_opts = {
+    .name = "arnab_clock_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_clock_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	}, {
+            .name = "host-clock-file",
+            .type = QEMU_OPT_STRING,
+        },
+        { /* end of list */}
+    },
+};
+
+static QemuOptsList qemu_arnab_network_record_replay_opts = {
+    .name = "arnab_network_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_network_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	},
+        { /* end of list */}
+    },
+};
+
+static QemuOptsList qemu_arnab_disk_record_replay_opts = {
+    .name = "arnab_disk_replay",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_disk_record_replay_opts.head),
+    .desc = {
+        {
+	    .name = "mode",
+	    .type = QEMU_OPT_STRING,
+	}, {
+	    .name = "file",
+	    .type = QEMU_OPT_STRING,
+	},
+	{ /* end of list */ }
+    },
+};
+
 static QemuOptsList qemu_icount_opts = {
     .name = "icount",
     .implied_opt_name = "shift",
@@ -2823,6 +2874,9 @@ void qemu_init(int argc, char **argv, char **envp)
     DisplayState *ds;
     QemuOpts *opts, *machine_opts;
     QemuOpts *icount_opts = NULL, *accel_opts = NULL;
+    QemuOpts *arnab_clock_record_replay_opts = NULL;
+    QemuOpts *arnab_disk_record_replay_opts = NULL;
+    QemuOpts *arnab_network_record_replay_opts = NULL;
     QemuOptsList *olist;
     int optind;
     const char *optarg;
@@ -2897,6 +2951,9 @@ void qemu_init(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_msg_opts);
     qemu_add_opts(&qemu_name_opts);
     qemu_add_opts(&qemu_numa_opts);
+    qemu_add_opts(&qemu_arnab_clock_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_network_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_disk_record_replay_opts);
     qemu_add_opts(&qemu_icount_opts);
     qemu_add_opts(&qemu_semihosting_config_opts);
     qemu_add_opts(&qemu_fw_cfg_opts);
@@ -3603,6 +3660,25 @@ void qemu_init(int argc, char **argv, char **envp)
                 warn_report("The -tb-size option is deprecated, use -accel tcg,tb-size instead");
                 object_register_sugar_prop(ACCEL_CLASS_NAME("tcg"), "tb-size", optarg);
                 break;
+	    case QEMU_OPTION_CLOCK_rr:
+		arnab_clock_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_clock_replay"), optarg, true);
+		printf("parsed qemu options\n");
+		if (!arnab_clock_record_replay_opts) {
+		    exit(1);
+		}
+                break;
+	    case QEMU_OPTION_NETWORK_rr:
+		arnab_network_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_network_replay"), optarg, true);
+		if (!arnab_network_record_replay_opts) {
+		    exit(1);
+		}
+		break;
+	    case QEMU_OPTION_DISK_rr:
+		arnab_disk_record_replay_opts = qemu_opts_parse_noisily(qemu_find_opts("arnab_disk_replay"), optarg, true);
+		if (!arnab_disk_record_replay_opts) {
+		    exit(1);
+		}
+		break;
             case QEMU_OPTION_icount:
                 icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                       optarg, true);
