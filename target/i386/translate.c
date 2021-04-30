@@ -6597,9 +6597,6 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 	    printf("Intel-PT trace uses a TNT (taken) bit for return\n");
 	    index_array++;
 	    index_array_incremented = 1;
-            if (stopped_execution_of_tb_chain) {
-                index_array = index_array - 1;
-            } 
 	}
         else {
 	    printf("Intel-PT trace uses a TIP bit for return\n");
