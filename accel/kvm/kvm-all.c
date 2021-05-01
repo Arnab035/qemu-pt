@@ -2144,7 +2144,8 @@ static void kvm_handle_io(uint16_t port, MemTxAttrs attrs, void *data, int direc
     }
 }
 
-static void kvm_handle_rdtsc(CPUState *cs) {
+static void kvm_handle_rdtsc(CPUState *cs) 
+{
     //fprintf(stdout, "KVM handle rdtsc\n");
     uint64_t tsc_clock;
     uint32_t eax, edx;

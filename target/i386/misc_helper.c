@@ -195,7 +195,11 @@ void helper_rdtsc(CPUX86State *env)
     }
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
 
-    val = cpu_get_tsc(env) + env->tsc_offset;
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        val = (uint64_t)arnab_replay_get_qword("host-clock");    
+    } else {
+        val = cpu_get_tsc(env) + env->tsc_offset;
+    }
     env->regs[R_EAX] = (uint32_t)(val);
     env->regs[R_EDX] = (uint32_t)(val >> 32);
 }
