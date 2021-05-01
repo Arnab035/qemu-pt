@@ -2144,6 +2144,22 @@ static void kvm_handle_io(uint16_t port, MemTxAttrs attrs, void *data, int direc
     }
 }
 
+static void kvm_handle_rdtsc(CPUState *cs) {
+    //fprintf(stdout, "KVM handle rdtsc\n");
+    uint64_t tsc_clock;
+    uint32_t eax, edx;
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            X86CPU *cpu = X86_CPU(cs);
+            CPUX86State *env = &cpu->env;
+            eax = (uint32_t)env->regs[R_EAX];
+            edx = (uint32_t)env->regs[R_EDX];
+            tsc_clock = (uint64_t) edx << 32 | eax;
+            arnab_replay_put_qword((int64_t)tsc_clock, "host-clock");
+        }
+    }
+}
+
 static int kvm_handle_internal_error(CPUState *cpu, struct kvm_run *run)
 {
     fprintf(stderr, "KVM internal error. Suberror: %d\n",
@@ -2394,17 +2410,16 @@ int kvm_cpu_exec(CPUState *cpu)
         case KVM_EXIT_MMIO:
             DPRINTF("handle_mmio\n");
             /* Called outside BQL */
-	    //printf("KVM_EXIT_MMIO\n");
-	    //printf("mmio len: %d\n", run->mmio.len);
-	    //printf("mmio data: %s\n", run->mmio.data);
-	    
-	    //printf("\n");
             address_space_rw(&address_space_memory,
                              run->mmio.phys_addr, attrs,
                              run->mmio.data,
                              run->mmio.len,
                              run->mmio.is_write);
 
+            ret = 0;
+            break;
+        case KVM_EXIT_RDTSC:
+            kvm_handle_rdtsc(cpu);
             ret = 0;
             break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
@@ -2442,13 +2457,11 @@ int kvm_cpu_exec(CPUState *cpu)
                 ret = 0;
                 break;
             default:
-                DPRINTF("kvm_arch_handle_exit\n");
                 ret = kvm_arch_handle_exit(cpu, run);
                 break;
             }
             break;
         default:
-            DPRINTF("kvm_arch_handle_exit\n");
             ret = kvm_arch_handle_exit(cpu, run);
             break;
         }
