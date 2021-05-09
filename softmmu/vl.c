@@ -3888,8 +3888,14 @@ void qemu_init(int argc, char **argv, char **envp)
     }
 
     user_register_global_props();
-
-    replay_configure(icount_opts);
+    if(!icount_opts) {
+        arnab_replay_configure(arnab_clock_record_replay_opts, "clock");
+        arnab_replay_configure(arnab_network_record_replay_opts, "network");
+        arnab_replay_configure(arnab_disk_record_replay_opts, "disk");
+    }
+    else {
+        replay_configure(icount_opts);
+    }
 
     if (incoming && !preconfig_exit_requested) {
         error_report("'preconfig' and 'incoming' options are "
