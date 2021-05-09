@@ -2151,6 +2151,7 @@ static void kvm_handle_rdtsc(CPUState *cs)
     uint32_t eax, edx;
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            kvm_cpu_synchronize_state(cs);
             X86CPU *cpu = X86_CPU(cs);
             CPUX86State *env = &cpu->env;
             eax = (uint32_t)env->regs[R_EAX];
