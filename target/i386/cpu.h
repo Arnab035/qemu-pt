@@ -2041,17 +2041,15 @@ typedef X86CPU ArchCPU;
 #include "hw/i386/apic.h"
 #endif
 
-//static int use_once = 1;
-
-static inline void cpu_get_tb_cpu_state(CPUX86State *env, target_ulong *pc,
+static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_ulong *pc,
                                         target_ulong *cs_base, uint32_t *flags)
 {
     *cs_base = env->segs[R_CS].base;
-    printf("is_within_block : %d\n", is_within_block);
     printf("env->eip is 0x%lx\n", env->eip);
 
     if (stopped_execution_of_tb_chain) {
         if (index_array_incremented) {
+            printf("hi\n");
             index_array--;
         }
         if (index_tip_address_incremented) {
@@ -2077,6 +2075,11 @@ static inline void cpu_get_tb_cpu_state(CPUX86State *env, target_ulong *pc,
     *pc = *cs_base + env->eip;
     *flags = env->hflags |
         (env->eflags & (IOPL_MASK | TF_MASK | RF_MASK | VM_MASK | AC_MASK));
+    if (cpu->singlestep_enabled) {
+        if (stopped_execution_of_tb_chain) {
+            stopped_execution_of_tb_chain = 0;
+	}
+    }
 
 }
 

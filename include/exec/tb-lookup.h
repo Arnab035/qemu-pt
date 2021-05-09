@@ -25,11 +25,8 @@ tb_lookup__cpu_state(CPUState *cpu, target_ulong *pc, target_ulong *cs_base,
                      uint32_t *flags, uint32_t cf_mask)
 {
     CPUArchState *env = (CPUArchState *)cpu->env_ptr;
-    TranslationBlock *tb = NULL;
-    uint32_t hash;
 
-    cpu_get_tb_cpu_state(env, pc, cs_base, flags);
-    hash = tb_jmp_cache_hash_func(*pc);
+    cpu_get_tb_cpu_state(cpu, env, pc, cs_base, flags);
     /*
     tb = atomic_rcu_read(&cpu->tb_jmp_cache[hash]);
 
@@ -46,11 +43,7 @@ tb_lookup__cpu_state(CPUState *cpu, target_ulong *pc, target_ulong *cs_base,
     }
     tb = tb_htable_lookup(cpu, *pc, *cs_base, *flags, cf_mask);
     */
-    if (tb == NULL) {
-        return NULL;
-    }
-    atomic_set(&cpu->tb_jmp_cache[hash], tb);
-    return tb;
+    return NULL;
 }
 
 #endif /* EXEC_TB_LOOKUP_H */
