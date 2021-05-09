@@ -1577,6 +1577,8 @@ static inline void tb_page_add(PageDesc *p, TranslationBlock *tb,
  * for the same block of guest code that @tb corresponds to. In that case,
  * the caller should discard the original @tb, and use instead the returned TB.
  */
+
+/*
 static TranslationBlock *
 tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
              tb_page_addr_t phys_page2)
@@ -1587,24 +1589,24 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
     assert_memory_lock();
 
     if (phys_pc == -1) {
-        /*
+        
          * If the TB is not associated with a physical RAM page then
          * it must be a temporary one-insn TB, and we have nothing to do
          * except fill in the page_addr[] fields.
-         */
+         
         assert(tb->cflags & CF_NOCACHE);
         tb->page_addr[0] = tb->page_addr[1] = -1;
         return tb;
     }
 
-    /*
+    
      * Add the TB to the page list, acquiring first the pages's locks.
      * We keep the locks held until after inserting the TB in the hash table,
      * so that if the insertion fails we know for sure that the TBs are still
      * in the page descriptors.
      * Note that inserting into the hash table first isn't an option, since
      * we can only insert TBs that are fully initialized.
-     */
+     
     page_lock_pair(&p, phys_pc, &p2, phys_page2, 1);
     tb_page_add(p, tb, 0, phys_pc & TARGET_PAGE_MASK);
     if (p2) {
@@ -1617,12 +1619,12 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
         void *existing_tb = NULL;
         uint32_t h;
 
-        /* add in the hash table */
+         add in the hash table 
         h = tb_hash_func(phys_pc, tb->pc, tb->flags, tb->cflags & CF_HASH_MASK,
                          tb->trace_vcpu_dstate);
         qht_insert(&tb_ctx.htable, tb, h, &existing_tb);
 
-        /* remove TB from the page(s) if we couldn't insert it */
+        remove TB from the page(s) if we couldn't insert it 
         if (unlikely(existing_tb)) {
             tb_page_remove(p, tb);
             invalidate_page_bitmap(p);
@@ -1645,7 +1647,7 @@ tb_link_page(TranslationBlock *tb, tb_page_addr_t phys_pc,
     }
 #endif
     return tb;
-}
+}*/
 
 /* Called with mmap_lock held for user mode emulation.  */
 TranslationBlock *tb_gen_code(CPUState *cpu,
@@ -1653,9 +1655,8 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
                               uint32_t flags, int cflags)
 {
     CPUArchState *env = cpu->env_ptr;
-    TranslationBlock *tb, *existing_tb;
-    tb_page_addr_t phys_pc, phys_page2;
-    target_ulong virt_page2;
+    TranslationBlock *tb;
+    tb_page_addr_t phys_pc;
     tcg_insn_unit *gen_code_buf;
     int gen_code_size, search_size, max_insns;
 #ifdef CONFIG_PROFILER
@@ -1841,24 +1842,6 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     }
 
     /* check next page if needed */
-    virt_page2 = (pc + tb->size - 1) & TARGET_PAGE_MASK;
-    phys_page2 = -1;
-    if ((pc & TARGET_PAGE_MASK) != virt_page2) {
-        phys_page2 = get_page_addr_code(env, virt_page2);
-    }
-    /*
-     * No explicit memory barrier is required -- tb_link_page() makes the
-     * TB visible in a consistent state.
-     */
-    existing_tb = tb_link_page(tb, phys_pc, phys_page2);
-    /* if the TB already exists, discard what we just translated */
-    if (unlikely(existing_tb != tb)) {
-        uintptr_t orig_aligned = (uintptr_t)gen_code_buf;
-
-        orig_aligned -= ROUND_UP(sizeof(*tb), qemu_icache_linesize);
-        atomic_set(&tcg_ctx->code_gen_ptr, (void *)orig_aligned);
-        return existing_tb;
-    }
     tcg_tb_insert(tb);
     return tb;
 }
@@ -1929,7 +1912,7 @@ tb_invalidate_phys_page_range__locked(struct page_collection *pages,
                  */
                 current_tb_modified = true;
                 cpu_restore_state_from_tb(cpu, current_tb, retaddr, true);
-                cpu_get_tb_cpu_state(env, &current_pc, &current_cs_base,
+                cpu_get_tb_cpu_state(cpu, env, &current_pc, &current_cs_base,
                                      &current_flags);
             }
 #endif /* TARGET_HAS_PRECISE_SMC */
@@ -2105,7 +2088,7 @@ static bool tb_invalidate_phys_page(tb_page_addr_t addr, uintptr_t pc)
 
             current_tb_modified = 1;
             cpu_restore_state_from_tb(cpu, current_tb, pc, true);
-            cpu_get_tb_cpu_state(env, &current_pc, &current_cs_base,
+            cpu_get_tb_cpu_state(cpu, env, &current_pc, &current_cs_base,
                                  &current_flags);
         }
 #endif /* TARGET_HAS_PRECISE_SMC */
@@ -2144,7 +2127,7 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
         tb_page_addr_t addr;
         uint32_t flags;
 
-        cpu_get_tb_cpu_state(env, &pc, &cs_base, &flags);
+        cpu_get_tb_cpu_state(cpu, env, &pc, &cs_base, &flags);
         addr = get_page_addr_code(env, pc);
         if (addr != -1) {
             tb_invalidate_phys_range(addr, addr + 1);
