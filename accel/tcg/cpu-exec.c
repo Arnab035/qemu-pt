@@ -323,7 +323,7 @@ char *get_array_of_tnt_bits(void) {
   unsigned long long j;
 
   //TODO: make this commandline
-  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/log_28mar21.txt.gz";
+  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_02may21.txt.gz";
   char *tnt_array = malloc(1);
 
   //tnt_array[0] = 'P';
@@ -469,7 +469,6 @@ char *get_array_of_tnt_bits(void) {
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
 static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 {
-
     CPUArchState *env = cpu->env_ptr;
     uintptr_t ret;
     TranslationBlock *last_tb;
@@ -498,7 +497,6 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         qemu_log_unlock(logfile);
     }
 #endif /* DEBUG_DISAS */
-
     ret = tcg_qemu_tb_exec(env, tb_ptr);
     cpu->can_do_io = 1;
     last_tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
@@ -506,6 +504,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     trace_exec_tb_exit(last_tb, tb_exit);
 
     if (stopped_execution_of_tb_chain) {
+        printf("stopped_execution_of_tb_chain is 0\n");
         stopped_execution_of_tb_chain = 0;
     }
 
@@ -978,20 +977,6 @@ static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
     }
 
     if (cpu->exception_index >= EXCP_INTERRUPT) {
-        /* exit request from the cpu execution loop */
-	/* Change by Arnab : account for cases 
-	 * in the user-space when the cpu->exit_request 
-	 * becomes 1 suddenly in the middle of TB */
-	if(index_array != 0) {
-	  X86CPU *x86_cpu = X86_CPU(cpu);
-	  CPUX86State *env = &x86_cpu->env;
-	  int cpl = env->hflags & HF_CPL_MASK;
-	  if(cpl > 0 && stopped_execution_of_tb_chain) {
-	    index_array = index_array - 1;
-	    printf("stopped_execution_of_tb_chain is 0\n");
-	    stopped_execution_of_tb_chain = 0;
-	  }
-	} 
         *ret = cpu->exception_index;
         if (*ret == EXCP_DEBUG) {
             cpu_handle_debug_exception(cpu);
