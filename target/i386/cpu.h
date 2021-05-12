@@ -2049,7 +2049,6 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
 
     if (stopped_execution_of_tb_chain) {
         if (index_array_incremented) {
-            printf("hi\n");
             index_array--;
         }
         if (index_tip_address_incremented) {
@@ -2064,7 +2063,12 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
     }
     else {
         // only add assertion if the previous block consumed either TNT/TIP
-        if (index_array_incremented && tnt_array[index_array-1] == 'P' ) {
+	// and if the previous TB hasn't stopped in the middle of execution
+	// since we have already done our due diligence already.
+        if (!stopped_execution_of_tb_chain &&
+            index_array_incremented &&
+            index_tip_address_incremented &&
+            tnt_array[index_array-1] == 'P') {
             assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
         }
     }
