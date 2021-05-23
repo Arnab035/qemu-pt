@@ -564,15 +564,14 @@ static void do_hlt(X86CPU *cpu)
     CPUX86State *env = &cpu->env;
 
     env->hflags &= ~HF_INHIBIT_IRQ_MASK; /* needed if sti is just before */
-    cs->halted = 1;
-    cs->exception_index = EXCP_HLT;
-    cpu_loop_exit(cs);
+    cs->halted = 0;
+    //cs->exception_index = EXCP_HLT;
+    cpu_loop_exit_restore(cs, env->eip);
 }
 
 void helper_hlt(CPUX86State *env, int next_eip_addend)
 {
     X86CPU *cpu = env_archcpu(env);
-
     cpu_svm_check_intercept_param(env, SVM_EXIT_HLT, 0, GETPC());
     env->eip += next_eip_addend;
 
