@@ -91,7 +91,6 @@ int index_array_incremented=1;
 int index_tip_address_incremented=1;
 
 unsigned long long index_array = 0;
-unsigned long long prev_insn = 0;
 
 typedef struct DisasContext {
     DisasContextBase base;
@@ -105,6 +104,8 @@ typedef struct DisasContext {
     target_ulong pc; /* pc = eip + cs_base */
     /* current block context */
     target_ulong cs_base; /* base of CS segment */
+    target_ulong jmp_target1;
+    target_ulong jmp_target2;
     int pe;     /* protected mode */
     int code32; /* 32 bit code segment */
 #ifdef TARGET_X86_64
@@ -2253,9 +2254,14 @@ static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 }
 
 static inline void gen_jcc(DisasContext *s, int b,
+                           TranslationBlock *tb,
                            target_ulong val, target_ulong next_eip)
 {
     TCGLabel *l1, *l2;
+    if (tb) {
+        tb->jmp_target1 = val;
+        tb->jmp_target2 = next_eip;
+    }
 
     if (s->jmp_opt) {
         l1 = gen_new_label();
@@ -4498,12 +4504,12 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
 
 /* convert one instruction. s->base.is_jmp is set if the translation must
    be stopped. Return the next pc value */
-static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
+static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *cpu)
 {
     CPUX86State *env = cpu->env_ptr;
     int b, prefixes;
     int shift;
-    int is_branch_taken;
+    //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
     target_ulong next_eip, tval;
@@ -4537,26 +4543,27 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
-    if (do_strtoul(fup_addresses[index_fup_address].address) == prev_insn &&
-           fup_addresses[index_fup_address].type == 'V' &&
-           tnt_array[index_array] == 'F') {
-        if (do_strtoul(fup_addresses[index_fup_address].address) !=
-	     do_strtoul(tip_addresses[index_tip_address].address)) {
-            printf("VMEXIT here\n");
-            index_array++;
-            index_fup_address++;
-            gen_jmp_im(s, do_strtoul(tip_addresses[index_tip_address].address));
-            gen_eob(s);
-            return do_strtoul(tip_addresses[index_tip_address++].address);
-        } else {
+    if (fup_addresses[index_fup_address].type == 'V' &&
+        tnt_array[index_array] == 'F' && 
+	do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
             index_array++;
             index_fup_address++;
             index_tip_address++;
-        }
+            printf("VMEXIT here\n");
+            return s->pc;
     }
-
-    prev_insn = pc_start;
-    
+    if (fup_addresses[index_fup_address].type == 'I' &&
+        tnt_array[index_array] == 'F' &&
+	do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
+            while(!tip_addresses[index_tip_address].is_useful)
+                index_tip_address++;
+            index_array+=2;
+            index_tip_address++;
+            index_fup_address++;
+            gen_interrupt(s, 239, pc_start - s->cs_base, s->pc - s->cs_base);
+            printf("INTERRUPT here\n");
+    }
+     
     prefixes = 0;
     rex_w = -1;
     rex_r = 0;
@@ -6789,14 +6796,13 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 	    }
 	}
 	printf("inside gen_jcc now : next_eip is 0x%lx and tval is 0x%lx\n", next_eip, tval+next_eip);
-
+        /*
 	if(tnt_array[index_array] == 'T') {
 	    is_branch_taken=1;
 	}
 	else {
 	    is_branch_taken=0;
 	}
-	/* change here : original code was tval += next_eip */
         // tval += next_eip;
 	if(is_branch_taken == 1) {
 	    tval += next_eip;
@@ -6804,14 +6810,15 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
 	}
 	else {
 	    tval = next_eip;
-	}
+	}*/
+        tval += next_eip;
 	index_array++;
 	index_array_incremented=1;
         if (dflag == MO_16) {
             tval &= 0xffff;
         }
         gen_bnd_jmp(s);
-        gen_jcc(s, b, tval, next_eip);
+        gen_jcc(s, b, tb, tval, next_eip);
         break;
 
     case 0x190 ... 0x19f: /* setcc Gv */
@@ -7444,6 +7451,7 @@ static target_ulong disas_insn(DisasContext *s, CPUState *cpu)
         if (s->cpl != 0) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
+            printf("hi\n");
             gen_update_cc_op(s);
             gen_jmp_im(s, pc_start - s->cs_base);
             gen_helper_hlt(cpu_env, tcg_const_i32(s->pc - pc_start));
@@ -8742,7 +8750,7 @@ static void i386_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
     }
 #endif
 
-    pc_next = disas_insn(dc, cpu);
+    pc_next = disas_insn(dc, dcbase->tb, cpu);
 
     if (dc->tf || (dc->base.tb->flags & HF_INHIBIT_IRQ_MASK)) {
         /* if single step mode, we generate only one instruction and
