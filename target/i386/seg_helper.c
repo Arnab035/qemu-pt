@@ -939,6 +939,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
         raise_exception_err(env, EXCP0D_GPF, intno * 16 + 2);
     }
     ptr = dt->base + intno * 16;
+    printf("ptr is 0x%lx\n", ptr);
     e1 = cpu_ldl_kernel(env, ptr);
     e2 = cpu_ldl_kernel(env, ptr + 4);
     e3 = cpu_ldl_kernel(env, ptr + 8);
@@ -1366,7 +1367,6 @@ void x86_cpu_do_interrupt(CPUState *cs)
         assert(env->old_exception == -1);
         do_vmexit(env, cs->exception_index - EXCP_VMEXIT, env->error_code);
     } else {
-        //printf("x86 cpu do interrupt\n");
         do_interrupt_all(cpu, cs->exception_index,
                          env->exception_is_int,
                          env->error_code,
@@ -1387,51 +1387,6 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     X86CPU *cpu = X86_CPU(cs);
     CPUX86State *env = &cpu->env;
     int intno;
-
-    if (tnt_array[index_array] == 'F' && 
-        do_strtoul(fup_addresses[index_fup_address].address) == env->eip &&
-        fup_addresses[index_fup_address].type == 'I') {
-        // source address of interrupt
-        // consume FUP, next TIP and increment all the pointers
-        // jump to the interrupt corresponding to the TIP, that follows FUP
-        index_array+=2;
-        index_fup_address++;
-        while(!tip_addresses[index_tip_address].is_useful)
-            index_tip_address++;
-        int intno;
-        // TODO: figure out a way to get interrupt number.
-        intno = 239;/*get_interrupt_number_from_hashtable(tip_addresses[index_tip_address].address);*/
-
-        /* replay network and disk I/O before the interrupt is 'emulated' */
-        if(intno > -1) {
-            index_tip_address++;
-            // 113 corresponds to n/w interrupt
-            if (intno == 113) {
-                // event interrupt signals the point when in record mode, an interrupt was sent to ask the guest
-                // to start processing packets
-                if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-                    while(1) {
-                        ReplayIOEvent *event;
-                        event = g_malloc0(sizeof(ReplayIOEvent));
-                        event->event_kind = REPLAY_ASYNC_EVENT_NET;
-                        event->opaque = arnab_replay_event_net_load();
-                        if (event->opaque == NULL) {
-                            g_free(event);
-                            break;
-                        }
-                        replay_event_net_run(event->opaque);
-                        g_free(event);
-                    }
-                }
-            }
-            cs->interrupt_request &= ~(CPU_INTERRUPT_HARD | CPU_INTERRUPT_VIRQ);
-            do_interrupt_x86_hardirq(env, intno, 1);
-            return true;
-        } else {
-            printf("Invalid interrupt number. We cannot proceed...");
-            exit(1);
-        }
-    }
 
     interrupt_request = x86_cpu_pending_interrupt(cs, interrupt_request);
     if (!interrupt_request) {
