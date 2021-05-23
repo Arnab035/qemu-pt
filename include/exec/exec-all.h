@@ -381,6 +381,8 @@ struct TranslationBlock {
                            size <= TARGET_PAGE_SIZE) */
     uint16_t icount;
     uint32_t cflags;    /* compile flags */
+    target_ulong jmp_target1;  /* direction of branch target */
+    target_ulong jmp_target2;  /* eip of next instruction if branch is not taken */
 #define CF_COUNT_MASK  0x00007fff
 #define CF_LAST_IO     0x00008000 /* Last insn may be an IO access.  */
 #define CF_NOCACHE     0x00010000 /* To be freed after execution */

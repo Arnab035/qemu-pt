@@ -498,6 +498,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     }
 #endif /* DEBUG_DISAS */
     ret = tcg_qemu_tb_exec(env, tb_ptr);
+    printf("eip after execution: 0x%lx\n", env->eip);
     cpu->can_do_io = 1;
     last_tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
     tb_exit = ret & TB_EXIT_MASK;
@@ -531,6 +532,20 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         } else {
             assert(cc->set_pc);
             cc->set_pc(cpu, last_tb->pc);
+        }
+    } else {
+        // check for divergence here
+        if (index_array_incremented && 
+                tnt_array[index_array-1] == 'T' &&
+                env->eip == itb->jmp_target2) {
+            printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
+            env->eip = itb->jmp_target1;
+        }
+        if (index_array_incremented &&
+                tnt_array[index_array-1] == 'N' &&
+                env->eip == itb->jmp_target1) {
+            printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
+            env->eip = itb->jmp_target2;
         }
     }
     return ret;
