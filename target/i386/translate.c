@@ -4502,6 +4502,28 @@ static void gen_sse(CPUX86State *env, DisasContext *s, int b,
     }
 }
 
+static int get_interrupt_number_from_interrupt_address(CPUX86State *env, unsigned long interrupt_target) 
+{
+    int intno;
+    target_ulong ptr;
+    SegmentCache *dt;
+    target_ulong offset;
+    uint32_t e1, e2, e3;
+    dt = &env->idt;
+    for (intno = 0; intno < 256; intno++) {
+        ptr = dt->base + intno * 16;
+        e1 = cpu_ldl_mmuidx_ra(env, ptr, cpu_mmu_index_kernel(env), 0);
+        e2 = cpu_ldl_mmuidx_ra(env, ptr + 4, cpu_mmu_index_kernel(env), 0);
+        e3 = cpu_ldl_mmuidx_ra(env, ptr + 8, cpu_mmu_index_kernel(env), 0);
+        offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
+        if (offset == interrupt_target) {
+            printf("intno: %d\n", intno);
+            return intno;
+        }
+    }
+    return -1;
+}
+
 /* convert one instruction. s->base.is_jmp is set if the translation must
    be stopped. Return the next pc value */
 static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *cpu)
@@ -4509,6 +4531,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     CPUX86State *env = cpu->env_ptr;
     int b, prefixes;
     int shift;
+    int intno;
     //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
@@ -4555,13 +4578,19 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     if (fup_addresses[index_fup_address].type == 'I' &&
         tnt_array[index_array] == 'F' &&
 	do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
+            printf("INTERRUPT here\n");
             while(!tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
+            printf("interrupt address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
+            intno = get_interrupt_number_from_interrupt_address(env, do_strtoul(tip_addresses[index_tip_address].address));
+            if (intno < 0) {
+                gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
+                return s->pc;
+            }
             index_array+=2;
             index_tip_address++;
             index_fup_address++;
-            gen_interrupt(s, 239, pc_start - s->cs_base, s->pc - s->cs_base);
-            printf("INTERRUPT here\n");
+            gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
     }
      
     prefixes = 0;
@@ -7451,7 +7480,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         if (s->cpl != 0) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
-            printf("hi\n");
             gen_update_cc_op(s);
             gen_jmp_im(s, pc_start - s->cs_base);
             gen_helper_hlt(cpu_env, tcg_const_i32(s->pc - pc_start));

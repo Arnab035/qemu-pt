@@ -26,7 +26,13 @@
 
 void helper_raise_interrupt(CPUX86State *env, int intno, int next_eip_addend)
 {
-    raise_interrupt(env, intno, 1, 0, next_eip_addend);
+    int cpl;
+    cpl = env->hflags & HF_CPL_MASK;
+    if (cpl != 0) {
+        raise_interrupt(env, intno, 0, 0, next_eip_addend);
+    } else {
+        raise_interrupt(env, intno, 1, 0, next_eip_addend);
+    }
 }
 
 void helper_raise_exception(CPUX86State *env, int exception_index)
@@ -99,7 +105,7 @@ static void QEMU_NORETURN raise_interrupt2(CPUX86State *env, int intno,
     } else {
         cpu_svm_check_intercept_param(env, SVM_EXIT_SWINT, 0, retaddr);
     }
-
+    printf("raise_interrupt2: %d\n", intno);
     cs->exception_index = intno;
     env->error_code = error_code;
     env->exception_is_int = is_int;
