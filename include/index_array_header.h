@@ -34,13 +34,18 @@ extern bool start_recording;
 extern char *tnt_array;
 extern struct tip_address_info *tip_addresses;
 extern struct fup_address_info *fup_addresses;
+
 extern unsigned long long index_array;
+extern unsigned long long prev_index_array;
 //extern char **pip_cr3_values;
 
 extern int stopped_execution_of_tb_chain;
 extern int index_tip_address;
 extern int index_fup_address;
 extern int index_cr3_value;
+
+extern int prev_index_tip_address;
+extern int prev_index_fup_address;
 
 extern int index_array_incremented;
 extern int index_tip_address_incremented;

@@ -91,6 +91,7 @@ int index_array_incremented=1;
 int index_tip_address_incremented=1;
 
 unsigned long long index_array = 0;
+unsigned long long prev_index_array = 0;
 
 typedef struct DisasContext {
     DisasContextBase base;
@@ -246,6 +247,9 @@ static const uint8_t cc_op_live[CC_OP_NB] = {
 
 int index_tip_address = 0;
 int index_fup_address= 0;
+
+int prev_index_tip_address = 0;
+int prev_index_fup_address = 0;
 
 static void set_cc_op(DisasContext *s, CCOp op)
 {
@@ -4562,6 +4566,11 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     s->rip_offset = 0; /* for relative ip address */
     s->vex_l = 0;
     s->vex_v = 0;
+
+    prev_index_array = index_array;
+    prev_index_fup_address = index_fup_address;
+    prev_index_tip_address = index_tip_address;
+
     if (sigsetjmp(s->jmpbuf, 0) != 0) {
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
@@ -6630,12 +6639,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         break;
     case 0xc3: /* ret */
 	if(tnt_array[index_array] != 'P') {
-	    printf("Intel-PT trace uses a TNT (taken) bit for return\n");
 	    index_array++;
 	    index_array_incremented = 1;
 	}
         else {
-	    printf("Intel-PT trace uses a TIP bit for return\n");
 	    index_array++;
 	    index_array_incremented=1;
 	    while(tip_addresses[index_tip_address].is_useful == 0) {
@@ -6684,7 +6691,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         val = 0;
         goto do_lret;
     case 0xcf: /* iret */
-        printf("found iretq\n");
         if(tnt_array[index_array] == 'P') {
 	    index_array++;
 	    index_array_incremented=1;
@@ -6800,7 +6806,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         next_eip = s->pc - s->cs_base;
 	/* expected to see a TNT bit - but could be an indication of things going into the kernel */
 	if(tnt_array[index_array]=='P') {
-	    printf("TIP is not expected here - but continue execution nonetheless\n");
 	    if(cpl > 0) {
 	        while(tip_addresses[index_tip_address].is_useful == 0) {
 	            index_tip_address++;
@@ -6824,7 +6829,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	        index_tip_address_incremented=1;
 	    }
 	}
-	printf("inside gen_jcc now : next_eip is 0x%lx and tval is 0x%lx\n", next_eip, tval+next_eip);
         /*
 	if(tnt_array[index_array] == 'T') {
 	    is_branch_taken=1;
