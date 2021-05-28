@@ -315,6 +315,7 @@ char *get_array_of_tnt_bits(void) {
   char *pch;
   char *pch_pip;
   gzFile file;
+  bool stop_parsing_due_to_heartbeat = false;
   //int len;
 
   int is_ignore_tip = 0;
@@ -360,84 +361,92 @@ char *get_array_of_tnt_bits(void) {
       }
       else {
         remainder = 0;
-        if(strncmp(copy, "TNT", 3) == 0) {
-          if(is_ignore_tip == 1) {
-	    is_ignore_tip = 0;
-	  }
-	  pch = strchr(copy, '(');
-	  prev_count = count;
-	  count += ((*++pch) - '0');
-	  tnt_array = realloc(tnt_array, count);
-	  for(j=prev_count,k=0; j<count; j++, k++) {
-	    tnt_array[j]=copy[4+k];
-	  }
+        if (strncmp(copy, "PSBEND", 6) == 0) {
+          stop_parsing_due_to_heartbeat = false;	
         }
-        else if(strncmp(copy, "PIP", 3) == 0) {
-          pch_pip = strchr(copy, '=');
+        else if (strncmp(copy, "PSB", 3) == 0) {
+          stop_parsing_due_to_heartbeat = true;
+        }
+        if (!stop_parsing_due_to_heartbeat) {
+	  if (strncmp(copy, "TNT", 3) == 0) {
+            if(is_ignore_tip == 1) {
+	      is_ignore_tip = 0;
+	    }
+	    pch = strchr(copy, '(');
+	    prev_count = count;
+	    count += ((*++pch) - '0');
+	    tnt_array = realloc(tnt_array, count);
+	    for(j=prev_count,k=0; j<count; j++, k++) {
+	      tnt_array[j]=copy[4+k];
+	    }
+          }
+          else if(strncmp(copy, "PIP", 3) == 0) {
+            pch_pip = strchr(copy, '=');
 	  
 	  /* VMEXIT */
-	  if((*++pch_pip - '0') == 0) {
+	    if((*++pch_pip - '0') == 0) {
 	    // the next PIP bit should be (NR = 1) - you need to ignore those PIP bits
 	    // only stray PIP (NR=1) packets should be considered and stored
 	    // these stray PIP packets indicate context switch events 
-	    is_ignore_pip = 1;
+	      is_ignore_pip = 1;
             // the FUP preceding this PIP will represent the source address for a VMEXIT
-            fup_addresses[count_fup-1].type = 'V';
-	  }
+              fup_addresses[count_fup-1].type = 'V';
+	    }
           
 	  /* VMENTRY */
-	  else {
-            is_ignore_tip = 1;
-	    if(is_ignore_pip == 1) {
-	        is_ignore_pip = 0;
-	    }
-	  }
-        }
-        else {
-          if(strncmp(copy, "TIP", 3) == 0) {
-	    if(is_ignore_tip == 0) {
-	      tnt_array = realloc(tnt_array, count+1);
-	      tnt_array[count] = 'P';
-	      count++;
-	      // enter TIP addresses into global tip_address_array //
-	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	      tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-	      memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	      tip_addresses[count_tip].is_useful=1;
-	      /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
-	      count_tip++;
-	    }
 	    else {
-	      tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	      tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
-	      memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
-	      tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	      tip_addresses[count_tip].is_useful=0;
-	      tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
-	      count_tip++;
-              //printf("count: %llu\n", count);
-	      is_ignore_tip=0;
+              is_ignore_tip = 1;
+	      if(is_ignore_pip == 1) {
+	        is_ignore_pip = 0;
+	      }
 	    }
-	  }
-	  else if(strncmp(copy, "FUP", 3) == 0) {
-            tnt_array = realloc(tnt_array, count+1);
-            tnt_array[count] = 'F';
-            count++;
-            fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
-            fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
-            memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
-            fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
-            fup_addresses[count_fup].type = 'I';
-            count_fup++;
           }
-        }
-	if (count >= 80000) break;
+          else {
+            if(strncmp(copy, "TIP", 3) == 0) {
+	      if(is_ignore_tip == 0) {
+	        tnt_array = realloc(tnt_array, count+1);
+	        tnt_array[count] = 'P';
+	        count++;
+	        // enter TIP addresses into global tip_address_array //
+	        tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	        tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+	        memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	        tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	        tip_addresses[count_tip].is_useful=1;
+	        /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
+	        tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	        count_tip++;
+	      }
+	      else {
+	        tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	        tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+	        memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	        tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	        tip_addresses[count_tip].is_useful=0;
+	        tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	        count_tip++;
+                //printf("count: %llu\n", count);
+	        is_ignore_tip=0;
+	      }
+	    }
+	    else if(strncmp(copy, "FUP", 3) == 0) {
+              tnt_array = realloc(tnt_array, count+1);
+              tnt_array[count] = 'F';
+              count++;
+              fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+              fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+              memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+              fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
+              fup_addresses[count_fup].type = 'I';
+              count_fup++;
+            }
+          }
+	  if (count >= 2000000) break;
+	}
         start += pos+1;
       }
     }
-    if (count >= 80000) break;   // start with 80k events.
+    if (count >= 2000000) break;
    
     if(bytes_read<LENGTH-1) {
       tnt_array[count]='\0';
@@ -498,14 +507,12 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     }
 #endif /* DEBUG_DISAS */
     ret = tcg_qemu_tb_exec(env, tb_ptr);
-    printf("eip after execution: 0x%lx\n", env->eip);
     cpu->can_do_io = 1;
     last_tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
     tb_exit = ret & TB_EXIT_MASK;
     trace_exec_tb_exit(last_tb, tb_exit);
 
     if (stopped_execution_of_tb_chain) {
-        printf("stopped_execution_of_tb_chain is 0\n");
         stopped_execution_of_tb_chain = 0;
     }
 
@@ -519,7 +526,10 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 	 * occurred as a result of cpu->exit_request becoming 1  
 	 */
 	stopped_execution_of_tb_chain = 1;
-        printf("stopped_execution_of_tb_chain is 1\n");
+
+	index_array = prev_index_array;
+	index_tip_address = prev_index_tip_address;
+	index_fup_address = prev_index_fup_address;
 
         CPUClass *cc = CPU_GET_CLASS(cpu);
         qemu_log_mask_and_addr(CPU_LOG_EXEC, last_tb->pc,
@@ -527,6 +537,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
                                TARGET_FMT_lx "] %s\n",
                                last_tb->tc.ptr, last_tb->pc,
                                lookup_symbol(last_tb->pc));
+        
         if (cc->synchronize_from_tb) {
             cc->synchronize_from_tb(cpu, last_tb);
         } else {
@@ -1126,7 +1137,6 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
 {
     uintptr_t ret;
     int32_t insns_left;
-
     trace_exec_tb(tb, tb->pc);
     ret = cpu_tb_exec(cpu, tb);
     tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
