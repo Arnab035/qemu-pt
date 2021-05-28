@@ -2045,18 +2045,10 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
                                         target_ulong *cs_base, uint32_t *flags)
 {
     *cs_base = env->segs[R_CS].base;
-    printf("env->eip is 0x%lx\n", env->eip);
+    //printf("env->eip is 0x%lx\n", env->eip);
 
-    if (stopped_execution_of_tb_chain) {
-        if (index_array_incremented) {
-            index_array--;
-        }
-        if (index_tip_address_incremented) {
-            index_tip_address--;
-        }
-    }
     printf("tnt_array[%llu] = %c\n", index_array, tnt_array[index_array]);
-    printf("index_tip_address: %d\n", index_tip_address);
+    //printf("index_tip_address: %d\n", index_tip_address);
 
     if (index_array <= 1 && index_tip_address == 0) {
         assert(env->eip == do_strtoul(tip_addresses[index_tip_address].address));
