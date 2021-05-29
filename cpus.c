@@ -1413,7 +1413,7 @@ static int tcg_cpu_exec(CPUState *cpu)
     // static char *tnt_array = NULL;
 
     if(tnt_array == NULL) {
-      tnt_array = get_array_of_tnt_bits();
+        get_array_of_tnt_bits();
     }
 
     if(!tnt_array) {

@@ -3,6 +3,8 @@
 #ifndef INDEX_ARRAY_H
 #define INDEX_ARRAY_H
 
+#include <zlib.h>
+
 struct tip_address_info {
   char *address;
   int  is_useful;
@@ -18,6 +20,14 @@ struct hash_buckets {
   int interrupt_number;   // is the value
   char *interrupt_handler_address;  // this is the key
   struct hash_buckets *pointer;
+};
+
+struct intel_pt_read_state {
+  gzFile intel_pt_file;
+  int tnt_index_limit;
+  int fup_address_index_limit;
+  int tip_address_index_limit;
+  char *last_tip_address;
 };
 
 // hash table where the key is the interrupt handler 
@@ -52,6 +62,10 @@ extern int index_tip_address_incremented;
 
 extern int is_io_instruction;
 extern int is_handle_interrupt_in_userspace;
+
+void get_array_of_tnt_bits(void);
+
+extern struct intel_pt_read_state intel_pt_state;
 
 unsigned long do_strtoul(char *address);   // function declared
 int get_interrupt_number_from_hashtable(char *);

@@ -4542,6 +4542,28 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     target_ulong next_eip, tval;
     int rex_w, rex_r;
     target_ulong pc_start = s->base.pc_next;
+
+    if (index_array >= intel_pt_state.tnt_index_limit) {
+        printf("%llu\n", index_array);
+        printf("%d\n", index_tip_address);
+        printf("%d\n", index_fup_address);
+        if (tnt_array) {
+            free(tnt_array);
+            tnt_array = NULL;
+            index_array = 0;
+        }
+        if (tip_addresses) {
+            free(tip_addresses);
+            tip_addresses = NULL;
+            index_tip_address = 0;
+        }
+        if (fup_addresses) {
+            free(fup_addresses);
+            fup_addresses = NULL;
+            index_fup_address = 0;
+        }
+        get_array_of_tnt_bits();
+    }
     int cpl = env->hflags & HF_CPL_MASK;
 
     if(index_array_incremented) {

@@ -311,168 +311,187 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
  *  use the gzlib standard library
  */
 
-char *get_array_of_tnt_bits(void) { 
-  char *pch;
-  char *pch_pip;
-  gzFile file;
-  bool stop_parsing_due_to_heartbeat = false;
-  //int len;
+struct intel_pt_read_state intel_pt_state = {};
 
-  int is_ignore_tip = 0;
-  int is_ignore_pip = 0;
-  unsigned long long k, prev_count;
-  unsigned long long j;
+void get_array_of_tnt_bits(void) { 
+    char *pch;
+    char *pch_pip;
+    bool stop_parsing_due_to_heartbeat = false;
+    //int len;
 
-  //TODO: make this commandline
-  const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_02may21.txt.gz";
-  char *tnt_array = malloc(1);
+    int is_ignore_tip = 0;
+    int is_ignore_pip = 0;
+    unsigned long long k, prev_count;
+    unsigned long long j;
+    int max_lines_read = 50002, curr_lines_read = 0;
 
-  //tnt_array[0] = 'P';
+    //TODO: make this commandline
+    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_02may21.txt.gz";
+    if (!tnt_array) {
+        tnt_array = malloc(1);
+    }
 
-  file = gzopen(filename, "r");
-  unsigned long long count = 0;
-  int remainder = 0;
+    //tnt_array[0] = 'P';
+    if (!intel_pt_state.intel_pt_file) { 
+        intel_pt_state.intel_pt_file = gzopen(filename, "r");
+    }
+    intel_pt_state.tnt_index_limit = 0;
+    intel_pt_state.fup_address_index_limit = 0;
+    intel_pt_state.tip_address_index_limit = 0;
+    intel_pt_state.last_tip_address = NULL;
 
-  unsigned long long count_tip = 0;
-  unsigned long long count_fup = 0;
+    int count = 0;
 
-  tip_addresses = malloc(1 * sizeof(struct tip_address_info));
-  fup_addresses = malloc(1 * sizeof(struct fup_address_info));
+    int count_tip = 0;
+    int count_fup = 0;
 
-  if(!file) {
-    fprintf(stderr, "gzopen of %s failed.\n", filename);
-    exit(EXIT_FAILURE);
-  }
+    tip_addresses = malloc(1 * sizeof(struct tip_address_info));
+    fup_addresses = malloc(1 * sizeof(struct fup_address_info));
 
-  while(1) {
-    int err;
-    int bytes_read;
-    int start=0,pos=0;
-    char buffer[LENGTH];
-    char copy[100];
-    bytes_read =gzread(file,buffer,LENGTH-1);
-    buffer[bytes_read]='\0';
+    if(!intel_pt_state.intel_pt_file) {
+        fprintf(stderr, "gzopen of %s failed.\n", filename);
+        exit(EXIT_FAILURE);
+    }
 
+    //int err;
+    //int bytes_read;
+    //int start=0,pos=0;
+    //char buffer[LENGTH];
+    //bytes_read =gzread(file,buffer,LENGTH-1);
+    //buffer[bytes_read]='\0';
+    char copy[50];
     while(1) {
-      pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
-      if(pos == -1) {
-        remainder = bytes_read-start;
-        break;
-      }
-      else {
-        remainder = 0;
+        if(gzgets(intel_pt_state.intel_pt_file, copy, 50) != 0) {
+            copy[strcspn(copy, "\n")] = 0;
+            curr_lines_read += 1;
+        } else {
+            printf("Incorrect read from gz file. Returning...\n");
+            return;
+        }
+        //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
-          stop_parsing_due_to_heartbeat = false;	
+            stop_parsing_due_to_heartbeat = false;	
         }
         else if (strncmp(copy, "PSB", 3) == 0) {
-          stop_parsing_due_to_heartbeat = true;
+            stop_parsing_due_to_heartbeat = true;
         }
         if (!stop_parsing_due_to_heartbeat) {
-	  if (strncmp(copy, "TNT", 3) == 0) {
-            if(is_ignore_tip == 1) {
-	      is_ignore_tip = 0;
-	    }
-	    pch = strchr(copy, '(');
-	    prev_count = count;
-	    count += ((*++pch) - '0');
-	    tnt_array = realloc(tnt_array, count);
-	    for(j=prev_count,k=0; j<count; j++, k++) {
-	      tnt_array[j]=copy[4+k];
-	    }
-          }
-          else if(strncmp(copy, "PIP", 3) == 0) {
-            pch_pip = strchr(copy, '=');
+	    if (strncmp(copy, "TNT", 3) == 0) {
+                if(is_ignore_tip == 1) {
+	            is_ignore_tip = 0;
+	        }
+	        pch = strchr(copy, '(');
+	        prev_count = count;
+	        count += ((*++pch) - '0');
+	        tnt_array = realloc(tnt_array, count);
+	        for(j=prev_count,k=0; j<count; j++, k++) {
+	            tnt_array[j]=copy[4+k];
+	        }
+            }
+            else if(strncmp(copy, "PIP", 3) == 0) {
+                pch_pip = strchr(copy, '=');
 	  
 	  /* VMEXIT */
-	    if((*++pch_pip - '0') == 0) {
+	        if((*++pch_pip - '0') == 0) {
 	    // the next PIP bit should be (NR = 1) - you need to ignore those PIP bits
 	    // only stray PIP (NR=1) packets should be considered and stored
 	    // these stray PIP packets indicate context switch events 
-	      is_ignore_pip = 1;
+	            is_ignore_pip = 1;
             // the FUP preceding this PIP will represent the source address for a VMEXIT
-              fup_addresses[count_fup-1].type = 'V';
-	    }
+                    fup_addresses[count_fup-1].type = 'V';
+	        }
           
 	  /* VMENTRY */
-	    else {
-              is_ignore_tip = 1;
-	      if(is_ignore_pip == 1) {
-	        is_ignore_pip = 0;
-	      }
-	    }
-          }
-          else {
-            if(strncmp(copy, "TIP", 3) == 0) {
-	      if(is_ignore_tip == 0) {
-	        tnt_array = realloc(tnt_array, count+1);
-	        tnt_array[count] = 'P';
-	        count++;
-	        // enter TIP addresses into global tip_address_array //
-	        tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	        tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-	        memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-	        tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	        tip_addresses[count_tip].is_useful=1;
-	        /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-	        tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
-	        count_tip++;
-	      }
-	      else {
-	        tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	        tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
-	        memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
-	        tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	        tip_addresses[count_tip].is_useful=0;
-	        tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
-	        count_tip++;
-                //printf("count: %llu\n", count);
-	        is_ignore_tip=0;
-	      }
-	    }
-	    else if(strncmp(copy, "FUP", 3) == 0) {
-              tnt_array = realloc(tnt_array, count+1);
-              tnt_array[count] = 'F';
-              count++;
-              fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
-              fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
-              memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
-              fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
-              fup_addresses[count_fup].type = 'I';
-              count_fup++;
+	        else {
+                    is_ignore_tip = 1;
+	            if(is_ignore_pip == 1) {
+	                is_ignore_pip = 0;
+	            }
+	        }
             }
-          }
-	  if (count >= 2000000) break;
+            else {
+                if(strncmp(copy, "TIP", 3) == 0) {
+	            if(is_ignore_tip == 0) {
+	                tnt_array = realloc(tnt_array, count+1);
+	                tnt_array[count] = 'P';
+	                count++;
+	                // enter TIP addresses into global tip_address_array //
+	                tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	                tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+	                memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	                tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                tip_addresses[count_tip].is_useful=1;
+	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
+	                tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                count_tip++;
+	            }
+	            else {
+	                tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	                tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+	                memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	                tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                tip_addresses[count_tip].is_useful=0;
+	                tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                count_tip++;
+                        //printf("count: %llu\n", count);
+	                is_ignore_tip=0;
+	            }
+	        }
+	        else if(strncmp(copy, "FUP", 3) == 0) {
+                    tnt_array = realloc(tnt_array, count+1);
+                    tnt_array[count] = 'F';
+                    count++;
+                    fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+                    fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+                    fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
+                    fup_addresses[count_fup].type = 'I';
+                    count_fup++;
+                }
+            }
 	}
-        start += pos+1;
-      }
-    }
-    if (count >= 2000000) break;
-   
-    if(bytes_read<LENGTH-1) {
-      tnt_array[count]='\0';
-      tip_addresses[count_tip].address='\0';
-      tip_addresses[count_tip].is_useful=0;
-      tip_addresses[count_tip].ip_bytes=-1;
-      fup_addresses[count_fup].address='\0';
-      fup_addresses[count_fup].type='U'; // unknown FUP type
-      if(gzeof(file)) break;
-      else {
-        const char *error_string;
-        error_string=gzerror(file,&err);
-        printf("error_string : %s\n", error_string);
-        if(err) {
-          exit(EXIT_FAILURE);
+        //start += pos+1;
+        if (curr_lines_read >= max_lines_read) {
+            if (strncmp(copy, "TNT", 3) == 0) {
+                break;
+            }
         }
-      }
     }
-  }
+   
+    /*
+    if(bytes_read<LENGTH-1) {
+        tnt_array[count]='\0';
+        tip_addresses[count_tip].address='\0';
+        tip_addresses[count_tip].is_useful=0;
+        tip_addresses[count_tip].ip_bytes=-1;
+        fup_addresses[count_fup].address='\0';
+        fup_addresses[count_fup].type='U'; // unknown FUP type
+        if(gzeof(file)) break;
+        else {
+            const char *error_string;
+            error_string=gzerror(file,&err);
+            printf("error_string : %s\n", error_string);
+            if(err) {
+                exit(EXIT_FAILURE);
+            }
+        }
+    }*/
+
+    intel_pt_state.tnt_index_limit = count;
+    intel_pt_state.fup_address_index_limit = count_fup;
+    intel_pt_state.tip_address_index_limit = count_tip;
+
+    printf("TNT array: %d\n", count);
+    printf("FUP array: %d\n", count_fup);
+    printf("TIP array: %d\n", count_tip);
  
- // preprocess the tip addresses //
-  preprocess_tip_array(count_tip);
-  printf("final count : %llu\n", count);
-  
-  gzclose(file);
-  return tnt_array;
+   // preprocess the tip addresses //
+    preprocess_tip_array(count_tip);
+
+    intel_pt_state.last_tip_address = malloc(sizeof(tip_addresses[count_tip-1].address));
+    strcpy(intel_pt_state.last_tip_address, tip_addresses[count_tip-1].address);
+
+    printf("final count : %d\n", count);  
 }
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */

@@ -2045,15 +2045,15 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
                                         target_ulong *cs_base, uint32_t *flags)
 {
     *cs_base = env->segs[R_CS].base;
-    //printf("env->eip is 0x%lx\n", env->eip);
+    printf("env->eip is 0x%lx\n", env->eip);
 
     printf("tnt_array[%llu] = %c\n", index_array, tnt_array[index_array]);
-    //printf("index_tip_address: %d\n", index_tip_address);
+    printf("index_tip_address: %d\n", index_tip_address);
 
-    if (index_array <= 1 && index_tip_address == 0) {
-        assert(env->eip == do_strtoul(tip_addresses[index_tip_address].address));
-    }
-    else {
+    //if (index_array <= 1 && index_tip_address == 0) {
+    //    assert(env->eip == do_strtoul(tip_addresses[index_tip_address].address));
+    //}
+    //else {
         // only add assertion if the previous block consumed either TNT/TIP
 	// and if the previous TB hasn't stopped in the middle of execution
 	// since we have already done our due diligence already.
@@ -2063,7 +2063,7 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
             tnt_array[index_array-1] == 'P') {
             assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
         }
-    }
+    //}
 
     if(is_within_block) {
         is_within_block = 0;
