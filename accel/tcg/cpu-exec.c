@@ -200,67 +200,64 @@ static void init_delay_params(SyncClocks *sc, const CPUState *cpu)
 
 /* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
-static void preprocess_tip_array(int size) {
-  int i,j;
-  int chars_to_copy=0;
-  int short_length=0;
-  for(i=1;i<=size;i++) {
+static void construct_fully_qualified_address(int i, char *reference_address) {
+    int j, chars_to_copy = 0;
+    int short_length = 0;
+
     if(tip_addresses[i].ip_bytes==4) {   // some other value
       //chars_to_copy=12-strlen(tip_addresses[i].address);
-      chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
-      if(chars_to_copy < 0) {
-        chars_to_copy=0;
-      }
+        chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+        if(chars_to_copy < 0) {
+            chars_to_copy=0;
+        }
+
+        //short_length=8-strlen(tip_addresses[i].address);
+        tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+
     
-      //short_length=8-strlen(tip_addresses[i].address);
-      tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+        for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
+            tip_addresses[i].address[j+chars_to_copy]=tip_addresses[i].address[j];
+        }
 
-      
-      for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
-        tip_addresses[i].address[j+chars_to_copy]=tip_addresses[i].address[j];
-      }
-
-      for(j=0;j<chars_to_copy;j++) {
-        tip_addresses[i].address[j]=tip_addresses[i-1].address[j];
-      }
-      tip_addresses[i].address[12]='\0';
+        for(j=0;j<chars_to_copy;j++) {
+            tip_addresses[i].address[j] = reference_address[j];
+        }
+        tip_addresses[i].address[12]='\0';
     }
     else if(tip_addresses[i].ip_bytes==2) {
-      if(strlen(tip_addresses[i-1].address)==6) {
-	if(strlen(tip_addresses[i].address) < 4) {
-	  short_length = 4-strlen(tip_addresses[i].address);
-	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address)-short_length;
-	  if(chars_to_copy<0) {
-	    chars_to_copy=0;
-	  }
-	}
-	else if(strlen(tip_addresses[i].address)==4) {
-	  short_length=0;
-	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
-	  if(chars_to_copy<0) {
-	    chars_to_copy=0;
-	  }
-	}
-      }
-      else {
-        if(strlen(tip_addresses[i].address) < 4) {
-	  short_length = 4-strlen(tip_addresses[i].address);
-	  chars_to_copy = strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address)-short_length;
-	  if(chars_to_copy<0) {
-	    chars_to_copy=0;
-	  }
-	}
-	else if(strlen(tip_addresses[i].address)==4) {
-	  short_length = 0;
-	  chars_to_copy=strlen(tip_addresses[i-1].address)-strlen(tip_addresses[i].address);
-          if(chars_to_copy<0) {
-	    chars_to_copy=0;
-	  }	  
-	}
-      }  
-    
-
-      tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+        if(strlen(reference_address)==6) {
+            if(strlen(tip_addresses[i].address) < 4) {
+                short_length = 4-strlen(tip_addresses[i].address);
+                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address)-short_length;
+                if(chars_to_copy<0) {
+                    chars_to_copy=0;
+                }
+            }
+            else if(strlen(tip_addresses[i].address)==4) {
+                short_length=0;
+                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+                if(chars_to_copy<0) {
+                    chars_to_copy=0;
+                }
+            }
+        }
+        else {
+            if(strlen(tip_addresses[i].address) < 4) {
+                short_length = 4-strlen(tip_addresses[i].address);
+                chars_to_copy = strlen(reference_address)-strlen(tip_addresses[i].address)-short_length;
+                if(chars_to_copy<0) {
+                    chars_to_copy=0;
+                }
+            }
+            else if(strlen(tip_addresses[i].address)==4) {
+                short_length = 0;
+                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+                if(chars_to_copy<0) {
+                    chars_to_copy=0;
+                }
+            }
+        }
+        tip_addresses[i].address=realloc(tip_addresses[i].address,13);
       /*
       if(short_length) {
         for(j=0;j<short_length;j++) {
@@ -268,21 +265,32 @@ static void preprocess_tip_array(int size) {
         }
       }*/
 
-      for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
-        tip_addresses[i].address[j+chars_to_copy+short_length]=tip_addresses[i].address[j];
-      }
+        for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
+            tip_addresses[i].address[j+chars_to_copy+short_length]=tip_addresses[i].address[j];
+        }
 
-      for(j=0;j<chars_to_copy;j++) {
-        tip_addresses[i].address[j]=tip_addresses[i-1].address[j];
-      }
-      if(short_length) {
-        for(j=0;j<short_length;j++) {
-	  tip_addresses[i].address[chars_to_copy+j]='0';
-	}
-      }
-      tip_addresses[i].address[12]='\0';
+        for(j=0;j<chars_to_copy;j++) {
+            tip_addresses[i].address[j]=reference_address[j];
+        }
+        if(short_length) {
+            for(j=0;j<short_length;j++) {
+                tip_addresses[i].address[chars_to_copy+j]='0';
+            }
+        }
+        tip_addresses[i].address[12]='\0';
     }
-  }
+}
+
+static void preprocess_tip_array(int size) {
+
+    if (intel_pt_state.last_tip_address) {
+        construct_fully_qualified_address(0, intel_pt_state.last_tip_address);
+        printf("TIP address: %s\n", tip_addresses[0].address);
+    }
+    int i;
+    for(i=1;i<=size;i++) {
+        construct_fully_qualified_address(i, tip_addresses[i-1].address);
+    }
 }
 
 /* find_newline_and_copy(char *buffer, int pos, int end, char *copy) 
@@ -338,7 +346,6 @@ void get_array_of_tnt_bits(void) {
     intel_pt_state.tnt_index_limit = 0;
     intel_pt_state.fup_address_index_limit = 0;
     intel_pt_state.tip_address_index_limit = 0;
-    intel_pt_state.last_tip_address = NULL;
 
     int count = 0;
 
