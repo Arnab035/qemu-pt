@@ -908,6 +908,7 @@ unsigned long do_strtoul(char *address) {
   }
   //printf("full_address : %s\n", full_address);
   address_in_int = strtoul(full_address, NULL, 16);
+  free(full_address);
   return address_in_int;
 }
 

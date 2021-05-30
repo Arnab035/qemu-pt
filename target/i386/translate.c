@@ -4536,6 +4536,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int b, prefixes;
     int shift;
     int intno;
+    int i;
     //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
@@ -4553,11 +4554,17 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array = 0;
         }
         if (tip_addresses) {
+            for(i=0; i < index_tip_address; i++) {
+                free((char *)tip_addresses[i].address);
+            }
             free(tip_addresses);
             tip_addresses = NULL;
             index_tip_address = 0;
         }
         if (fup_addresses) {
+            for(i=0; i < index_fup_address; i++) {
+                free((char *)fup_addresses[i].address);
+            }
             free(fup_addresses);
             fup_addresses = NULL;
             index_fup_address = 0;

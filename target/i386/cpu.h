@@ -2048,6 +2048,7 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
     printf("env->eip is 0x%lx\n", env->eip);
 
     printf("tnt_array[%llu] = %c\n", index_array, tnt_array[index_array]);
+    printf("total intelpt packets consumed = %llu\n", index_array + intel_pt_state.total_packets_consumed);
     printf("index_tip_address: %d\n", index_tip_address);
 
     //if (index_array <= 1 && index_tip_address == 0) {

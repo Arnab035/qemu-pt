@@ -28,6 +28,7 @@ struct intel_pt_read_state {
   int fup_address_index_limit;
   int tip_address_index_limit;
   char *last_tip_address;
+  unsigned long long total_packets_consumed;
 };
 
 // hash table where the key is the interrupt handler 
@@ -35,7 +36,6 @@ struct intel_pt_read_state {
 extern struct hash_buckets *interrupt_hash_table;  
 
 extern unsigned long *tb_insn_array;
-extern unsigned int size_of_tb_insn_array;
 
 extern int is_within_block;
 

@@ -18,7 +18,6 @@
 #include "exec/translator.h"
 #include "index_array_header.h"
 
-unsigned int size_of_tb_insn_array = 0;
 #include "exec/plugin-gen.h"
 
 /* Pairs with tcg_clear_temp_count.
@@ -59,8 +58,6 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     gen_tb_start(db->tb);
     ops->tb_start(db, cpu);
     tcg_debug_assert(db->is_jmp == DISAS_NEXT);  /* no early exit */
-    int translation_start;
-    translation_start = 1;
 
     plugin_enabled = plugin_gen_tb_start(cpu, tb);
 
@@ -107,18 +104,6 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
             ops->translate_insn(db, cpu);
         }
 
-	if(translation_start == 1) {
-	  tb_insn_array = (unsigned long *)malloc(TCG_MAX_INSNS * sizeof(unsigned long *));   // is 512
-	  tb_insn_array[0] = db->pc_first;
-	  tb_insn_array[1] = db->pc_next;
-	}
-	else {
-	  tb_insn_array[db->num_insns] = db->pc_next;
-	}
-        if(translation_start == 1) {
-	  translation_start = 0;
-	}
-
         /* Stop translation if translate_insn so indicated.  */
         if (db->is_jmp != DISAS_NEXT) {
             break;
@@ -151,8 +136,6 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     /* The disas_log hook may use these values rather than recompute.  */
     db->tb->size = db->pc_next - db->pc_first;
     db->tb->icount = db->num_insns;
-
-    size_of_tb_insn_array = db->num_insns;
 
 #ifdef DEBUG_DISAS
     if (qemu_loglevel_mask(CPU_LOG_TB_IN_ASM)

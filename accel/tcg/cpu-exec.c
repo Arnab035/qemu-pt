@@ -87,8 +87,6 @@
 
 /* definition of tb_insn_array */
 
-unsigned long *tb_insn_array = NULL;
-
 int stopped_execution_of_tb_chain = 0;
 
 struct hash_buckets *interrupt_hash_table = NULL;
@@ -487,6 +485,7 @@ void get_array_of_tnt_bits(void) {
     intel_pt_state.tnt_index_limit = count;
     intel_pt_state.fup_address_index_limit = count_fup;
     intel_pt_state.tip_address_index_limit = count_tip;
+    intel_pt_state.total_packets_consumed += count;
 
     printf("TNT array: %d\n", count);
     printf("FUP array: %d\n", count_fup);
@@ -1284,11 +1283,6 @@ int cpu_exec(CPUState *cpu)
                 cpu->cflags_next_tb = -1;
             }
 
-	    if(tb_insn_array != NULL) {
-	      tb_insn_array = NULL;
-	      free(tb_insn_array);
-	      size_of_tb_insn_array=0;
-	    }
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
             /* Try to align the host and virtual clocks
