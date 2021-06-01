@@ -1755,6 +1755,10 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
              * flush the TBs, allocate a new TB, re-initialize it per
              * above, and re-do the actual code generation.
              */
+            index_array = prev_index_array;
+            index_tip_address = prev_index_tip_address;
+            index_fup_address = prev_index_fup_address;
+
             goto buffer_overflow;
 
         case -2:
