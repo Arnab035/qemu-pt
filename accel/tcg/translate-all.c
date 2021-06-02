@@ -1782,6 +1782,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     }
     search_size = encode_search(tb, (void *)gen_code_buf + gen_code_size);
     if (unlikely(search_size < 0)) {
+        index_array = prev_index_array;
+        index_tip_address = prev_index_tip_address;
+        index_fup_address = prev_index_fup_address;
         goto buffer_overflow;
     }
     tb->tc.size = gen_code_size;
