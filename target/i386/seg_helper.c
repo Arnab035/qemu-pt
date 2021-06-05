@@ -922,6 +922,12 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     int has_error_code, new_stack;
     uint32_t e1, e2, e3, ss;
     target_ulong old_eip, esp, offset;
+    if (intno == 14) {
+        assert(!is_upcoming_page_fault);
+        if (index_array_incremented) index_array--;
+        if (index_tip_address_incremented) index_tip_address--;
+        is_upcoming_page_fault = 0;
+    }
 
     has_error_code = 0;
 
@@ -929,6 +935,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     if (!is_int && !is_hw) {
         has_error_code = exception_has_error_code(intno);
     }
+    printf("has_error_code: %d\n", has_error_code);
     if (is_int) {
         old_eip = next_eip;
     } else {

@@ -4528,6 +4528,8 @@ static int get_interrupt_number_from_interrupt_address(CPUX86State *env, unsigne
     return -1;
 }
 
+int is_upcoming_page_fault = 0;
+
 /* convert one instruction. s->base.is_jmp is set if the translation must
    be stopped. Return the next pc value */
 static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *cpu)
@@ -4551,6 +4553,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         if (tnt_array) {
             free(tnt_array);
             tnt_array = NULL;
+            intel_pt_state.total_packets_consumed += index_array;
             index_array = 0;
         }
         if (tip_addresses) {
@@ -4571,7 +4574,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         }
         get_array_of_tnt_bits();
     }
-    int cpl = env->hflags & HF_CPL_MASK;
 
     if(index_array_incremented) {
       index_array_incremented = 0;
@@ -4628,9 +4630,13 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array+=2;
             index_tip_address++;
             index_fup_address++;
-            gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
+            if (intno != 14) {
+                gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
+            } //let page faults happen organically
+            else {
+                is_upcoming_page_fault = 1;
+            }
     }
-     
     prefixes = 0;
     rex_w = -1;
     rex_r = 0;
@@ -5185,15 +5191,9 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	        while(tip_addresses[index_tip_address].is_useful == 0) {
 	            index_tip_address++;
 	        }
-	        if(cpl > 0) {
-	            if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-		        is_handle_interrupt_in_userspace = 1;
-		    }
-	        }
-	       /* remember to check for code running into kernel space at the end of each block during translation */
 	        index_tip_address++;     // consume the TIP address
 	        index_tip_address_incremented=1;
-	    }
+            }
 	    if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
             }
@@ -5231,15 +5231,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 while(tip_addresses[index_tip_address].is_useful == 0) {
 	            index_tip_address++;
 	        }
-                if(cpl > 0) {
-	            if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-		        is_handle_interrupt_in_userspace=1;
-		    }
-	        }
-	        // consume the TIP address
+	            // consume the TIP address
 	        index_tip_address++;
 	        index_tip_address_incremented=1;
-	    }
+            }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
             }
@@ -6667,24 +6662,19 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         gen_jr(s, s->T0);
         break;
     case 0xc3: /* ret */
-	if(tnt_array[index_array] != 'P') {
-	    index_array++;
-	    index_array_incremented = 1;
-	}
+        if(tnt_array[index_array] != 'P') {
+            index_array++;
+            index_array_incremented = 1;
+        }
         else {
 	    index_array++;
 	    index_array_incremented=1;
 	    while(tip_addresses[index_tip_address].is_useful == 0) {
 	        index_tip_address++;
 	    }
-	    if(cpl > 0) {
-	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {   // kernel address in userspace
-	            is_handle_interrupt_in_userspace=1;
-	        }
-	    }
 	    index_tip_address++;     // consume the TIP bit
 	    index_tip_address_incremented=1;
-	}	
+        }
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
         /* Note that gen_pop_T0 uses a zero-extending load.  */
@@ -6726,12 +6716,9 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	    while(tip_addresses[index_tip_address].is_useful==0) {
 	        index_tip_address++;
 	    }
-	 
-	  // could iretq return back to the kernel again ?
-	 
 	    index_tip_address++;
 	    index_tip_address_incremented = 1;
-	}	
+	}
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_IRET);
         if (!s->pe) {
             /* real mode */
@@ -6833,31 +6820,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         }
     do_jcc:
         next_eip = s->pc - s->cs_base;
-	/* expected to see a TNT bit - but could be an indication of things going into the kernel */
-	if(tnt_array[index_array]=='P') {
-	    if(cpl > 0) {
-	        while(tip_addresses[index_tip_address].is_useful == 0) {
-	            index_tip_address++;
-	        }
-	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-	            is_handle_interrupt_in_userspace = 1;
-	        }
-	        index_tip_address++;  // consume TIP bits
-	        index_tip_address_incremented=1;
-	        //index_array++;
-	    }
-	    else {
-	    /* interrupts can also happen in kernel space */
-	        while(tip_addresses[index_tip_address].is_useful == 0) {
-	            index_tip_address++;
-	        }
-	        if(do_strtoul(tip_addresses[index_tip_address].address) >= KERNEL_BASE) {
-	            is_handle_interrupt_in_userspace = 1;
-	        }
-	        index_tip_address++;   // consume TIP bits
-	        index_tip_address_incremented=1;
-	    }
-	}
         /*
 	if(tnt_array[index_array] == 'T') {
 	    is_branch_taken=1;
@@ -7468,7 +7430,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	    }
 	    index_tip_address++;
 	    index_tip_address_incremented=1;
-	}
+        }
         gen_update_cc_op(s);
         gen_jmp_im(s, pc_start - s->cs_base);
         gen_helper_syscall(cpu_env, tcg_const_i32(s->pc - pc_start));
@@ -7487,7 +7449,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	    }
 	    index_tip_address++;
 	    index_tip_address_incremented=1;
-	}
+        }
         if (!s->pe) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         } else {
