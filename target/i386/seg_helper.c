@@ -74,12 +74,6 @@
 #define cpu_stl_kernel(e, p, v)  cpu_stl_kernel_ra(e, p, v, 0)
 #define cpu_stq_kernel(e, p, v)  cpu_stq_kernel_ra(e, p, v, 0)
 
-typedef struct ReplayIOEvent {
-    ReplayAsyncEventKind event_kind;
-    void *opaque;
-    uint64_t id;
-} ReplayIOEvent;
-
 int is_within_block = 0;   // definition
 
 /* return non zero if error */
@@ -923,7 +917,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     uint32_t e1, e2, e3, ss;
     target_ulong old_eip, esp, offset;
     if (intno == 14) {
-        assert(!is_upcoming_page_fault);
+        assert(is_upcoming_page_fault);
         if (index_array_incremented) index_array--;
         if (index_tip_address_incremented) index_tip_address--;
         is_upcoming_page_fault = 0;

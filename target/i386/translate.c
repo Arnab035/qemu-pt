@@ -32,6 +32,9 @@
 #include "trace-tcg.h"
 #include "exec/log.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+
 #include "index_array_header.h"
 
 #define PREFIX_REPZ   0x01
@@ -158,6 +161,12 @@ typedef struct DisasContext {
 
     sigjmp_buf jmpbuf;
 } DisasContext;
+
+typedef struct ReplayIOEvent {
+    ReplayAsyncEventKind event_kind;
+    void *opaque;
+    uint64_t id;
+} ReplayIOEvent;
 
 static void gen_eob(DisasContext *s);
 static void gen_jr(DisasContext *s, TCGv dest);
@@ -4630,11 +4639,20 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array+=2;
             index_tip_address++;
             index_fup_address++;
-            if (intno != 14) {
-                gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
-            } //let page faults happen organically
-            else {
-                is_upcoming_page_fault = 1;
+            if (intno == 113) {
+                ReplayIOEvent *event;
+		event = g_malloc0(sizeof(ReplayIOEvent));
+                event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                event->opaque = arnab_replay_event_net_load();
+                replay_event_net_run(event->opaque);
+                g_free(event);
+            } else {
+                if (intno != 14) {
+                    gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
+                } //let page faults happen organically
+                else {
+                    is_upcoming_page_fault = 1;
+                }
             }
     }
     prefixes = 0;
