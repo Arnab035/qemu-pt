@@ -29,6 +29,7 @@ struct intel_pt_read_state {
   int tip_address_index_limit;
   char *last_tip_address;
   unsigned long long total_packets_consumed;
+  unsigned long long number_of_lines_consumed;
 };
 
 // hash table where the key is the interrupt handler 
@@ -56,6 +57,7 @@ extern int index_cr3_value;
 
 extern int prev_index_tip_address;
 extern int prev_index_fup_address;
+extern int is_upcoming_page_fault;
 
 extern int index_array_incremented;
 extern int index_tip_address_incremented;

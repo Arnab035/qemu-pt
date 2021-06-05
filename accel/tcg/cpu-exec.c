@@ -329,7 +329,7 @@ void get_array_of_tnt_bits(void) {
     int is_ignore_pip = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 50002, curr_lines_read = 0;
+    int max_lines_read = 50000, curr_lines_read = 0;
 
     //TODO: make this commandline
     const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_02may21.txt.gz";
@@ -485,7 +485,7 @@ void get_array_of_tnt_bits(void) {
     intel_pt_state.tnt_index_limit = count;
     intel_pt_state.fup_address_index_limit = count_fup;
     intel_pt_state.tip_address_index_limit = count_tip;
-    intel_pt_state.total_packets_consumed += count;
+    intel_pt_state.number_of_lines_consumed += curr_lines_read;
 
     printf("TNT array: %d\n", count);
     printf("FUP array: %d\n", count_fup);
