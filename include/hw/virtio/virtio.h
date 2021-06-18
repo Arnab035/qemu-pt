@@ -31,6 +31,8 @@
 
 struct VirtQueue;
 
+extern bool virtio_net_interrupt;  // TODO: remove
+
 static inline hwaddr vring_align(hwaddr addr,
                                              unsigned long align)
 {
@@ -211,7 +213,7 @@ void virtqueue_get_avail_bytes(VirtQueue *vq, unsigned int *in_bytes,
                                unsigned max_in_bytes, unsigned max_out_bytes);
 
 void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq);
-void virtio_notify(VirtIODevice *vdev, VirtQueue *vq);
+void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *queue_type);
 
 int virtio_save(VirtIODevice *vdev, QEMUFile *f);
 

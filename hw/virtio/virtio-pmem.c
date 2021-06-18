@@ -58,7 +58,7 @@ static void done_cb(void *opaque, int ret)
 
     /* Callbacks are serialized, so no need to use atomic ops. */
     virtqueue_push(req_data->pmem->rq_vq, &req_data->elem, len);
-    virtio_notify((VirtIODevice *)req_data->pmem, req_data->pmem->rq_vq);
+    virtio_notify((VirtIODevice *)req_data->pmem, req_data->pmem->rq_vq, "");
     g_free(req_data);
 }
 

@@ -2558,15 +2558,39 @@ static void virtio_irq(VirtQueue *vq)
     virtio_notify_vector(vq->vdev, vq->vector);
 }
 
-void virtio_notify(VirtIODevice *vdev, VirtQueue *vq)
+bool virtio_net_interrupt = false;
+
+void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
 {
     WITH_RCU_READ_LOCK_GUARD() {
         if (!virtio_should_notify(vdev, vq)) {
+            printf("Virtio should notify\n");
             return;
         }
     }
-
-    trace_virtio_notify(vdev, vq);
+    if (strcmp(vdev->name, "virtio-net") == 0) {
+        // only record interrupts for network IO rx
+        if (strcmp(event_type, "net_rx_queue") == 0) {
+            if (start_recording) {
+                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
+                }
+            }
+        } else if (strcmp(event_type, "net_tx_queue") == 0) {
+            if (start_recording) {
+                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
+                }
+            }
+        } else if (strcmp(event_type, "blk_queue") == 0) {
+            if (start_recording) {
+                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    arnab_replay_put_event(EVENT_BLK_INTERRUPT, "disk");
+                }
+            }
+        } /* other virtio event markers can be similarly added */
+    }
+    trace_virtio_notify(vdev, vq, event_type);
     virtio_irq(vq);
 }
 

@@ -231,7 +231,7 @@ static void vhost_vsock_send_transport_reset(VHostVSock *vsock)
     }
 
     virtqueue_push(vq, elem, sizeof(event));
-    virtio_notify(VIRTIO_DEVICE(vsock), vq);
+    virtio_notify(VIRTIO_DEVICE(vsock), vq, "");
 
 out:
     g_free(elem);

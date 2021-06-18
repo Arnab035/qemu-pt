@@ -301,7 +301,7 @@ static void virtio_net_drop_tx_queue_data(VirtIODevice *vdev, VirtQueue *vq)
 {
     unsigned int dropped = virtqueue_drop_all(vq);
     if (dropped) {
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "net_tx_queue");
     }
 }
 
@@ -1203,7 +1203,7 @@ static void virtio_net_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
         assert(s == sizeof(status));
 
         virtqueue_push(vq, elem, sizeof(status));
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "net_ctrl_queue");
         g_free(iov2);
         g_free(elem);
     }
@@ -1471,14 +1471,7 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     }
 
     virtqueue_flush(q->rx_vq, i);
-    // write a checkpoint indicating the point when all network packets recorded
-    // till now, must be sent out.
-    if (start_recording) {
-        if (arnab_replay_mode == REPLAY_MODE_RECORD) { 
-            arnab_replay_put_event(EVENT_IO_INTERRUPT, "network");
-        }
-    }
-    virtio_notify(vdev, q->rx_vq);
+    virtio_notify(vdev, q->rx_vq, "net_rx_queue");
 
     return size;
 }
@@ -2104,9 +2097,8 @@ static void virtio_net_tx_complete(NetClientState *nc, ssize_t len)
     VirtIONet *n = qemu_get_nic_opaque(nc);
     VirtIONetQueue *q = virtio_net_get_subqueue(nc);
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
-
     virtqueue_push(q->tx_vq, q->async_tx.elem, 0);
-    virtio_notify(vdev, q->tx_vq);
+    virtio_notify(vdev, q->tx_vq, "net_tx_queue");
 
     g_free(q->async_tx.elem);
     q->async_tx.elem = NULL;
@@ -2122,6 +2114,7 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
     VirtQueueElement *elem;
     int32_t num_packets = 0;
+    printf("virtio_net_flush_tx\n");
     int queue_index = vq2q(virtio_get_queue_index(q->tx_vq));
     if (!(vdev->status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         return num_packets;
@@ -2201,7 +2194,7 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
 
 drop:
         virtqueue_push(q->tx_vq, elem, 0);
-        virtio_notify(vdev, q->tx_vq);
+        virtio_notify(vdev, q->tx_vq, "net_tx_queue");
         g_free(elem);
 
         if (++num_packets >= n->tx_burst) {
@@ -2293,6 +2286,8 @@ static void virtio_net_tx_bh(void *opaque)
     VirtIONet *n = q->n;
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
     int32_t ret;
+
+    printf("virtio_net_tx_bh\n");
 
     /* This happens when device was stopped but BH wasn't. */
     if (!vdev->vm_running) {

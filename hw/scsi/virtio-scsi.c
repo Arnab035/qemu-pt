@@ -75,7 +75,7 @@ static void virtio_scsi_complete_req(VirtIOSCSIReq *req)
     if (s->dataplane_started && !s->dataplane_fenced) {
         virtio_notify_irqfd(vdev, vq);
     } else {
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
     }
 
     if (req->sreq) {

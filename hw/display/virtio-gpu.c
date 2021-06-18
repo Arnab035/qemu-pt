@@ -178,7 +178,7 @@ void virtio_gpu_ctrl_response(VirtIOGPU *g,
                       __func__, s, resp_len);
     }
     virtqueue_push(cmd->vq, &cmd->elem, s);
-    virtio_notify(VIRTIO_DEVICE(g), cmd->vq);
+    virtio_notify(VIRTIO_DEVICE(g), cmd->vq, "");
     cmd->finished = true;
 }
 
@@ -920,7 +920,7 @@ static void virtio_gpu_handle_cursor(VirtIODevice *vdev, VirtQueue *vq)
             update_cursor(g, &cursor_info);
         }
         virtqueue_push(vq, elem, 0);
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
         g_free(elem);
     }
 }

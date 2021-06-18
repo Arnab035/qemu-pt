@@ -463,7 +463,7 @@ out:
         assert(sz == sizeof(tail));
 
         virtqueue_push(vq, elem, sizeof(tail));
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
         g_free(elem);
     }
 }
@@ -505,7 +505,7 @@ static void virtio_iommu_report_fault(VirtIOIOMMU *viommu, uint8_t reason,
 
     trace_virtio_iommu_report_fault(reason, flags, endpoint, address);
     virtqueue_push(vq, elem, sz);
-    virtio_notify(vdev, vq);
+    virtio_notify(vdev, vq, "");
     g_free(elem);
 
 }

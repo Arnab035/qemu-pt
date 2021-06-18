@@ -34,7 +34,7 @@ static void virtio_9p_push_and_notify(V9fsPDU *pdu)
     v->elems[pdu->idx] = NULL;
 
     /* FIXME: we should batch these completions */
-    virtio_notify(VIRTIO_DEVICE(v), v->vq);
+    virtio_notify(VIRTIO_DEVICE(v), v->vq, "");
 }
 
 static void handle_9p_output(VirtIODevice *vdev, VirtQueue *vq)

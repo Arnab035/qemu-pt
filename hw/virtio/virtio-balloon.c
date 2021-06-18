@@ -221,7 +221,7 @@ static void balloon_stats_poll_cb(void *opaque)
     }
 
     virtqueue_push(s->svq, s->stats_vq_elem, s->stats_vq_offset);
-    virtio_notify(vdev, s->svq);
+    virtio_notify(vdev, s->svq, "");
     g_free(s->stats_vq_elem);
     s->stats_vq_elem = NULL;
 }
@@ -374,7 +374,7 @@ static void virtio_balloon_handle_output(VirtIODevice *vdev, VirtQueue *vq)
         }
 
         virtqueue_push(vq, elem, offset);
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
         g_free(elem);
         virtio_balloon_pbp_free(&pbp);
     }
@@ -396,7 +396,7 @@ static void virtio_balloon_receive_stats(VirtIODevice *vdev, VirtQueue *vq)
     if (s->stats_vq_elem != NULL) {
         /* This should never happen if the driver follows the spec. */
         virtqueue_push(vq, s->stats_vq_elem, 0);
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
         g_free(s->stats_vq_elem);
     }
 
@@ -505,7 +505,7 @@ static void virtio_ballloon_get_free_page_hints(void *opaque)
         virtio_queue_set_notification(vq, 0);
         continue_to_get_hints = get_free_page_hints(dev);
         qemu_mutex_unlock(&dev->free_page_lock);
-        virtio_notify(vdev, vq);
+        virtio_notify(vdev, vq, "");
       /*
        * Start to poll the vq once the hinting started. Otherwise, continue
        * only when there are entries on the vq, which need to be given back.

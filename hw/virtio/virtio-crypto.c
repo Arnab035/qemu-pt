@@ -283,7 +283,7 @@ static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
                 break;
             }
             virtqueue_push(vq, elem, sizeof(input));
-            virtio_notify(vdev, vq);
+            virtio_notify(vdev, vq, "");
             break;
         case VIRTIO_CRYPTO_CIPHER_DESTROY_SESSION:
         case VIRTIO_CRYPTO_HASH_DESTROY_SESSION:
@@ -299,7 +299,7 @@ static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
                 break;
             }
             virtqueue_push(vq, elem, sizeof(status));
-            virtio_notify(vdev, vq);
+            virtio_notify(vdev, vq, "");
             break;
         case VIRTIO_CRYPTO_HASH_CREATE_SESSION:
         case VIRTIO_CRYPTO_MAC_CREATE_SESSION:
@@ -315,7 +315,7 @@ static void virtio_crypto_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
                 break;
             }
             virtqueue_push(vq, elem, sizeof(input));
-            virtio_notify(vdev, vq);
+            virtio_notify(vdev, vq, "");
 
             break;
         } /* end switch case */
@@ -403,7 +403,7 @@ static void virtio_crypto_req_complete(VirtIOCryptoReq *req, uint8_t status)
     }
     stb_p(&req->in->status, status);
     virtqueue_push(req->vq, &req->elem, req->in_len);
-    virtio_notify(vdev, req->vq);
+    virtio_notify(vdev, req->vq, "");
 }
 
 static VirtIOCryptoReq *

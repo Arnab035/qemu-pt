@@ -127,7 +127,7 @@ static size_t write_to_port(VirtIOSerialPort *port,
         g_free(elem);
     }
 
-    virtio_notify(VIRTIO_DEVICE(port->vser), vq);
+    virtio_notify(VIRTIO_DEVICE(port->vser), vq, "");
     return offset;
 }
 
@@ -146,7 +146,7 @@ static void discard_vq_data(VirtQueue *vq, VirtIODevice *vdev)
         virtqueue_push(vq, elem, 0);
         g_free(elem);
     }
-    virtio_notify(vdev, vq);
+    virtio_notify(vdev, vq, "");
 }
 
 static void discard_throttle_data(VirtIOSerialPort *port)
@@ -209,7 +209,7 @@ static void do_flush_queued_data(VirtIOSerialPort *port, VirtQueue *vq,
         g_free(port->elem);
         port->elem = NULL;
     }
-    virtio_notify(vdev, vq);
+    virtio_notify(vdev, vq, "");
 }
 
 static void flush_queued_data(VirtIOSerialPort *port)
@@ -241,7 +241,7 @@ static size_t send_control_msg(VirtIOSerial *vser, void *buf, size_t len)
     iov_from_buf(elem->in_sg, elem->in_num, 0, buf, len);
 
     virtqueue_push(vq, elem, len);
-    virtio_notify(VIRTIO_DEVICE(vser), vq);
+    virtio_notify(VIRTIO_DEVICE(vser), vq, "");
     g_free(elem);
 
     return len;
@@ -493,7 +493,7 @@ static void control_out(VirtIODevice *vdev, VirtQueue *vq)
         g_free(elem);
     }
     g_free(buf);
-    virtio_notify(vdev, vq);
+    virtio_notify(vdev, vq, "");
 }
 
 /* Guest wrote something to some port. */

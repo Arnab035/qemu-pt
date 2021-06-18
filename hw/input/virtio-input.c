@@ -65,7 +65,7 @@ void virtio_input_send(VirtIOInput *vinput, virtio_input_event *event)
         virtqueue_push(vinput->evt, elem, len);
         g_free(elem);
     }
-    virtio_notify(VIRTIO_DEVICE(vinput), vinput->evt);
+    virtio_notify(VIRTIO_DEVICE(vinput), vinput->evt, "");
     vinput->qindex = 0;
 }
 
@@ -97,7 +97,7 @@ static void virtio_input_handle_sts(VirtIODevice *vdev, VirtQueue *vq)
         virtqueue_push(vinput->sts, elem, len);
         g_free(elem);
     }
-    virtio_notify(vdev, vinput->sts);
+    virtio_notify(vdev, vinput->sts, "");
 }
 
 virtio_input_config *virtio_input_find_config(VirtIOInput *vinput,
