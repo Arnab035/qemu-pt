@@ -31,8 +31,6 @@ typedef struct NetEvent {
     size_t size;
 } NetEvent;
 
-static int network_device_id = -1;
-
 static NetFilterState **network_filters;
 static int network_filters_count;
 
@@ -84,7 +82,6 @@ void replay_event_net_run(void *opaque)
         .iov_base = (void *)event->data,
         .iov_len = event->size
     };
-
     assert(event->id < network_filters_count);
 
     qemu_netfilter_pass_to_next(network_filters[event->id]->netdev,
@@ -97,10 +94,6 @@ void replay_event_net_run(void *opaque)
 void replay_event_net_save(void *opaque)
 {
     NetEvent *event = opaque;
-
-    //printf("event->id is %d\n", event->id);
-    //printf("event->flags is %d\n", event->flags);
-    //printf("event->data is %s and event->size is %lu\n", event->data, event->size);
 
     replay_put_byte(event->id);
     replay_put_dword(event->flags);
@@ -122,13 +115,9 @@ void *arnab_replay_event_net_load(void)
 {
     NetEvent *event = g_new(NetEvent, 1);
     event->id = arnab_replay_get_byte("network");
-    if (network_device_id == -1) 
-    {
-        network_device_id = event->id;
-    }
-    if (event->id != network_device_id) {
-        // this basically means you read a byte that indicates that interrupt was taken here
-        g_free(event);
+    // this check is possible since we won't have too many network devices
+    // in the guest. So the network device id isn't going to balloon.
+    if (event->id == EVENT_NET_RX_INTERRUPT || event->id == EVENT_NET_TX_INTERRUPT) {
         return NULL;
     }
     event->flags = arnab_replay_get_dword("network");

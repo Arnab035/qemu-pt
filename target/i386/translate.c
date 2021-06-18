@@ -35,6 +35,7 @@
 #include "sysemu/replay.h"
 #include "replay/replay-internal.h"
 
+#include "hw/virtio/virtio.h"
 #include "index_array_header.h"
 
 #define PREFIX_REPZ   0x01
@@ -4640,12 +4641,18 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_tip_address++;
             index_fup_address++;
             if (intno == 113) {
-                ReplayIOEvent *event;
-		event = g_malloc0(sizeof(ReplayIOEvent));
-                event->event_kind = REPLAY_ASYNC_EVENT_NET;
-                event->opaque = arnab_replay_event_net_load();
-                replay_event_net_run(event->opaque);
-                g_free(event);
+                while (true) {
+                    ReplayIOEvent *event;
+                    event = g_malloc0(sizeof(ReplayIOEvent));
+                    event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                    event->opaque = arnab_replay_event_net_load();
+                    if (!event->opaque) {
+                        break;
+                    }
+                    replay_event_net_run(event->opaque);
+                    g_free(event);
+                }
+                gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else {
                 if (intno != 14) {
                     gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
