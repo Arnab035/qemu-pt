@@ -63,15 +63,6 @@ void replay_net_packet_event(ReplayNetState *rns, unsigned flags,
     iov_to_buf(iov, iovcnt, 0, event->data, event->size);
 
     // replay_add_event(REPLAY_ASYNC_EVENT_NET, event, NULL, 0);
-    // write to the file directly instead of adding to queue
-    // TODO: can this be moved out of the fast path?
-    if (start_recording) {
-        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            arnab_replay_put_byte(event->id, "network");
-            arnab_replay_put_dword(event->flags, "network");
-            arnab_replay_put_array(event->data, event->size, "network");
-	}
-    }
     replay_event_net_run(event);
 }
 
@@ -117,7 +108,8 @@ void *arnab_replay_event_net_load(void)
     event->id = arnab_replay_get_byte("network");
     // this check is possible since we won't have too many network devices
     // in the guest. So the network device id isn't going to balloon.
-    if (event->id == EVENT_NET_RX_INTERRUPT || event->id == EVENT_NET_TX_INTERRUPT) {
+    if (event->id == EVENT_NET_TX_INTERRUPT || event->id == EVENT_NET_RX_INTERRUPT) {
+        printf("event->id is %d\n", event->id);
         return NULL;
     }
     event->flags = arnab_replay_get_dword("network");
