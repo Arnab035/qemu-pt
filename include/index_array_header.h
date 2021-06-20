@@ -69,6 +69,10 @@ void get_array_of_tnt_bits(void);
 
 extern struct intel_pt_read_state intel_pt_state;
 
+/* I/O replay structures */
+extern void *replay_tx_bh;
+void virtio_net_tx_replay(void *);
+
 unsigned long do_strtoul(char *address);   // function declared
 int get_interrupt_number_from_hashtable(char *);
 
