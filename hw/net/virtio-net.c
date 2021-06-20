@@ -1397,6 +1397,15 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
 
     offset = i = 0;
 
+    // only record packets which have made it past all checks.
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            arnab_replay_put_byte(0, "network");
+            arnab_replay_put_dword(0, "network");  // flags do not matter for virtio
+            arnab_replay_put_array(buf, size, "network");
+        }
+    }
+
     while (offset < size) {
         VirtQueueElement *elem;
         int len, total;
@@ -2114,7 +2123,6 @@ static int32_t virtio_net_flush_tx(VirtIONetQueue *q)
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
     VirtQueueElement *elem;
     int32_t num_packets = 0;
-    printf("virtio_net_flush_tx\n");
     int queue_index = vq2q(virtio_get_queue_index(q->tx_vq));
     if (!(vdev->status & VIRTIO_CONFIG_S_DRIVER_OK)) {
         return num_packets;
@@ -2282,12 +2290,14 @@ static void virtio_net_tx_timer(void *opaque)
 
 static void virtio_net_tx_bh(void *opaque)
 {
+    /* during replay do not execute the bottom half */
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return;
+    }
     VirtIONetQueue *q = opaque;
     VirtIONet *n = q->n;
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
     int32_t ret;
-
-    printf("virtio_net_tx_bh\n");
 
     /* This happens when device was stopped but BH wasn't. */
     if (!vdev->vm_running) {
@@ -2331,6 +2341,60 @@ static void virtio_net_tx_bh(void *opaque)
     }
 }
 
+void virtio_net_tx_replay(void *opaque)
+{
+    printf("virtio_net_tx_replay\n");
+    VirtIONetQueue *q = opaque;
+    VirtIONet *n = q->n;
+    VirtIODevice *vdev = VIRTIO_DEVICE(n);
+    int32_t ret;
+
+    /* This happens when device was stopped but BH wasn't. */
+    if (!vdev->vm_running) {
+        /* Make sure tx waiting is set, so we'll run when restarted. */
+        assert(q->tx_waiting);
+        printf("vm_running is not set\n");
+        return;
+    }
+
+    q->tx_waiting = 0;
+
+    /* Just in case the driver is not ready on more */
+    if (unlikely(!(vdev->status & VIRTIO_CONFIG_S_DRIVER_OK))) {
+        return;
+    }
+
+    ret = virtio_net_flush_tx(q);
+    if (ret == -EBUSY || ret == -EINVAL) {
+        return; /* Notification re-enable handled by tx_complete or device
+                 * broken */
+    }
+    printf("ret: %d\n", ret);
+
+    /* If we flush a full burst of packets, assume there are
+     * more coming and immediately reschedule */
+    if (ret >= n->tx_burst) {
+        virtio_net_tx_replay(opaque); // recursive call
+        q->tx_waiting = 1;
+        return;
+    }
+
+    /* If less than a full burst, re-enable notification and flush
+     * anything that may have come in while we weren't looking.  If
+     * we find something, assume the guest is still active and reschedule */
+    virtio_queue_set_notification(q->tx_vq, 1);
+    ret = virtio_net_flush_tx(q);
+    if (ret == -EINVAL) {
+        return;
+    } else if (ret > 0) {
+        virtio_queue_set_notification(q->tx_vq, 0);
+        virtio_net_tx_replay(opaque);  // recursive call
+        q->tx_waiting = 1;
+    }
+}
+
+void *replay_tx_bh = NULL;
+
 static void virtio_net_add_queue(VirtIONet *n, int index)
 {
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
@@ -2350,6 +2414,11 @@ static void virtio_net_add_queue(VirtIONet *n, int index)
             virtio_add_queue(vdev, n->net_conf.tx_queue_size,
                              virtio_net_handle_tx_bh);
         n->vqs[index].tx_bh = qemu_bh_new(virtio_net_tx_bh, &n->vqs[index]);
+        if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+            if (!replay_tx_bh) {
+                replay_tx_bh = &n->vqs[index];
+            }
+        }
     }
 
     n->vqs[index].tx_waiting = 0;
