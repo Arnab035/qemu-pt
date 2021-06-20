@@ -38,6 +38,7 @@ static ssize_t filter_replay_receive_iov(NetFilterState *nf,
                                          int iovcnt, NetPacketSent *sent_cb)
 {
     NetFilterReplayState *nfrs = FILTER_REPLAY(nf);
+    
     switch (arnab_replay_mode) {
     case REPLAY_MODE_RECORD:
         if (nf->netdev == sndr) {
@@ -48,7 +49,8 @@ static ssize_t filter_replay_receive_iov(NetFilterState *nf,
     case REPLAY_MODE_PLAY:
         /* Drop all packets in replay mode.
            Packets from the log will be injected by the replay module. */
-        return iov_size(iov, iovcnt);
+        //return iov_size(iov, iovcnt);
+        return 0;
     default:
         /* Pass all the packets. */
         return 0;
