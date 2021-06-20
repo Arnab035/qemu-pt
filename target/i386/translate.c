@@ -163,12 +163,6 @@ typedef struct DisasContext {
     sigjmp_buf jmpbuf;
 } DisasContext;
 
-typedef struct ReplayIOEvent {
-    ReplayAsyncEventKind event_kind;
-    void *opaque;
-    uint64_t id;
-} ReplayIOEvent;
-
 static void gen_eob(DisasContext *s);
 static void gen_jr(DisasContext *s, TCGv dest);
 static void gen_jmp(DisasContext *s, target_ulong eip);

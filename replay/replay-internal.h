@@ -69,6 +69,12 @@ enum ReplayAsyncEventKind {
 
 typedef enum ReplayAsyncEventKind ReplayAsyncEventKind;
 
+typedef struct ReplayIOEvent {
+    ReplayAsyncEventKind event_kind;
+    void *opaque;
+    uint64_t id;
+} ReplayIOEvent;
+
 typedef struct ReplayState {
     /*! Cached clock values. */
     int64_t cached_clock[REPLAY_CLOCK_COUNT];
