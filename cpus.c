@@ -56,6 +56,7 @@
 #include "tcg/tcg.h"
 #include "hw/nmi.h"
 #include "sysemu/replay.h"
+#include "replay/replay-internal.h"
 #include "sysemu/runstate.h"
 #include "hw/boards.h"
 #include "index_array_header.h"
@@ -1418,6 +1419,20 @@ static int tcg_cpu_exec(CPUState *cpu)
 
     if(!tnt_array) {
       printf("get_array_of_tnt_bits returns NULL\n");
+    }
+
+    if(arnab_replay_mode == REPLAY_MODE_PLAY) {
+        while(true) {
+            ReplayIOEvent *event;
+            event = g_malloc0(sizeof(ReplayIOEvent));
+            event->event_kind = REPLAY_ASYNC_EVENT_NET;
+            event->opaque = arnab_replay_event_net_load();
+            if (!event->opaque) {
+                break;
+            }
+            replay_event_net_run(event->opaque);
+            g_free(event);
+        }
     }
 
     assert(tcg_enabled());
