@@ -332,7 +332,7 @@ void get_array_of_tnt_bits(void) {
     int max_lines_read = 50000, curr_lines_read = 0;
 
     //TODO: make this commandline
-    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_02may21.txt.gz";
+    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_03may21.txt.gz";
     if (!tnt_array) {
         tnt_array = malloc(1);
     }
@@ -531,6 +531,13 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         qemu_log_unlock(logfile);
     }
 #endif /* DEBUG_DISAS */
+    /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called. 
+     * This is very opportunistic in the sense we try to flush a queue even if there is no tx packet */
+    const char *virtqueue_kick_trap = "ffff814bf7a0";
+    if (env->eip == do_strtoul((char *)virtqueue_kick_trap)) {
+        printf("tx replay\n");
+        virtio_net_tx_replay(replay_tx_bh);
+    }
     ret = tcg_qemu_tb_exec(env, tb_ptr);
     cpu->can_do_io = 1;
     last_tb = (TranslationBlock *)(ret & ~TB_EXIT_MASK);
