@@ -1421,20 +1421,6 @@ static int tcg_cpu_exec(CPUState *cpu)
       printf("get_array_of_tnt_bits returns NULL\n");
     }
 
-    if(arnab_replay_mode == REPLAY_MODE_PLAY) {
-        while(true) {
-            ReplayIOEvent *event;
-            event = g_malloc0(sizeof(ReplayIOEvent));
-            event->event_kind = REPLAY_ASYNC_EVENT_NET;
-            event->opaque = arnab_replay_event_net_load();
-            if (!event->opaque) {
-                break;
-            }
-            replay_event_net_run(event->opaque);
-            g_free(event);
-        }
-    }
-
     assert(tcg_enabled());
 #ifdef CONFIG_PROFILER
     ti = profile_getclock();
@@ -1748,6 +1734,20 @@ static void *qemu_tcg_cpu_thread_fn(void *arg)
         if (cpu_can_run(cpu)) {
             int r;
             qemu_mutex_unlock_iothread();
+            if(!stopped_execution_of_tb_chain && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                while(true) {
+                    ReplayIOEvent *event;
+                    event = g_malloc0(sizeof(ReplayIOEvent));
+                    event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                    event->opaque = arnab_replay_event_net_load();
+                    if (!event->opaque) {
+                        g_free(event);
+                        break;
+                    }
+                    replay_event_net_run(event->opaque);
+                    g_free(event);
+                }
+            }
             r = tcg_cpu_exec(cpu);
             qemu_mutex_lock_iothread();
             switch (r) {
