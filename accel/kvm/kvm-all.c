@@ -2157,6 +2157,9 @@ static void kvm_handle_rdtsc(CPUState *cs)
             eax = (uint32_t)env->regs[R_EAX];
             edx = (uint32_t)env->regs[R_EDX];
             tsc_clock = (uint64_t) edx << 32 | eax;
+            // these are \"simulated\" interrupt markers that rate limit n/w packets
+	    // we will replay all n/w packets that have been received till this point.
+            arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
             arnab_replay_put_qword((int64_t)tsc_clock, "host-clock");
         }
     }
@@ -2410,7 +2413,6 @@ int kvm_cpu_exec(CPUState *cpu)
             ret = 0;
             break;
         case KVM_EXIT_MMIO:
-            DPRINTF("handle_mmio\n");
             /* Called outside BQL */
             address_space_rw(&address_space_memory,
                              run->mmio.phys_addr, attrs,

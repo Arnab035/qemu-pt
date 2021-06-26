@@ -432,6 +432,8 @@ static uint32_t hpet_ram_readw(void *opaque, hwaddr addr)
 }
 #endif
 
+int count = 0;
+
 static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                               unsigned size)
 {
@@ -480,6 +482,18 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             return 0;
         case HPET_COUNTER:
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+                while(true) {
+                    ReplayIOEvent *event;
+                    event = g_malloc0(sizeof(ReplayIOEvent));
+                    event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                    event->opaque = arnab_replay_event_net_load();
+                    if (!event->opaque) {
+                        g_free(event);
+                        break;
+                    }
+                    replay_event_net_run(event->opaque);
+                    g_free(event);
+                }
                 cur_tick = (uint64_t)arnab_replay_get_qword("clock");
                 printf("Replaying hpet clock value: 0x%lx\n", cur_tick);
                 return cur_tick;
@@ -492,6 +506,13 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                    // these are \"simulated\" interrupt markers that rate limit n/w packets
+                    // we will replay all network packets that have been received till this point.
+                    if (count < 2) {
+                        printf("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
+                        count++;
+                    }
+                    arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
                     arnab_replay_put_qword((int64_t)cur_tick, "clock");
                 }
             }
