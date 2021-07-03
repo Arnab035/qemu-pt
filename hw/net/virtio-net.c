@@ -1397,15 +1397,6 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
 
     offset = i = 0;
 
-    // only record packets which have made it past all checks.
-    if (start_recording) {
-        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            arnab_replay_put_byte(0, "network");
-            arnab_replay_put_dword(0, "network");  // flags do not matter for virtio
-            arnab_replay_put_array(buf, size, "network");
-        }
-    }
-
     while (offset < size) {
         VirtQueueElement *elem;
         int len, total;
@@ -1477,6 +1468,15 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         iov_from_buf(mhdr_sg, mhdr_cnt,
                      0,
                      &mhdr.num_buffers, sizeof mhdr.num_buffers);
+    }
+
+    // only record packets which have made it past all checks.
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            arnab_replay_put_byte(0, "network");
+            arnab_replay_put_dword(0, "network");  // flags do not matter for virtio
+            arnab_replay_put_array(buf, size, "network");
+        }
     }
 
     virtqueue_flush(q->rx_vq, i);
@@ -2353,7 +2353,6 @@ void virtio_net_tx_replay(void *opaque)
     if (!vdev->vm_running) {
         /* Make sure tx waiting is set, so we'll run when restarted. */
         assert(q->tx_waiting);
-        printf("vm_running is not set\n");
         return;
     }
 
@@ -2369,7 +2368,6 @@ void virtio_net_tx_replay(void *opaque)
         return; /* Notification re-enable handled by tx_complete or device
                  * broken */
     }
-    printf("ret: %d\n", ret);
 
     /* If we flush a full burst of packets, assume there are
      * more coming and immediately reschedule */
