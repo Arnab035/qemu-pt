@@ -4641,6 +4641,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     event->event_kind = REPLAY_ASYNC_EVENT_NET;
                     event->opaque = arnab_replay_event_net_load();
                     if (!event->opaque) {
+                        g_free(event);
                         break;
                     }
                     replay_event_net_run(event->opaque);
