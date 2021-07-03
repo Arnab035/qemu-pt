@@ -1707,6 +1707,8 @@ static void CALLBACK dummy_apc_func(ULONG_PTR unused)
  * current CPUState for a given thread.
  */
 
+static bool network_replay_done_at_init = false;
+
 static void *qemu_tcg_cpu_thread_fn(void *arg)
 {
     CPUState *cpu = arg;
@@ -1734,8 +1736,9 @@ static void *qemu_tcg_cpu_thread_fn(void *arg)
         if (cpu_can_run(cpu)) {
             int r;
             qemu_mutex_unlock_iothread();
-            if(!stopped_execution_of_tb_chain && arnab_replay_mode == REPLAY_MODE_PLAY) {
+            if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
                 while(true) {
+                    network_replay_done_at_init = true;
                     ReplayIOEvent *event;
                     event = g_malloc0(sizeof(ReplayIOEvent));
                     event->event_kind = REPLAY_ASYNC_EVENT_NET;
