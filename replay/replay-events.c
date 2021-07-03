@@ -37,8 +37,6 @@ typedef struct Event {
 static QTAILQ_HEAD(, Event) events_list = QTAILQ_HEAD_INITIALIZER(events_list);
 static bool events_enabled;
 
-static void *disk_opaque = NULL;
-
 /* Functions */
 
 /* network and disk events have been enabled only */
@@ -172,9 +170,6 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
     if (arnab_replay_mode == REPLAY_MODE_RECORD) {
         // write to file here (instead of writing to queue)
         if (start_recording) {
-            if (disk_opaque == NULL) {
-                disk_opaque = bh;
-            }
             if (arnab_disk_replay_file) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
                     arnab_replay_put_qword(id, "disk");
@@ -182,9 +177,7 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
             }
         }
     }
-    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
-        qemu_bh_schedule(bh);  // during replay we'll schedule the disk events appropriately
-    }
+    qemu_bh_schedule(bh);  // during replay we'll schedule the disk events appropriately
 }
 
 static void replay_save_event(Event *event, int checkpoint)
@@ -346,10 +339,14 @@ bool replay_events_enabled(void)
     return events_enabled;
 }
 
+static uint64_t block_request_id = 0;
+
 uint64_t blkreplay_next_id(void)
 {
-    if (replay_events_enabled()) {
-        return replay_state.block_request_id++;
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+        if (start_recording) {
+            return block_request_id++;
+        }
     }
     return 0;
 }
