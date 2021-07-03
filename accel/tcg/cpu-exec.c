@@ -216,7 +216,12 @@ static void construct_fully_qualified_address(int i, char *reference_address) {
         for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
             tip_addresses[i].address[j+chars_to_copy]=tip_addresses[i].address[j];
         }
-
+        if (chars_to_copy > 4) {
+            for(j=0; j<chars_to_copy-4; j++) {
+                tip_addresses[i].address[j+4] = '0';
+            }
+            chars_to_copy = 4;
+        }
         for(j=0;j<chars_to_copy;j++) {
             tip_addresses[i].address[j] = reference_address[j];
         }
@@ -533,8 +538,8 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 #endif /* DEBUG_DISAS */
     /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called. 
      * This is very opportunistic in the sense we try to flush a queue even if there is no tx packet */
-    const char *virtqueue_kick_trap = "ffff814bf7a0";
-    if (env->eip == do_strtoul((char *)virtqueue_kick_trap)) {
+    const char *virtqueue_get_buf_trap = "ffff814bfc20";
+    if (env->eip == do_strtoul((char *)virtqueue_get_buf_trap)) {
         printf("tx replay\n");
         virtio_net_tx_replay(replay_tx_bh);
     }
@@ -791,163 +796,6 @@ static inline void tb_add_jump(TranslationBlock *tb, int n,
     return;
 }
 
-
-/* this function determines if there is a conflict in the hash table 
- * returns : true if there is a conflict, false otherwise
- * parameters : integer index of the hash table
- */
-
-
-/*
-int is_hash_table_conflict(int index) {
-  if(interrupt_hash_table[index].interrupt_handler_address != NULL) { 
-    return 1;
-  }
-  else {
-    return 0;
-  }
-}
-
-int compute_hash(char *interrupt_handler_pointer) {
-  if(strlen(interrupt_handler_pointer) < 12) {
-    printf("handler address may be wrong\n");
-    return -1;
-  }
-  int length=strlen(interrupt_handler_pointer);
-  int hash;
-  char *p = malloc(5 * sizeof(char));
-  int i;
-  for(i=0; i<4; i++) {
-    p[i] = interrupt_handler_pointer[length-4+i];  // last 4 characters only needed
-  }
-  p[4] = '\0';
-  hash = (((p[0]-'0')+(p[1]-'0')+(p[2]-'0')+(p[3]-'0')) % 256);
-  //printf("hash : %d\n", hash);
-  return hash;
-}*/
-
-/* this function fills up the interrupt hash tables
- * parameters : pointer to CPUX86State 
- * returns : void
- */
-
-/*
-void fill_interrupt_hash_table(CPUX86State *env) {
-   
-  uint32_t e1, e2, e3;
-  SegmentCache *dt;
-  target_ulong ptr;
-  target_ulong offset;
-  interrupt_hash_table = malloc(256 * sizeof(struct hash_buckets));
-  if(!interrupt_hash_table) {
-      printf("Malloc unsuccesful\n");
-      exit(1);
-  }
-  memset(interrupt_hash_table, 0, 256 * sizeof(struct hash_buckets));
-  int index, is_conflict;
-
-  char *buffer = malloc(16 * sizeof(char));
-  int intno;
-  dt = &env->idt;
-  for(intno=0; intno < 256; intno++) {
-    ptr = dt->base + intno*16;
-    e1 = cpu_ldl_kernel(env, ptr);
-    e2 = cpu_ldl_kernel(env, ptr+4);
-    e3 = cpu_ldl_kernel(env, ptr+8);
-    offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
-    sprintf(buffer, "%lx", offset);   // convert into string
-    
-    index = compute_hash(buffer);
-    // determine if there is a conflict
-    is_conflict = is_hash_table_conflict(index);
-    if(is_conflict) {
-      // there is a conflict
-      struct hash_buckets *hb = interrupt_hash_table[index].pointer;
-      struct hash_buckets *prev = NULL;
-      while(hb != NULL) {
-	prev = hb;
-        hb = hb->pointer;
-      }
-      hb = malloc(sizeof(struct hash_buckets *));
-      hb->interrupt_number = intno;
-      hb->interrupt_handler_address = malloc(17 * sizeof(char));
-      strncpy(hb->interrupt_handler_address, buffer, strlen(buffer));
-      hb->interrupt_handler_address[strlen(buffer)] = '\0';
-      hb->pointer = NULL;
-      if(prev == NULL) {
-        interrupt_hash_table[index].pointer = hb;
-      }
-      else {
-        prev->pointer = hb;   // update pointer
-      }
-    }
-    else {
-      interrupt_hash_table[index].interrupt_number=intno;
-      interrupt_hash_table[index].interrupt_handler_address = malloc(17 * sizeof(char));  // length is 16
-      strncpy(interrupt_hash_table[index].interrupt_handler_address, buffer, strlen(buffer));
-      interrupt_hash_table[index].interrupt_handler_address[strlen(buffer)] = '\0';
-      interrupt_hash_table[index].pointer = NULL;
-    }
-  }
-}
-*/
-
-/* this function returns the interrupt vector number
- * from the interrupt hash table - 
- * parameters : interrupt_handler_pointer in string format
- */
-
-/*
-int get_interrupt_number_from_hashtable(char *interrupt_handler_pointer) {
-    int hash_index = compute_hash(interrupt_handler_pointer);
-    int diff;
-    char *address;
-    if(interrupt_hash_table[hash_index].interrupt_handler_address == NULL) {
-      printf("Cannot find the interrupt in the hash table... return\n");
-      return -1;
-    }
-    struct hash_buckets hb = interrupt_hash_table[hash_index];
-    if(strlen(interrupt_handler_pointer) == 12) {  // either length is 12 or 16
-      diff=strlen(hb.interrupt_handler_address) - strlen(interrupt_handler_pointer);
-      printf("diff : %d\n", diff);
-
-      address = &(hb.interrupt_handler_address[diff]);
-      printf("%s\n", address);
-
-      if(strncmp(interrupt_handler_pointer, address, strlen(interrupt_handler_pointer)) == 0) {
-        return hb.interrupt_number;
-      }
-      // if they do not match - then you have to traverse the linked list
-      else {
-	struct hash_buckets *hb = interrupt_hash_table[hash_index].pointer;
-        while(hb != NULL) {
-          diff = strlen(hb->interrupt_handler_address) - strlen(interrupt_handler_pointer);
-          address = &(hb->interrupt_handler_address[diff]);
-	  printf("address : %s\n", address);
-          if(strncmp(interrupt_handler_pointer, address, strlen(interrupt_handler_pointer)) == 0){
-	    return hb->interrupt_number;
-	  }
-	  hb = hb->pointer;
-	}
-      }
-    }
-    else {
-      if(strncmp(interrupt_handler_pointer, hb.interrupt_handler_address, strlen(interrupt_handler_pointer)) == 0) {
-        return hb.interrupt_number;
-      }
-      else {
-        struct hash_buckets *hb = interrupt_hash_table[hash_index].pointer;
-	while(hb != NULL) {
-	  if(strncmp(interrupt_handler_pointer, hb->interrupt_handler_address, strlen(interrupt_handler_pointer)) == 0) {
-	    return hb->interrupt_number;
-	  }
-	  hb = hb->pointer;
-	}
-      }
-    }
-  
-   return -1;   
-}*/
 
 static inline TranslationBlock *tb_find(CPUState *cpu,
                                         TranslationBlock *last_tb,
@@ -1265,12 +1113,6 @@ int cpu_exec(CPUState *cpu)
         printf("tnt_array is empty\n");
         exit(1);
     }
-
-    if(interrupt_hash_table == NULL) {
-        //X86CPU *x86cpu = X86_CPU(cpu);
-        //fill_interrupt_hash_table(&x86cpu->env);
-    }
-
     /* if an exception is pending, we execute it here */
     while (!cpu_handle_exception(cpu, &ret)) {
         TranslationBlock *last_tb = NULL;
