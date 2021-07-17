@@ -37,6 +37,8 @@
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qstring.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
 #include "scsi/pr-manager.h"
 #include "scsi/constants.h"
 
@@ -1938,6 +1940,9 @@ static int coroutine_fn raw_co_prw(BlockDriverState *bs, uint64_t offset,
     };
 
     assert(qiov->size == bytes);
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return handle_aiocb_rw(&acb);
+    }
     return raw_thread_pool_submit(bs, handle_aiocb_rw, &acb);
 }
 

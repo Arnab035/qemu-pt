@@ -31,8 +31,6 @@
 
 struct VirtQueue;
 
-extern bool virtio_net_interrupt;  // TODO: remove
-
 static inline hwaddr vring_align(hwaddr addr,
                                              unsigned long align)
 {

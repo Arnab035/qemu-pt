@@ -36,6 +36,7 @@
 #include "replay/replay-internal.h"
 
 #include "hw/virtio/virtio.h"
+#include "hw/virtio/virtio-blk.h"
 #include "index_array_header.h"
 
 #define PREFIX_REPZ   0x01
@@ -4543,6 +4544,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int shift;
     int intno;
     int i;
+    bool ret;
     //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
@@ -4631,11 +4633,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
                 return s->pc;
             }
-            index_array+=2;
+            index_array += 2;
             index_tip_address++;
             index_fup_address++;
             if (intno == 113) {
-                while (true) {
+                /* network interrupt */
+                while (!stopped_execution_of_tb_chain) {
                     ReplayIOEvent *event;
                     event = g_malloc0(sizeof(ReplayIOEvent));
                     event->event_kind = REPLAY_ASYNC_EVENT_NET;
@@ -4646,6 +4649,15 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     }
                     replay_event_net_run(event->opaque);
                     g_free(event);
+                }
+                gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
+            } else if (intno == 81) {
+                /* disk interrupt */
+                while (true) {
+                    ret = virtio_blk_data_plane_handle_output_replay();
+                    if (!ret) {
+                        break;
+                    }
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else {

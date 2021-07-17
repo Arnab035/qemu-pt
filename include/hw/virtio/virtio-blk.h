@@ -87,4 +87,6 @@ typedef struct MultiReqBuffer {
 
 bool virtio_blk_handle_vq(VirtIOBlock *s, VirtQueue *vq);
 
+bool virtio_blk_data_plane_handle_output_replay(void);
+
 #endif

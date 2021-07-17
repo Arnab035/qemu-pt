@@ -2530,6 +2530,9 @@ void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq)
             return;
         }
     }
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return;
+    }
 
     trace_virtio_notify_irqfd(vdev, vq);
 
@@ -2558,8 +2561,6 @@ static void virtio_irq(VirtQueue *vq)
     virtio_notify_vector(vq->vdev, vq->vector);
 }
 
-bool virtio_net_interrupt = false;
-
 void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
 {
     WITH_RCU_READ_LOCK_GUARD() {
@@ -2567,6 +2568,7 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
             return;
         }
     }
+
     if (arnab_replay_mode == REPLAY_MODE_RECORD) {
         if (start_recording) {
             // only record interrupts for network IO rx
@@ -2581,10 +2583,7 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
     }
     // do not raise interrupts in replay
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        if (strcmp(vdev->name, "virtio-net") == 0) {
-            virtio_net_interrupt = true;
-            return;
-        }
+        return;
     }
     trace_virtio_notify(vdev, vq, event_type);
     virtio_irq(vq);

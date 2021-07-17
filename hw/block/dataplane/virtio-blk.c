@@ -26,6 +26,8 @@
 #include "hw/virtio/virtio-bus.h"
 #include "qom/object_interfaces.h"
 
+#include "include/sysemu/replay.h"
+
 struct VirtIOBlockDataPlane {
     bool starting;
     bool stopping;
@@ -44,6 +46,14 @@ struct VirtIOBlockDataPlane {
     IOThread *iothread;
     AioContext *ctx;
 };
+
+struct VirtIOBlkReplayState {
+    VirtIODevice *vdev;
+    VirtQueue *vq;
+};
+
+
+struct VirtIOBlkReplayState *virtio_blk_state;
 
 /* Raise an interrupt to signal guest, if necessary */
 void virtio_blk_data_plane_notify(VirtIOBlockDataPlane *s, VirtQueue *vq)
@@ -152,6 +162,7 @@ void virtio_blk_data_plane_destroy(VirtIOBlockDataPlane *s)
         object_unref(OBJECT(s->iothread));
     }
     g_free(s);
+    g_free(virtio_blk_state);
 }
 
 static bool virtio_blk_data_plane_handle_output(VirtIODevice *vdev,
@@ -163,6 +174,18 @@ static bool virtio_blk_data_plane_handle_output(VirtIODevice *vdev,
     assert(s->dataplane_started);
 
     return virtio_blk_handle_vq(s, vq);
+}
+
+bool virtio_blk_data_plane_handle_output_replay(void)
+{
+    if (!virtio_blk_state) {
+        error_report("failed to initialize virtio blk structure");
+        return false;
+    }
+    VirtIOBlock *s = (VirtIOBlock *)virtio_blk_state->vdev;
+    assert(s->dataplane);
+    assert(s->dataplane_started);
+    return virtio_blk_handle_vq(s, virtio_blk_state->vq);
 }
 
 /* Context: QEMU global mutex held */
@@ -231,9 +254,16 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     aio_context_acquire(s->ctx);
     for (i = 0; i < nvqs; i++) {
         VirtQueue *vq = virtio_get_queue(s->vdev, i);
-
-        virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
                 virtio_blk_data_plane_handle_output);
+        } else {
+            if (!virtio_blk_state) {
+                virtio_blk_state = g_malloc(sizeof(struct VirtIOBlkReplayState));
+                virtio_blk_state->vdev = s->vdev;
+                virtio_blk_state->vq = vq;
+            }
+        }
     }
     aio_context_release(s->ctx);
     return 0;

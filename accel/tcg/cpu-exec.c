@@ -39,7 +39,7 @@
 #include "sysemu/cpus.h"
 #include "sysemu/replay.h"
 #include "index_array_header.h"
-
+#include "hw/virtio/virtio-blk.h"
 #include "hw/ide/ahci.h"
 
 /* added header files to handle gzlib files */
@@ -539,9 +539,14 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called. 
      * This is very opportunistic in the sense we try to flush a queue even if there is no tx packet */
     const char *virtqueue_get_buf_trap = "ffff814bfc20";
+    bool disk_ret;
     if (env->eip == do_strtoul((char *)virtqueue_get_buf_trap)) {
-        printf("tx replay\n");
         virtio_net_tx_replay(replay_tx_bh);
+        while (true) {
+            disk_ret = virtio_blk_data_plane_handle_output_replay();
+            if (!disk_ret)
+                break;
+        }
     }
     ret = tcg_qemu_tb_exec(env, tb_ptr);
     cpu->can_do_io = 1;
