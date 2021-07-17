@@ -1419,13 +1419,18 @@ static BlockAIOCB *blk_aio_prwv(BlockBackend *blk, int64_t offset, int bytes,
 
     co = qemu_coroutine_create(co_entry, acb);
     bdrv_coroutine_enter(blk_bs(blk), co);
-    BDRV_POLL_WHILE(blk_bs(blk), acb->rwco.ret == NOT_DONE);
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        BDRV_POLL_WHILE(blk_bs(blk), acb->rwco.ret == NOT_DONE);
+    }
 
     acb->has_returned = true;
     if (acb->rwco.ret != NOT_DONE) {
-        blk_aio_complete_bh(acb);
-        //replay_bh_schedule_oneshot_event(blk_get_aio_context(blk),
-                                         //blk_aio_complete_bh, acb);
+        if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+            blk_aio_complete_bh(acb);
+        } else {
+            replay_bh_schedule_oneshot_event(blk_get_aio_context(blk),
+                                         blk_aio_complete_bh, acb);
+        }
     }
 
     return &acb->common;
