@@ -45,8 +45,6 @@ enum ReplayCheckpoint {
     CHECKPOINT_CLOCK_VIRTUAL_RT,
     CHECKPOINT_INIT,
     CHECKPOINT_RESET,
-    CHECKPOINT_VMENTRY,    /* added here */
-    CHECKPOINT_VMEXIT,      /* added here */
     CHECKPOINT_COUNT
 };
 typedef enum ReplayCheckpoint ReplayCheckpoint;
