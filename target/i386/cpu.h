@@ -2050,20 +2050,13 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
     printf("total intelpt packets consumed = %llu\n", index_array + intel_pt_state.total_packets_consumed);
     printf("number of intelPT lines consumed = %llu\n", intel_pt_state.number_of_lines_consumed);
     printf("env->eip is 0x%lx\n", env->eip);
-    //if (index_array <= 1 && index_tip_address == 0) {
-    //    assert(env->eip == do_strtoul(tip_addresses[index_tip_address].address));
-    //}
-    //else {
-        // only add assertion if the previous block consumed either TNT/TIP
-	// and if the previous TB hasn't stopped in the middle of execution
-	// since we have already done our due diligence already.
-        if (!stopped_execution_of_tb_chain &&
-            index_array_incremented &&
-            index_tip_address_incremented &&
-            tnt_array[index_array-1] == 'P') {
-            printf("tip_address during assertion: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address-1].address));
-            assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
-        }
+    if (!stopped_execution_of_tb_chain &&
+        index_array_incremented &&
+        index_tip_address_incremented &&
+        tnt_array[index_array-1] == 'P') {
+        printf("index tip address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address-1].address));
+        assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
+    }
     //}
 
     if(is_within_block) {
@@ -2077,7 +2070,6 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
             stopped_execution_of_tb_chain = 0;
 	}
     }
-
 }
 
 void do_cpu_init(X86CPU *cpu);
