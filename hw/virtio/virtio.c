@@ -2530,6 +2530,14 @@ void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq)
             return;
         }
     }
+
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+        if (start_recording) {
+            if (strcmp(vdev->name, "virtio-blk") == 0) {
+                arnab_replay_put_event(EVENT_BLK_INTERRUPT, "disk");
+            }
+        }
+    }
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
         return;
     }
@@ -2579,13 +2587,13 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
             } else if (strcmp(event_type, "blk_queue") == 0) {
                 arnab_replay_put_event(EVENT_BLK_INTERRUPT, "disk");
             }
-        } /* other virtio event markers can be similarly added */
+        }
     }
     // do not raise interrupts in replay
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
         return;
     }
-    trace_virtio_notify(vdev, vq, event_type);
+    trace_virtio_notify(vdev, vq, (char *)event_type);
     virtio_irq(vq);
 }
 
