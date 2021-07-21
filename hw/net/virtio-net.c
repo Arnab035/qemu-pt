@@ -2364,6 +2364,7 @@ void virtio_net_tx_replay(void *opaque)
     }
 
     ret = virtio_net_flush_tx(q);
+    printf("virtio_net_tx_replay: %d\n", ret);
     if (ret == -EBUSY || ret == -EINVAL) {
         return; /* Notification re-enable handled by tx_complete or device
                  * broken */
