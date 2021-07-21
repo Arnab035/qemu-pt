@@ -44,6 +44,8 @@ enum ReplayEvents {
     /* some of greater codes are reserved for checkpoints */
     EVENT_CHECKPOINT,
     EVENT_CHECKPOINT_LAST = EVENT_CHECKPOINT + CHECKPOINT_COUNT - 1,
+    /* vmexit event (due to timer reads only) */
+    EVENT_VMEXIT,
     /* network interrupts for virtio TX and RX */
     EVENT_NET_RX_INTERRUPT,
     EVENT_NET_TX_INTERRUPT,
