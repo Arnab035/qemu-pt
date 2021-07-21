@@ -196,18 +196,6 @@ void helper_rdtsc(CPUX86State *env)
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
 
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        while(true) {
-            ReplayIOEvent *event;
-            event = g_malloc0(sizeof(ReplayIOEvent));
-            event->event_kind = REPLAY_ASYNC_EVENT_NET;
-            event->opaque = arnab_replay_event_net_load();
-            if (!event->opaque) {
-                g_free(event);
-                break;
-            }
-            replay_event_net_run(event->opaque);
-            g_free(event);
-        }
         val = (uint64_t)arnab_replay_get_qword("host-clock");
         printf("Rdtsc val: 0x%lx\n", val);	
     } else {
