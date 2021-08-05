@@ -189,14 +189,9 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
                 }
             }
         }
-        qemu_bh_schedule(bh);
     }
-    else if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        replay_add_block_event(bh, NULL, id);     
-    }
-    else {
-        qemu_bh_schedule(bh);
-    }
+    /* TODO: replay*/
+    qemu_bh_schedule(bh);
 }
 
 static void replay_save_event(Event *event, int checkpoint)
@@ -258,6 +253,9 @@ BlockEvent *replay_read_block_event(void)
     uint64_t event_id;
     QTAILQ_FOREACH(event, &blk_events_list, blk_events) {
         event_id = arnab_replay_get_qword("disk");
+        if (event_id == EVENT_BLK_INTERRUPT) {
+            return NULL;
+        }
         if (event_id == event->id) {
             break;
         }
