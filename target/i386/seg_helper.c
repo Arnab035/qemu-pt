@@ -917,9 +917,18 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     uint32_t e1, e2, e3, ss;
     target_ulong old_eip, esp, offset;
     if (intno == 14) {
-        assert(is_upcoming_page_fault);
+        assert(error_code != 0 || is_upcoming_page_fault);
         if (index_array_incremented) index_array--;
-        if (index_tip_address_incremented) index_tip_address--;
+        if (index_tip_address_incremented && error_code == 0) {
+            index_tip_address--;
+        }
+        if (!is_upcoming_page_fault) {
+            index_tip_address++;
+            index_fup_address++;
+            while(tnt_array[index_array] != 'T' && tnt_array[index_array] != 'N') {
+                index_array++;
+            }
+        }
         is_upcoming_page_fault = 0;
     }
 
