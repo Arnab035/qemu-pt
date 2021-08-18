@@ -4544,7 +4544,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int shift;
     int intno;
     int i;
-    bool ret;
     //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
@@ -4621,9 +4620,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             printf("VMEXIT here\n");
             return s->pc;
     }
+
     if (fup_addresses[index_fup_address].type == 'I' &&
         tnt_array[index_array] == 'F' &&
-	do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
+	(do_strtoul(fup_addresses[index_fup_address].address) == s->pc)) {
             printf("INTERRUPT here\n");
             while(!tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
@@ -4653,12 +4653,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else if (intno == 81) {
                 /* disk interrupt */
-                while (true) {
-                    ret = virtio_blk_data_plane_handle_output_replay();
-                    if (!ret) {
-                        break;
-                    }
-                }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else {
                 if (intno != 14) {

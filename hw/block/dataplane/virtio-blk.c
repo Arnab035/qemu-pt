@@ -26,6 +26,8 @@
 #include "hw/virtio/virtio-bus.h"
 #include "qom/object_interfaces.h"
 
+#include "sysemu/replay.h"
+
 struct VirtIOBlockDataPlane {
     bool starting;
     bool stopping;
@@ -165,7 +167,6 @@ static bool virtio_blk_data_plane_handle_output(VirtIODevice *vdev,
     return virtio_blk_handle_vq(s, vq);
 }
 
-
 /* Context: QEMU global mutex held */
 int virtio_blk_data_plane_start(VirtIODevice *vdev)
 {
@@ -231,9 +232,11 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     /* Get this show started by hooking up our callbacks */
     aio_context_acquire(s->ctx);
     for (i = 0; i < nvqs; i++) {
-        VirtQueue *vq = virtio_get_queue(s->vdev, i);
-        virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            VirtQueue *vq = virtio_get_queue(s->vdev, i);
+            virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
                 virtio_blk_data_plane_handle_output);
+        }
     }
     aio_context_release(s->ctx);
     return 0;

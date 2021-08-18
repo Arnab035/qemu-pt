@@ -34,8 +34,6 @@ typedef struct Event {
     QTAILQ_ENTRY(Event) events;
 } Event;
 
-QTAILQ_HEAD(, BlockEvent) blk_events_list = QTAILQ_HEAD_INITIALIZER(blk_events_list);
-
 static QTAILQ_HEAD(, Event) events_list = QTAILQ_HEAD_INITIALIZER(events_list);
 static bool events_enabled;
 
@@ -136,17 +134,6 @@ void replay_add_event(ReplayAsyncEventKind event_kind,
     QTAILQ_INSERT_TAIL(&events_list, event, events);	
 }
 
-void replay_add_block_event(void *opaque, void *opaque2, uint64_t id)
-{
-    BlockEvent *blk_event = g_malloc0(sizeof(BlockEvent));
-
-    blk_event->opaque = opaque;
-    blk_event->opaque2 = opaque2;
-    blk_event->id = id;
-
-    QTAILQ_INSERT_TAIL(&blk_events_list, blk_event, blk_events);
-}
-
 void replay_bh_schedule_event(QEMUBH *bh)
 {
     if (events_enabled) {
@@ -190,8 +177,8 @@ void replay_block_event(QEMUBH *bh, uint64_t id)
             }
         }
     }
-    /* TODO: replay*/
     qemu_bh_schedule(bh);
+    /* TODO: replay*/
 }
 
 static void replay_save_event(Event *event, int checkpoint)
@@ -247,26 +234,6 @@ void replay_save_events(int checkpoint)
     }
 }
 
-BlockEvent *replay_read_block_event(void)
-{
-    BlockEvent *event;
-    uint64_t event_id;
-    QTAILQ_FOREACH(event, &blk_events_list, blk_events) {
-        event_id = arnab_replay_get_qword("disk");
-        if (event_id == EVENT_BLK_INTERRUPT) {
-            return NULL;
-        }
-        if (event_id == event->id) {
-            break;
-        }
-    }
-    if (event) {
-        QTAILQ_REMOVE(&blk_events_list, event, blk_events);
-    } else {
-        return NULL;
-    }
-    return event;
-}
 
 static Event *replay_read_event(int checkpoint)
 {

@@ -105,14 +105,6 @@ typedef struct ReplayState {
 } ReplayState;
 extern ReplayState replay_state;
 
-typedef struct BlockEvent {
-    void *opaque;
-    void *opaque2;
-    uint64_t id;
-
-    QTAILQ_ENTRY(BlockEvent) blk_events;
-} BlockEvent;
-
 /* File for replay writing */
 extern FILE *replay_file;
 
@@ -139,9 +131,6 @@ void arnab_replay_put_qword(int64_t qword, const char *);
 
 void replay_put_array(const uint8_t *buf, size_t size);
 void arnab_replay_put_array(const uint8_t *buf, size_t size, const char *);
-
-BlockEvent *replay_read_block_event(void);
-void replay_add_block_event(void *, void *, uint64_t);
 
 uint8_t replay_get_byte(void);
 uint8_t arnab_replay_get_byte(const char *);
