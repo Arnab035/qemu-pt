@@ -232,11 +232,9 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     /* Get this show started by hooking up our callbacks */
     aio_context_acquire(s->ctx);
     for (i = 0; i < nvqs; i++) {
-        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
-            VirtQueue *vq = virtio_get_queue(s->vdev, i);
-            virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
+        VirtQueue *vq = virtio_get_queue(s->vdev, i);
+        virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
                 virtio_blk_data_plane_handle_output);
-        }
     }
     aio_context_release(s->ctx);
     return 0;

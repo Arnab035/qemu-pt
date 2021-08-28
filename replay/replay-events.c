@@ -167,18 +167,7 @@ void replay_add_input_sync_event(void)
 
 void replay_block_event(QEMUBH *bh, uint64_t id)
 {
-    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-        // write to file here (instead of writing to queue)
-        if (start_recording) {
-            if (arnab_disk_replay_file) {
-                if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    arnab_replay_put_qword(id, "disk");
-                }
-            }
-        }
-    }
     qemu_bh_schedule(bh);
-    /* TODO: replay*/
 }
 
 static void replay_save_event(Event *event, int checkpoint)
