@@ -79,10 +79,25 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
 {
     VirtIOBlock *s = req->dev;
     VirtIODevice *vdev = VIRTIO_DEVICE(s);
-
+    int i;
     trace_virtio_blk_req_complete(vdev, req, status);
 
     stb_p(&req->in->status, status);
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            arnab_replay_put_qword(req->elem.index, "disk");
+            arnab_replay_put_qword(req->elem.len, "disk");
+            arnab_replay_put_qword(req->elem.ndescs, "disk");
+            arnab_replay_put_qword(req->elem.out_num, "disk");
+            arnab_replay_put_qword(req->elem.in_num, "disk");
+            for (i = 0; i < req->elem.in_num; i++) {
+                arnab_replay_put_array(req->elem.in_sg[i].iov_base, req->elem.in_sg[i].iov_len, "disk");
+            }
+            for (i = 0; i < req->elem.out_num; i++) {
+                arnab_replay_put_array(req->elem.out_sg[i].iov_base, req->elem.out_sg[i].iov_len, "disk");
+            }
+        }
+    }
     virtqueue_push(req->vq, &req->elem, req->in_len);
     if (s->dataplane_started && !s->dataplane_disabled) {
         virtio_blk_data_plane_notify(s->dataplane, req->vq);
