@@ -2534,7 +2534,7 @@ void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq)
     if (arnab_replay_mode == REPLAY_MODE_RECORD) {
         if (start_recording) {
             if (strcmp(vdev->name, "virtio-blk") == 0) {
-                arnab_replay_put_event(EVENT_BLK_INTERRUPT, "disk");
+                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk");
             }
         }
     }

@@ -91,10 +91,18 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
             arnab_replay_put_qword(req->elem.out_num, "disk");
             arnab_replay_put_qword(req->elem.in_num, "disk");
             for (i = 0; i < req->elem.in_num; i++) {
-                arnab_replay_put_array(req->elem.in_sg[i].iov_base, req->elem.in_sg[i].iov_len, "disk");
+                arnab_replay_put_qword(req->elem.in_addr[i], "disk");
             }
             for (i = 0; i < req->elem.out_num; i++) {
-                arnab_replay_put_array(req->elem.out_sg[i].iov_base, req->elem.out_sg[i].iov_len, "disk");
+                arnab_replay_put_qword(req->elem.out_addr[i], "disk");
+            }
+            for (i = 0; i < req->elem.in_num; i++) {
+                arnab_replay_put_array(req->elem.in_sg[i].iov_base,
+                                       req->elem.in_sg[i].iov_len, "disk");
+            }
+            for (i = 0; i < req->elem.out_num; i++) {
+                arnab_replay_put_array(req->elem.out_sg[i].iov_base,
+                                       req->elem.out_sg[i].iov_len, "disk");
             }
         }
     }
