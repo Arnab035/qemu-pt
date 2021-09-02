@@ -83,6 +83,7 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
     trace_virtio_blk_req_complete(vdev, req, status);
 
     stb_p(&req->in->status, status);
+
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
             arnab_replay_put_qword(req->elem.index, "disk");
@@ -90,17 +91,14 @@ static void virtio_blk_req_complete(VirtIOBlockReq *req, unsigned char status)
             arnab_replay_put_qword(req->elem.ndescs, "disk");
             arnab_replay_put_qword(req->elem.out_num, "disk");
             arnab_replay_put_qword(req->elem.in_num, "disk");
+            arnab_replay_put_qword(req->in_len, "disk"); // save for virtqueue push
             for (i = 0; i < req->elem.in_num; i++) {
                 arnab_replay_put_qword(req->elem.in_addr[i], "disk");
-            }
-            for (i = 0; i < req->elem.out_num; i++) {
-                arnab_replay_put_qword(req->elem.out_addr[i], "disk");
-            }
-            for (i = 0; i < req->elem.in_num; i++) {
                 arnab_replay_put_array(req->elem.in_sg[i].iov_base,
                                        req->elem.in_sg[i].iov_len, "disk");
             }
             for (i = 0; i < req->elem.out_num; i++) {
+                arnab_replay_put_qword(req->elem.out_addr[i], "disk");
                 arnab_replay_put_array(req->elem.out_sg[i].iov_base,
                                        req->elem.out_sg[i].iov_len, "disk");
             }
