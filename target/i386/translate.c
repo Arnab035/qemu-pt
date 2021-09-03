@@ -4652,7 +4652,57 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else if (intno == 81) {
-                /* disk interrupt */
+                /* disk interrupt
+                 * disk I/O buffers that have been recorded will now be pushed into the guest
+		 * following steps are taken
+		 * disk I/O buffers are already recorded
+		 * the guest physical address where changes were expected is also recorded
+		 * now what we do during replay is--
+		 * map the physical address of the guest to a *new* host virtual address
+		 * copy the recorded disk I/O buffer into the *new* host virtual address
+		 * the guest physical address now has the correct data
+		 * once this operation is done, we can do an unmap.
+		 * focus on the order in which you write to the *new* host virtual address */
+                unsigned int index;
+                size_t len;
+                size_t in_len;
+                uint8_t *data;
+                while (!stopped_execution_of_tb_chain) {
+                    index = arnab_replay_get_qword("disk");
+                    if (index == EVENT_BLK_INTERRUPT) {
+                        break;
+                    }
+                    VirtQueueElement *vqe;
+                    vqe = g_malloc(sizeof(VirtQueueElement));
+                    vqe->index = index;
+                    vqe->len = arnab_replay_get_qword("disk");
+                    vqe->ndescs = arnab_replay_get_qword("disk");
+                    vqe->out_num = arnab_replay_get_qword("disk");
+                    vqe->in_num = arnab_replay_get_qword("disk");
+                    in_len = arnab_replay_get_qword("disk");
+                    /* this is a 'read to the guest memory' operation */
+                    for (i = 0; i < vqe->in_num; i++) {
+                        hwaddr addr = arnab_replay_get_qword("disk");
+                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        vqe->in_sg[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, addr, &len, 1, 
+                                            MEMTXATTRS_UNSPECIFIED);
+                        vqe->in_sg[i].iov_len = len;
+                        memcpy((void *)vqe->in_sg[i].iov_base, data, len);
+                    }
+                    /* this is a 'write to the guest memory' operation */
+                    for (i = 0; i < vqe->out_num; i++) {
+                        hwaddr addr = arnab_replay_get_qword("disk");
+                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        vqe->out_sg[i].iov_base = address_space_map(
+                                             global_vdev->dma_as, addr, &len, 0, 
+                                             MEMTXATTRS_UNSPECIFIED);
+                        vqe->out_sg[i].iov_len = len;
+                        memcpy((void *)vqe->out_sg[i].iov_base, data, len);
+                    }
+                    virtqueue_increment_inuse(global_vdev);
+                    virtqueue_push_first_vq(global_vdev, vqe, in_len);
+                }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else {
                 if (intno != 14) {

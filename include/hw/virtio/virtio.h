@@ -44,10 +44,11 @@ typedef struct VirtIOFeature {
 
 size_t virtio_feature_get_config_size(VirtIOFeature *features,
                                       uint64_t host_features);
-
 typedef struct VirtQueue VirtQueue;
 
 #define VIRTQUEUE_MAX_SIZE 1024
+
+extern VirtQueue *global_vq;
 
 typedef struct VirtQueueElement
 {
@@ -189,6 +190,9 @@ void virtio_delete_queue(VirtQueue *vq);
 
 void virtqueue_push(VirtQueue *vq, const VirtQueueElement *elem,
                     unsigned int len);
+void virtqueue_push_first_vq(VirtIODevice *vdev, const VirtQueueElement *elem,
+                    unsigned int len);
+void virtqueue_increment_inuse(VirtIODevice *vdev);
 void virtqueue_flush(VirtQueue *vq, unsigned int count);
 void virtqueue_detach_element(VirtQueue *vq, const VirtQueueElement *elem,
                               unsigned int len);
@@ -197,6 +201,8 @@ void virtqueue_unpop(VirtQueue *vq, const VirtQueueElement *elem,
 bool virtqueue_rewind(VirtQueue *vq, unsigned int num);
 void virtqueue_fill(VirtQueue *vq, const VirtQueueElement *elem,
                     unsigned int len, unsigned int idx);
+
+void maintain_global_block_vq(VirtQueue *vq);
 
 void virtqueue_map(VirtIODevice *vdev, VirtQueueElement *elem);
 void *virtqueue_pop(VirtQueue *vq, size_t sz);
@@ -216,6 +222,7 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *queue_type);
 int virtio_save(VirtIODevice *vdev, QEMUFile *f);
 
 extern const VMStateInfo virtio_vmstate_info;
+extern VirtIODevice *global_vdev;
 
 #define VMSTATE_VIRTIO_DEVICE \
     {                                         \

@@ -918,6 +918,17 @@ void virtqueue_push(VirtQueue *vq, const VirtQueueElement *elem,
     virtqueue_flush(vq, 1);
 }
 
+void virtqueue_increment_inuse(VirtIODevice *vdev)
+{
+    vdev->vq[0].inuse++;
+}
+
+void virtqueue_push_first_vq(VirtIODevice *vdev, const VirtQueueElement *elem,
+		           unsigned int len)
+{
+    virtqueue_push(&vdev->vq[0], elem, len);
+}
+
 /* Called within rcu_read_lock().  */
 static int virtqueue_num_heads(VirtQueue *vq, unsigned int idx)
 {

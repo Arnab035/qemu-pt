@@ -47,6 +47,8 @@ struct VirtIOBlockDataPlane {
     AioContext *ctx;
 };
 
+VirtIODevice *global_vdev;
+
 /* Raise an interrupt to signal guest, if necessary */
 void virtio_blk_data_plane_notify(VirtIOBlockDataPlane *s, VirtQueue *vq)
 {
@@ -233,8 +235,12 @@ int virtio_blk_data_plane_start(VirtIODevice *vdev)
     aio_context_acquire(s->ctx);
     for (i = 0; i < nvqs; i++) {
         VirtQueue *vq = virtio_get_queue(s->vdev, i);
-        virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            virtio_queue_aio_set_host_notifier_handler(vq, s->ctx,
                 virtio_blk_data_plane_handle_output);
+        } else {
+            global_vdev = s->vdev; // internally points to vdev
+        }
     }
     aio_context_release(s->ctx);
     return 0;
