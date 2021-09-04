@@ -48,13 +48,13 @@ enum ReplayEvents {
     EVENT_VMEXIT,
     /* network interrupts for virtio TX and RX */
     EVENT_NET_RX_INTERRUPT,
-    EVENT_NET_TX_INTERRUPT,
-    /* virtio disk interrupt */
-    EVENT_BLK_INTERRUPT,
+    EVENT_NET_TX_INTERRUPT, 
     /* end of log event */
     EVENT_END,
     EVENT_COUNT
 };
+
+extern uint16_t EVENT_BLK_INTERRUPT;
 
 /* Asynchronous events IDs */
 
