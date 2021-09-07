@@ -336,7 +336,7 @@ void get_array_of_tnt_bits(void) {
     int max_lines_read = 50000, curr_lines_read = 0;
 
     //TODO: make this commandline
-    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_03may21.txt.gz";
+    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_04may21.txt.gz";
     if (!tnt_array) {
         tnt_array = malloc(1);
     }
@@ -374,8 +374,8 @@ void get_array_of_tnt_bits(void) {
             copy[strcspn(copy, "\n")] = 0;
             curr_lines_read += 1;
         } else {
-            printf("Incorrect read from gz file. Returning...\n");
-            return;
+            printf("Incorrect read from gz file. Simulation probably finished...\n");
+            exit(EXIT_SUCCESS);
         }
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
@@ -444,7 +444,7 @@ void get_array_of_tnt_bits(void) {
 	                count_tip++;
                         //printf("count: %llu\n", count);
 	                is_ignore_tip=0;
-	            }
+                    }
 	        }
 	        else if(strncmp(copy, "FUP", 3) == 0) {
                     tnt_array = realloc(tnt_array, count+1);
