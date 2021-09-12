@@ -4544,6 +4544,8 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int shift;
     int intno;
     int i;
+    struct iovec iov[VIRTQUEUE_MAX_SIZE];
+    hwaddr addr[VIRTQUEUE_MAX_SIZE];
     //int is_branch_taken;
     MemOp ot, aflag, dflag;
     int modrm, reg, rm, mod, op, opreg, val;
@@ -4627,6 +4629,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             printf("INTERRUPT here\n");
             while(!tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
+            printf("TIP addresses: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
             printf("interrupt address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
             intno = get_interrupt_number_from_interrupt_address(env, do_strtoul(tip_addresses[index_tip_address].address));
             if (intno < 0) {
@@ -4669,6 +4672,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 uint8_t *data;
                 while (!stopped_execution_of_tb_chain) {
                     index = arnab_replay_get_qword("disk");
+                    printf("index: %u\n", index);
                     if (index == EVENT_BLK_INTERRUPT) {
                         break;
                     }
@@ -4676,32 +4680,53 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     vqe = g_malloc(sizeof(VirtQueueElement));
                     vqe->index = index;
                     vqe->len = arnab_replay_get_qword("disk");
+                    printf("len: %u\n", vqe->len);
                     vqe->ndescs = arnab_replay_get_qword("disk");
+                    printf("ndescs: %u\n", vqe->ndescs);
                     vqe->out_num = arnab_replay_get_qword("disk");
+                    printf("out_num: %u\n", vqe->out_num);
                     vqe->in_num = arnab_replay_get_qword("disk");
+                    printf("in_num: %u\n", vqe->in_num);
                     in_len = arnab_replay_get_qword("disk");
+                    printf("in_len: %lu\n", in_len);
+                    vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
+                    vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
+                    vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
+                    vqe->out_addr = g_malloc(sizeof(struct iovec) * vqe->out_num);
                     /* this is a 'read to the guest memory' operation */
                     for (i = 0; i < vqe->in_num; i++) {
-                        hwaddr addr = arnab_replay_get_qword("disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk");
+                        printf("addr: 0x%lx\n", rep_addr);
                         arnab_replay_get_array_alloc(&data, &len, "disk");
-                        vqe->in_sg[i].iov_base = address_space_map(
-                                            global_vdev->dma_as, addr, &len, 1, 
+                        printf("len: %lu\n", len);
+                        iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 1, 
                                             MEMTXATTRS_UNSPECIFIED);
-                        vqe->in_sg[i].iov_len = len;
-                        memcpy((void *)vqe->in_sg[i].iov_base, data, len);
+                        iov[i].iov_len = len;
+                        addr[i] = rep_addr;
+                        memcpy(iov[i].iov_base, data, len);
+                        vqe->in_sg[i] = iov[i];
+                        vqe->in_addr[i] = addr[i];
                     }
                     /* this is a 'write to the guest memory' operation */
                     for (i = 0; i < vqe->out_num; i++) {
-                        hwaddr addr = arnab_replay_get_qword("disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk");
                         arnab_replay_get_array_alloc(&data, &len, "disk");
-                        vqe->out_sg[i].iov_base = address_space_map(
-                                             global_vdev->dma_as, addr, &len, 0, 
-                                             MEMTXATTRS_UNSPECIFIED);
-                        vqe->out_sg[i].iov_len = len;
-                        memcpy((void *)vqe->out_sg[i].iov_base, data, len);
+                        iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 0,
+                                            MEMTXATTRS_UNSPECIFIED);
+                        iov[i].iov_len = len;
+                        addr[i] = rep_addr;
+                        memcpy(iov[i].iov_base, data, len);
+                        vqe->out_sg[i] = iov[i];
+                        vqe->out_addr[i] = addr[i];
                     }
                     virtqueue_increment_inuse(global_vdev);
                     virtqueue_push_first_vq(global_vdev, vqe, in_len);
+                    g_free(vqe->in_sg);
+                    g_free(vqe->in_addr);
+                    g_free(vqe->out_sg);
+                    g_free(vqe->out_addr);
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
             } else {
