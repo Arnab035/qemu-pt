@@ -916,6 +916,10 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     int has_error_code, new_stack;
     uint32_t e1, e2, e3, ss;
     target_ulong old_eip, esp, offset;
+    int number_of_fups = 0;
+    if (intno == 81 || intno == 113 || intno == 239) {
+        if (index_array_incremented) index_array--;
+    }
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
         if (index_array_incremented) index_array--;
@@ -925,9 +929,15 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
         if (!is_upcoming_page_fault) {
             index_tip_address++;
             index_fup_address++;
+            /* ugly hack */
             while(tnt_array[index_array] != 'T' && tnt_array[index_array] != 'N') {
+                if (tnt_array[index_array] == 'F') {
+                    number_of_fups++;
+                }
                 index_array++;
             }
+            index_tip_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
+            index_fup_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
         }
         is_upcoming_page_fault = 0;
     }
