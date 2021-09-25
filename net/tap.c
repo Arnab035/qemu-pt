@@ -47,6 +47,8 @@
 
 #include "net/vhost_net.h"
 
+#include "sysemu/replay.h"
+
 typedef struct TAPState {
     NetClientState nc;
     int fd;
@@ -186,6 +188,10 @@ static void tap_send(void *opaque)
     TAPState *s = opaque;
     int size;
     int packets = 0;
+
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return;
+    }
 
     while (true) {
         uint8_t *buf = s->buf;
