@@ -53,8 +53,8 @@
 #define MAX_VLAN    (1 << 12)   /* Per 802.1Q definition */
 
 /* previously fixed value */
-#define VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE 256
-#define VIRTIO_NET_TX_QUEUE_DEFAULT_SIZE 256
+#define VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE 1024
+#define VIRTIO_NET_TX_QUEUE_DEFAULT_SIZE 1024
 
 /* for now, only allow larger queues; with virtio-1, guest can downsize */
 #define VIRTIO_NET_RX_QUEUE_MIN_SIZE VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE
@@ -1158,6 +1158,64 @@ static int virtio_net_handle_mq(VirtIONet *n, uint8_t cmd,
 
 static void virtio_net_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return;
+    }
+    VirtIONet *n = VIRTIO_NET(vdev);
+    struct virtio_net_ctrl_hdr ctrl;
+    virtio_net_ctrl_ack status = VIRTIO_NET_ERR;
+    VirtQueueElement *elem;
+    size_t s;
+    struct iovec *iov, *iov2;
+    unsigned int iov_cnt;
+
+    for (;;) {
+        elem = virtqueue_pop(vq, sizeof(VirtQueueElement));
+        if (!elem) {
+            break;
+        }
+        if (iov_size(elem->in_sg, elem->in_num) < sizeof(status) ||
+            iov_size(elem->out_sg, elem->out_num) < sizeof(ctrl)) {
+            virtio_error(vdev, "virtio-net ctrl missing headers");
+            virtqueue_detach_element(vq, elem, 0);
+            g_free(elem);
+            break;
+        }
+
+        iov_cnt = elem->out_num;
+        iov2 = iov = g_memdup(elem->out_sg, sizeof(struct iovec) * elem->out_num);
+        s = iov_to_buf(iov, iov_cnt, 0, &ctrl, sizeof(ctrl));
+        iov_discard_front(&iov, &iov_cnt, sizeof(ctrl));
+        if (s != sizeof(ctrl)) {
+            status = VIRTIO_NET_ERR;
+        } else if (ctrl.class == VIRTIO_NET_CTRL_RX) {
+            status = virtio_net_handle_rx_mode(n, ctrl.cmd, iov, iov_cnt);
+        } else if (ctrl.class == VIRTIO_NET_CTRL_MAC) {
+            status = virtio_net_handle_mac(n, ctrl.cmd, iov, iov_cnt);
+        } else if (ctrl.class == VIRTIO_NET_CTRL_VLAN) {
+            status = virtio_net_handle_vlan_table(n, ctrl.cmd, iov, iov_cnt);
+        } else if (ctrl.class == VIRTIO_NET_CTRL_ANNOUNCE) {
+            status = virtio_net_handle_announce(n, ctrl.cmd, iov, iov_cnt);
+        } else if (ctrl.class == VIRTIO_NET_CTRL_MQ) {
+            status = virtio_net_handle_mq(n, ctrl.cmd, iov, iov_cnt);
+        } else if (ctrl.class == VIRTIO_NET_CTRL_GUEST_OFFLOADS) {
+            status = virtio_net_handle_offloads(n, ctrl.cmd, iov, iov_cnt);
+        }
+
+        s = iov_from_buf(elem->in_sg, elem->in_num, 0, &status, sizeof(status));
+        assert(s == sizeof(status));
+
+        virtqueue_push(vq, elem, sizeof(status));
+        virtio_notify(vdev, vq, "net_ctrl_queue");
+        g_free(iov2);
+        g_free(elem);
+    }
+}
+
+void virtio_net_handle_ctrl_replay(void *_vdev, void *_vq)
+{
+    VirtIODevice *vdev = _vdev;
+    VirtQueue *vq = _vq;
     VirtIONet *n = VIRTIO_NET(vdev);
     struct virtio_net_ctrl_hdr ctrl;
     virtio_net_ctrl_ack status = VIRTIO_NET_ERR;
@@ -1392,8 +1450,9 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
         return 0;
     }
 
-    if (!receive_filter(n, buf, size))
+    if (!receive_filter(n, buf, size)) {
         return size;
+    }
 
     offset = i = 0;
 
@@ -1532,6 +1591,9 @@ static void virtio_net_rsc_extract_unit6(VirtioNetRscChain *chain,
 static size_t virtio_net_rsc_drain_seg(VirtioNetRscChain *chain,
                                        VirtioNetRscSeg *seg)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     int ret;
     struct virtio_net_hdr_v1 *h;
 
@@ -1560,6 +1622,9 @@ static size_t virtio_net_rsc_drain_seg(VirtioNetRscChain *chain,
 
 static void virtio_net_rsc_purge(void *opq)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return;
+    }
     VirtioNetRscSeg *seg, *rn;
     VirtioNetRscChain *chain = (VirtioNetRscChain *)opq;
 
@@ -1805,6 +1870,9 @@ static size_t virtio_net_rsc_do_coalesce(VirtioNetRscChain *chain,
                                          VirtioNetRscUnit *unit)
 {
     int ret;
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     VirtioNetRscSeg *seg, *nseg;
 
     if (QTAILQ_EMPTY(&chain->buffers)) {
@@ -1852,6 +1920,9 @@ static size_t virtio_net_rsc_drain_flow(VirtioNetRscChain *chain,
                                         uint16_t ip_start, uint16_t ip_size,
                                         uint16_t tcp_port)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     VirtioNetRscSeg *seg, *nseg;
     uint32_t ppair1, ppair2;
 
@@ -1925,7 +1996,9 @@ static size_t virtio_net_rsc_receive4(VirtioNetRscChain *chain,
     int32_t ret;
     uint16_t hdr_len;
     VirtioNetRscUnit unit;
-
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     hdr_len = ((VirtIONet *)(chain->n))->guest_hdr_len;
 
     if (size < (hdr_len + sizeof(struct eth_header) + sizeof(struct ip_header)
@@ -1990,6 +2063,9 @@ static int32_t virtio_net_rsc_sanity_check6(VirtioNetRscChain *chain,
 static size_t virtio_net_rsc_receive6(void *opq, NetClientState *nc,
                                       const uint8_t *buf, size_t size)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     int32_t ret;
     uint16_t hdr_len;
     VirtioNetRscChain *chain;
@@ -2063,6 +2139,9 @@ static ssize_t virtio_net_rsc_receive(NetClientState *nc,
                                       const uint8_t *buf,
                                       size_t size)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        return -1;
+    }
     uint16_t proto;
     VirtioNetRscChain *chain;
     struct eth_header *eth;
@@ -2343,7 +2422,6 @@ static void virtio_net_tx_bh(void *opaque)
 
 void virtio_net_tx_replay(void *opaque)
 {
-    printf("virtio_net_tx_replay\n");
     VirtIONetQueue *q = opaque;
     VirtIONet *n = q->n;
     VirtIODevice *vdev = VIRTIO_DEVICE(n);
@@ -2364,7 +2442,6 @@ void virtio_net_tx_replay(void *opaque)
     }
 
     ret = virtio_net_flush_tx(q);
-    printf("virtio_net_tx_replay: %d\n", ret);
     if (ret == -EBUSY || ret == -EINVAL) {
         return; /* Notification re-enable handled by tx_complete or device
                  * broken */
@@ -2393,6 +2470,9 @@ void virtio_net_tx_replay(void *opaque)
 }
 
 void *replay_tx_bh = NULL;
+
+void *replay_ctrl_vq = NULL;
+void *replay_ctrl_vdev = NULL;
 
 static void virtio_net_add_queue(VirtIONet *n, int index)
 {
@@ -3082,6 +3162,10 @@ static void virtio_net_device_realize(DeviceState *dev, Error **errp)
     }
 
     n->ctrl_vq = virtio_add_queue(vdev, 64, virtio_net_handle_ctrl);
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        replay_ctrl_vq = n->ctrl_vq;
+        replay_ctrl_vdev = vdev;
+    }
     qemu_macaddr_default_if_unset(&n->nic_conf.macaddr);
     memcpy(&n->mac[0], &n->nic_conf.macaddr, sizeof(n->mac));
     n->status = VIRTIO_NET_S_LINK_UP;
