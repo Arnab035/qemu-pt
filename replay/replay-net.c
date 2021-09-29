@@ -66,6 +66,17 @@ void replay_net_packet_event(ReplayNetState *rns, unsigned flags,
     replay_event_net_run(event);
 }
 
+bool arnab_replay_net_flush_rx_queue(void)
+{
+    NetClientState *sender = network_filters[network_filters_count-1]->netdev;
+    if (sender && sender->peer) {
+        sender->peer->receive_disabled = 0;
+        return qemu_net_queue_flush(sender->peer->incoming_queue);
+    } else {
+        return false;
+    }
+}
+
 void replay_event_net_run(void *opaque)
 {
     NetEvent *event = opaque;

@@ -71,7 +71,11 @@ extern struct intel_pt_read_state intel_pt_state;
 
 /* I/O replay structures */
 extern void *replay_tx_bh;
+extern void *replay_ctrl_vq;
+extern void *replay_ctrl_vdev;
+
 void virtio_net_tx_replay(void *);
+void virtio_net_handle_ctrl_replay(void *, void *);
 
 unsigned long do_strtoul(char *address);   // function declared
 int get_interrupt_number_from_hashtable(char *);

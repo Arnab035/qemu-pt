@@ -38,6 +38,7 @@
 #include "hw/timer/i8254.h"
 #include "exec/address-spaces.h"
 
+#include "replay/replay-internal.h"
 #include "index_array_header.h"
 
 //#define HPET_DEBUG
@@ -432,8 +433,6 @@ static uint32_t hpet_ram_readw(void *opaque, hwaddr addr)
 }
 #endif
 
-int count = 0;
-
 static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                               unsigned size)
 {
@@ -484,6 +483,11 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
                 cur_tick = (uint64_t)arnab_replay_get_qword("clock");
                 printf("Replaying hpet clock value: 0x%lx\n", cur_tick);
+                if (!is_rx_queue_empty) {
+                    // flush network rx queue every clock read
+                    // provided the rx queue is not empty
+                    arnab_replay_net_flush_rx_queue();
+                }
                 return cur_tick;
             }
             if (hpet_enabled(s)) {
@@ -494,10 +498,6 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    if (count < 30) {
-                        printf("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
-                        count++;
-                    }
                     arnab_replay_put_qword((int64_t)cur_tick, "clock");
                 }
             }

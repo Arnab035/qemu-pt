@@ -114,6 +114,8 @@ extern FILE *arnab_network_replay_file;
 extern FILE *arnab_disk_replay_file;
 extern FILE *arnab_host_clock_replay_file;
 
+extern bool is_rx_queue_empty;
+
 void replay_put_byte(uint8_t byte);
 void arnab_replay_put_byte(uint8_t byte, const char *);
 
@@ -230,6 +232,8 @@ void replay_event_net_save(void *opaque);
 void *replay_event_net_load(void);
 
 void *arnab_replay_event_net_load(void);
+
+bool arnab_replay_net_flush_rx_queue(void);
 
 /* VMState-related functions */
 

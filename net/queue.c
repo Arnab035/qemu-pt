@@ -26,6 +26,9 @@
 #include "qemu/queue.h"
 #include "net/net.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+
 /* The delivery handler may only return zero if it will call
  * qemu_net_queue_flush() when it determines that it is once again able
  * to deliver packets. It must also call qemu_net_queue_purge() in its
@@ -59,6 +62,8 @@ struct NetQueue {
 
     unsigned delivering : 1;
 };
+
+bool is_rx_queue_empty = true;
 
 NetQueue *qemu_new_net_queue(NetQueueDeliverFunc *deliver, void *opaque)
 {
@@ -145,6 +150,11 @@ void qemu_net_queue_append_iov(NetQueue *queue,
     }
 
     queue->nq_count++;
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        if (is_rx_queue_empty) {
+            is_rx_queue_empty = false;
+        }
+    }
     QTAILQ_INSERT_TAIL(&queue->packets, packet, entry);
 }
 
@@ -272,6 +282,9 @@ bool qemu_net_queue_flush(NetQueue *queue)
         }
 
         g_free(packet);
+    }
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        is_rx_queue_empty = true;
     }
     return true;
 }
