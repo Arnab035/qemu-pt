@@ -921,6 +921,7 @@ void virtqueue_push(VirtQueue *vq, const VirtQueueElement *elem,
 void virtqueue_increment_inuse(VirtIODevice *vdev)
 {
     vdev->vq[0].inuse++;
+    printf("inuse: %d\n", vdev->vq[0].inuse);
 }
 
 void virtqueue_push_first_vq(VirtIODevice *vdev, const VirtQueueElement *elem,
@@ -1913,6 +1914,7 @@ static void virtio_notify_vector(VirtIODevice *vdev, uint16_t vector)
     VirtioBusClass *k = VIRTIO_BUS_GET_CLASS(qbus);
 
     if (virtio_device_disabled(vdev)) {
+        printf("virtio device disabled\n");
         return;
     }
 
@@ -2594,11 +2596,14 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
         if (start_recording) {
             // only record interrupts for network IO rx
             if (strcmp(event_type, "net_rx_queue") == 0) {
+                printf("rx interrupt\n");
                 arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
             } else if (strcmp(event_type, "net_tx_queue") == 0) {
+                printf("tx interrupt\n");
                 arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
-            } else if (strcmp(event_type, "blk_queue") == 0) {
-                arnab_replay_put_event(EVENT_BLK_INTERRUPT, "disk");
+            } else if (strcmp(event_type, "net_ctrl_queue") == 0) {
+                printf("ctrl queue interrupt\n");
+                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "disk");
             }
         }
     }

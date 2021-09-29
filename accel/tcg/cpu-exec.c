@@ -333,7 +333,7 @@ void get_array_of_tnt_bits(void) {
     int is_ignore_pip = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 50000, curr_lines_read = 0;
+    int max_lines_read = 300000, curr_lines_read = 0;
 
     //TODO: make this commandline
     const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_04may21.txt.gz";
@@ -540,6 +540,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
     const char *virtqueue_get_buf_trap = "ffff814bfc20";
     if (env->eip == do_strtoul((char *)virtqueue_get_buf_trap)) {
         virtio_net_tx_replay(replay_tx_bh);
+        virtio_net_handle_ctrl_replay(replay_ctrl_vdev, replay_ctrl_vq);
     }
     ret = tcg_qemu_tb_exec(env, tb_ptr);
     cpu->can_do_io = 1;
