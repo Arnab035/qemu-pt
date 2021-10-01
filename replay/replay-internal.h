@@ -116,6 +116,10 @@ extern FILE *arnab_host_clock_replay_file;
 
 extern bool is_rx_queue_empty;
 
+/* Files to record artifacts - maintain it here as well */
+extern FILE *arnab_trace_insns_file;
+extern FILE *arnab_trace_mem_file;
+
 void replay_put_byte(uint8_t byte);
 void arnab_replay_put_byte(uint8_t byte, const char *);
 

@@ -3916,6 +3916,15 @@ SRST
 This option records and replays disk I/O events. Record and replay of disk I/O events will re-use the record and replay design that has already been designed for QEMU. The only change being that there will be no -icount to indicate when to inject events. This will be taken care of by looking at hardware interrupts and injecting I/O events at the correct hardware interrupt.
 ERST
 
+DEF("record_artifacts", HAS_ARG, QEMU_OPTION_RECORD_artifacts, \
+    "-record_artifacts [insns=<filename>,mem=<filename>]\n"
+    "                  option to dump execution trace, dump cr3+instruction pointer in file specified by insns and virtual addresses of memory accessed in file specified by mem\n", QEMU_ARCH_ALL)
+
+SRST
+``-record_artifacts [insns=@var{filename}][,mem=@var{filename}]``
+This option only works when replay mode is enabled. This will collect cr3 and virtual IP of instructions in file specified by insns_file and sequence of memory access addresses in file specified by mem_file.
+ERST
+
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \
     "-icount [shift=N|auto][,align=on|off][,sleep=on|off,rr=record|replay,rrfile=<filename>,rrsnapshot=<snapshot>]\n" \
     "                enable virtual instruction counter with 2^N clock ticks per\n" \

@@ -91,6 +91,11 @@ void replay_add_blocker(Error *reason);
 
 void arnab_replay_configure(struct QemuOpts *opts, const char *);
 
+/* artifact generation module during replay */
+void configure_artifact_generation(struct QemuOpts *opts);
+
+void finish_artifact_generation(void);
+
 /* Processing the instructions */
 
 /*! Returns number of executed instructions. */

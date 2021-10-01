@@ -40,7 +40,6 @@ static char *arnab_network_replay_filename;
 static char *arnab_disk_replay_filename;
 static char *arnab_host_clock_replay_filename;
 
-
 ReplayState replay_state;
 static GSList *replay_blockers;
 
@@ -408,6 +407,46 @@ static void arnab_replay_enable(const char *fname, int mode, const char *event_t
     }
 }
 
+void configure_artifact_generation(QemuOpts *opts)
+{
+    const char *insns_fname;
+    const char *mem_fname;
+
+    Location loc;
+    if (!opts)
+        return;
+
+    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+        error_report("Artifacts can only be generated in replay mode");
+        exit(0);
+    }
+
+    loc_push_none(&loc);
+    qemu_opts_loc_restore(opts);
+    insns_fname = qemu_opt_get(opts, "insns");
+    mem_fname = qemu_opt_get(opts, "mem");
+    if (!mem_fname && !insns_fname) {
+        error_report("Must either specify memory access trace filename or instruction access trace filename");
+        exit(0);
+    }
+    atexit(finish_artifact_generation);
+    if (insns_fname) {
+        arnab_trace_insns_file = fopen(insns_fname, "w");
+        if (!arnab_trace_insns_file) {
+            printf("Could not open file to record instruction trace.. \n");
+            exit(1);
+        }
+    }
+    if (mem_fname) {
+        arnab_trace_mem_file = fopen(mem_fname, "w");
+        if (!arnab_trace_mem_file) {
+            printf("Could not open file to record memory trace...\n");
+            exit(1);
+        }
+    }
+    loc_pop(&loc);
+}
+
 void arnab_replay_configure(QemuOpts *opts, const char *event_type)
 {
     const char *fname;
@@ -634,6 +673,21 @@ void arnab_disk_replay_finish(void)
     if (arnab_disk_replay_filename) {
         g_free(arnab_disk_replay_filename);
         arnab_disk_replay_filename = NULL;
+    }
+}
+
+void finish_artifact_generation(void)
+{
+    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+        return;
+    }
+    if (arnab_trace_insns_file) {
+        fclose(arnab_trace_insns_file);
+        arnab_trace_insns_file = NULL;
+    }
+    if (arnab_trace_mem_file) {
+        fclose(arnab_trace_mem_file);
+        arnab_trace_mem_file = NULL;
     }
 }
 

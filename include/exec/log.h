@@ -5,6 +5,9 @@
 #include "hw/core/cpu.h"
 #include "disas/disas.h"
 
+#include "sysemu/replay.h"
+#include "replay/replay-internal.h"
+
 /* cpu_dump_state() logging functions: */
 /**
  * log_cpu_state:
@@ -49,9 +52,14 @@ static inline void log_target_disas(CPUState *cpu, target_ulong start,
 {
     QemuLogFile *logfile;
     rcu_read_lock();
-    logfile = atomic_rcu_read(&qemu_logfile);
-    if (logfile) {
-        target_disas(logfile->fd, cpu, start, len);
+    if (arnab_replay_mode != REPLAY_MODE_PLAY 
+        || (arnab_replay_mode == REPLAY_MODE_PLAY && !arnab_trace_insns_file)) {
+        logfile = atomic_rcu_read(&qemu_logfile);
+        if (logfile) {
+            target_disas(logfile->fd, cpu, start, len);
+        }
+    } else {
+        target_disas(arnab_trace_insns_file, cpu, start, len);
     }
     rcu_read_unlock();
 }

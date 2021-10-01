@@ -88,6 +88,10 @@ static TCGv cpu_seg_base[6];
 static TCGv_i64 cpu_bndl[4];
 static TCGv_i64 cpu_bndu[4];
 
+
+FILE *arnab_trace_insns_file;
+FILE *arnab_trace_mem_file;
+
 int is_handle_interrupt_in_userspace=0;
 
 #include "exec/gen-icount.h"
@@ -4615,18 +4619,17 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     }
     if (fup_addresses[index_fup_address].type == 'V' &&
         tnt_array[index_array] == 'F' && 
-	do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
+        do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
             index_array++;
             index_fup_address++;
             index_tip_address++;
-            printf("VMEXIT here\n");
+            printf("VMEXIT here. Index array is: %llu\n", index_array);
             return s->pc;
     }
 
     if (fup_addresses[index_fup_address].type == 'I' &&
         tnt_array[index_array] == 'F' &&
 	(do_strtoul(fup_addresses[index_fup_address].address) == s->pc)) {
-            printf("INTERRUPT here\n");
             while(!tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
             printf("TIP addresses: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
@@ -4639,6 +4642,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array += 2;
             index_tip_address++;
             index_fup_address++;
+            printf("INTERRUPT here. Index array is %llu\n", index_array);
             if (intno == 113) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
@@ -4738,6 +4742,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 }
             }
     }
+
     prefixes = 0;
     rex_w = -1;
     rex_r = 0;

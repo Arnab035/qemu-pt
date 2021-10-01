@@ -493,6 +493,22 @@ static QemuOptsList qemu_arnab_disk_record_replay_opts = {
     },
 };
 
+static QemuOptsList qemu_arnab_record_artifacts_opts = {
+    .name = "record_artifacts",
+    .implied_opt_name = "mode",
+    .head = QTAILQ_HEAD_INITIALIZER(qemu_arnab_record_artifacts_opts.head),
+    .desc = {
+        {
+            .name = "insns",
+            .type = QEMU_OPT_STRING,
+        }, {
+            .name = "mem",
+            .type = QEMU_OPT_STRING,
+        },
+        { /* end of list */ }
+    },
+};
+
 static QemuOptsList qemu_icount_opts = {
     .name = "icount",
     .implied_opt_name = "shift",
@@ -2877,6 +2893,7 @@ void qemu_init(int argc, char **argv, char **envp)
     QemuOpts *arnab_clock_record_replay_opts = NULL;
     QemuOpts *arnab_disk_record_replay_opts = NULL;
     QemuOpts *arnab_network_record_replay_opts = NULL;
+    QemuOpts *arnab_record_artifacts_opts = NULL;
     QemuOptsList *olist;
     int optind;
     const char *optarg;
@@ -2954,6 +2971,7 @@ void qemu_init(int argc, char **argv, char **envp)
     qemu_add_opts(&qemu_arnab_clock_record_replay_opts);
     qemu_add_opts(&qemu_arnab_network_record_replay_opts);
     qemu_add_opts(&qemu_arnab_disk_record_replay_opts);
+    qemu_add_opts(&qemu_arnab_record_artifacts_opts);
     qemu_add_opts(&qemu_icount_opts);
     qemu_add_opts(&qemu_semihosting_config_opts);
     qemu_add_opts(&qemu_fw_cfg_opts);
@@ -3679,6 +3697,12 @@ void qemu_init(int argc, char **argv, char **envp)
 		    exit(1);
 		}
 		break;
+            case QEMU_OPTION_RECORD_artifacts:
+                arnab_record_artifacts_opts = qemu_opts_parse_noisily(qemu_find_opts("record_artifacts"), optarg, true);
+                if (!arnab_record_artifacts_opts) {
+                    exit(1);
+                }
+                break;
             case QEMU_OPTION_icount:
                 icount_opts = qemu_opts_parse_noisily(qemu_find_opts("icount"),
                                                       optarg, true);
@@ -3888,6 +3912,7 @@ void qemu_init(int argc, char **argv, char **envp)
     }
 
     user_register_global_props();
+
     if(!icount_opts) {
         arnab_replay_configure(arnab_clock_record_replay_opts, "clock");
         arnab_replay_configure(arnab_network_record_replay_opts, "network");
@@ -3895,6 +3920,11 @@ void qemu_init(int argc, char **argv, char **envp)
     }
     else {
         replay_configure(icount_opts);
+    }
+
+
+    if(arnab_record_artifacts_opts) {
+        configure_artifact_generation(arnab_record_artifacts_opts);
     }
 
     if (incoming && !preconfig_exit_requested) {
