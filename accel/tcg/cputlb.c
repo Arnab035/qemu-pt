@@ -1751,6 +1751,10 @@ static inline uint64_t cpu_load_helper(CPUArchState *env, abi_ptr addr,
     oi = make_memop_idx(op, mmu_idx);
     ret = full_load(env, addr, oi, retaddr);
 
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", addr);
+    }
+
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, meminfo);
 
     return ret;
@@ -2108,6 +2112,10 @@ cpu_store_helper(CPUArchState *env, target_ulong addr, uint64_t val,
 
     oi = make_memop_idx(op, mmu_idx);
     store_helper(env, addr, val, oi, retaddr, op);
+
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", addr);
+    }
 
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, meminfo);
 }

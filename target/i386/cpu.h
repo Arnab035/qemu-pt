@@ -2046,10 +2046,13 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
 {
     *cs_base = env->segs[R_CS].base;
 
-    printf("tnt_array[%llu] = %c\n", index_array, tnt_array[index_array]);
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_insns_file) {
+        fprintf(arnab_trace_insns_file, "cr3: 0x%lx\n", env->cr[3]);
+    }
+
     printf("total intelpt packets consumed = %llu\n", index_array + intel_pt_state.total_packets_consumed);
-    printf("number of intelPT lines consumed = %llu\n", intel_pt_state.number_of_lines_consumed);
     printf("env->eip is 0x%lx\n", env->eip);
+    printf("index tip address: %d\n", index_tip_address);
     if (!stopped_execution_of_tb_chain &&
         index_array_incremented &&
         index_tip_address_incremented &&
