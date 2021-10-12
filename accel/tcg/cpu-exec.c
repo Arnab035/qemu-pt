@@ -287,7 +287,6 @@ static void preprocess_tip_array(int size) {
 
     if (intel_pt_state.last_tip_address) {
         construct_fully_qualified_address(0, intel_pt_state.last_tip_address);
-        printf("TIP address: %s\n", tip_addresses[0].address);
     }
     int i;
     for(i=1;i<=size;i++) {
@@ -467,33 +466,16 @@ void get_array_of_tnt_bits(void) {
         }
     }
    
-    /*
-    if(bytes_read<LENGTH-1) {
-        tnt_array[count]='\0';
-        tip_addresses[count_tip].address='\0';
-        tip_addresses[count_tip].is_useful=0;
-        tip_addresses[count_tip].ip_bytes=-1;
-        fup_addresses[count_fup].address='\0';
-        fup_addresses[count_fup].type='U'; // unknown FUP type
-        if(gzeof(file)) break;
-        else {
-            const char *error_string;
-            error_string=gzerror(file,&err);
-            printf("error_string : %s\n", error_string);
-            if(err) {
-                exit(EXIT_FAILURE);
-            }
-        }
-    }*/
-
     intel_pt_state.tnt_index_limit = count;
     intel_pt_state.fup_address_index_limit = count_fup;
     intel_pt_state.tip_address_index_limit = count_tip;
     intel_pt_state.number_of_lines_consumed += curr_lines_read;
 
+#if 0 
     printf("TNT array: %d\n", count);
     printf("FUP array: %d\n", count_fup);
     printf("TIP array: %d\n", count_tip);
+# endif
  
    // preprocess the tip addresses //
     preprocess_tip_array(count_tip);
@@ -501,7 +483,9 @@ void get_array_of_tnt_bits(void) {
     intel_pt_state.last_tip_address = malloc(sizeof(tip_addresses[count_tip-1].address));
     strcpy(intel_pt_state.last_tip_address, tip_addresses[count_tip-1].address);
 
+#if 0
     printf("final count : %d\n", count);  
+#endif
 }
 
 /* Execute a TB, and fix up the CPU state afterwards if necessary */
@@ -584,13 +568,17 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         if (index_array_incremented && 
                 tnt_array[index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
+#if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
+#endif
             env->eip = itb->jmp_target1;
         }
         if (index_array_incremented &&
                 tnt_array[index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
+#if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
+#endif
             env->eip = itb->jmp_target2;
         }
     }

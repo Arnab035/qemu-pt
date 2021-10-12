@@ -119,7 +119,6 @@ void *arnab_replay_event_net_load(void)
     event->id = arnab_replay_get_byte("network");
     // this check is possible since we won't have too many network devices
     // in the guest. So the network device id isn't going to balloon.
-    printf("network device id is %d\n", event->id);
     while (event->id == EVENT_VMEXIT) {
         event->id = arnab_replay_get_byte("network");
     }

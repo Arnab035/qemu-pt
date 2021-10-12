@@ -2050,14 +2050,10 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
         fprintf(arnab_trace_insns_file, "cr3: 0x%lx\n", env->cr[3]);
     }
 
-    printf("total intelpt packets consumed = %llu\n", index_array + intel_pt_state.total_packets_consumed);
-    printf("env->eip is 0x%lx\n", env->eip);
-    printf("index tip address: %d\n", index_tip_address);
     if (!stopped_execution_of_tb_chain &&
         index_array_incremented &&
         index_tip_address_incremented &&
         tnt_array[index_array-1] == 'P') {
-        printf("index tip address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address-1].address));
         assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
     }
     //}

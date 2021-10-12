@@ -482,7 +482,6 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
         case HPET_COUNTER:
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
                 cur_tick = (uint64_t)arnab_replay_get_qword("clock");
-                printf("Replaying hpet clock value: 0x%lx\n", cur_tick);
                 if (!is_rx_queue_empty) {
                     // flush network rx queue every clock read
                     // provided the rx queue is not empty

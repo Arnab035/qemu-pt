@@ -921,7 +921,6 @@ void virtqueue_push(VirtQueue *vq, const VirtQueueElement *elem,
 void virtqueue_increment_inuse(VirtIODevice *vdev)
 {
     vdev->vq[0].inuse++;
-    printf("inuse: %d\n", vdev->vq[0].inuse);
 }
 
 void virtqueue_push_first_vq(VirtIODevice *vdev, const VirtQueueElement *elem,

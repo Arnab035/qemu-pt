@@ -948,7 +948,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     if (!is_int && !is_hw) {
         has_error_code = exception_has_error_code(intno);
     }
-    printf("has_error_code: %d\n", has_error_code);
+    //printf("has_error_code: %d\n", has_error_code);
     if (is_int) {
         old_eip = next_eip;
     } else {
@@ -960,7 +960,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
         raise_exception_err(env, EXCP0D_GPF, intno * 16 + 2);
     }
     ptr = dt->base + intno * 16;
-    printf("ptr is 0x%lx\n", ptr);
+    //printf("ptr is 0x%lx\n", ptr);
     e1 = cpu_ldl_kernel(env, ptr);
     e2 = cpu_ldl_kernel(env, ptr + 4);
     e3 = cpu_ldl_kernel(env, ptr + 8);
@@ -1051,7 +1051,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
                    get_seg_base(e1, e2),
                    get_seg_limit(e1, e2),
                    e2);
-    printf("offset is 0x%lx, interrupt number is %d\n", offset, intno);
+    //printf("offset is 0x%lx, interrupt number is %d\n", offset, intno);
     env->eip = offset;
 }
 #endif
@@ -1447,8 +1447,8 @@ bool x86_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         cs->interrupt_request &= ~(CPU_INTERRUPT_HARD |
                                    CPU_INTERRUPT_VIRQ);
         intno = cpu_get_pic_interrupt(env);
-        qemu_log_mask(CPU_LOG_TB_IN_ASM,
-                      "Servicing hardware INT=0x%02x\n", intno);
+        //qemu_log_mask(CPU_LOG_TB_IN_ASM,
+          //            "Servicing hardware INT=0x%02x\n", intno);
         //do_interrupt_x86_hardirq(env, intno, 1);
         break;
 #if !defined(CONFIG_USER_ONLY)

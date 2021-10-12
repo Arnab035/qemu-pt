@@ -4530,7 +4530,6 @@ static int get_interrupt_number_from_interrupt_address(CPUX86State *env, unsigne
         e3 = cpu_ldl_mmuidx_ra(env, ptr + 8, cpu_mmu_index_kernel(env), 0);
         offset = ((target_ulong)e3 << 32) | (e2 & 0xffff0000) | (e1 & 0x0000ffff);
         if (offset == interrupt_target) {
-            printf("intno: %d\n", intno);
             return intno;
         }
     }
@@ -4558,9 +4557,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     target_ulong pc_start = s->base.pc_next;
 
     if (index_array >= intel_pt_state.tnt_index_limit) {
-        printf("%llu\n", index_array);
-        printf("%d\n", index_tip_address);
-        printf("%d\n", index_fup_address);
         if (tnt_array) {
             free(tnt_array);
             tnt_array = NULL;
@@ -4623,7 +4619,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array++;
             index_fup_address++;
             index_tip_address++;
-            printf("VMEXIT here. Index array is: %llu\n", index_array);
             return s->pc;
     }
 
@@ -4632,8 +4627,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	(do_strtoul(fup_addresses[index_fup_address].address) == s->pc)) {
             while(!tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
-            printf("TIP addresses: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
-            printf("interrupt address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address].address));
             intno = get_interrupt_number_from_interrupt_address(env, do_strtoul(tip_addresses[index_tip_address].address));
             if (intno < 0) {
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
@@ -4642,7 +4635,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             index_array += 2;
             index_tip_address++;
             index_fup_address++;
-            printf("INTERRUPT here. Index array is %llu\n", index_array);
             if (intno == 113) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
@@ -4676,7 +4668,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 uint8_t *data;
                 while (!stopped_execution_of_tb_chain) {
                     index = arnab_replay_get_qword("disk");
-                    printf("index: %u\n", index);
                     if (index == EVENT_BLK_INTERRUPT) {
                         break;
                     }
@@ -4684,15 +4675,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     vqe = g_malloc(sizeof(VirtQueueElement));
                     vqe->index = index;
                     vqe->len = arnab_replay_get_qword("disk");
-                    printf("len: %u\n", vqe->len);
                     vqe->ndescs = arnab_replay_get_qword("disk");
-                    printf("ndescs: %u\n", vqe->ndescs);
                     vqe->out_num = arnab_replay_get_qword("disk");
-                    printf("out_num: %u\n", vqe->out_num);
                     vqe->in_num = arnab_replay_get_qword("disk");
-                    printf("in_num: %u\n", vqe->in_num);
                     in_len = arnab_replay_get_qword("disk");
-                    printf("in_len: %lu\n", in_len);
                     vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
                     vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
                     vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
@@ -4700,9 +4686,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     /* this is a 'read to the guest memory' operation */
                     for (i = 0; i < vqe->in_num; i++) {
                         hwaddr rep_addr = arnab_replay_get_qword("disk");
-                        printf("addr: 0x%lx\n", rep_addr);
                         arnab_replay_get_array_alloc(&data, &len, "disk");
-                        printf("len: %lu\n", len);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 1, 
                                             MEMTXATTRS_UNSPECIFIED);
@@ -8922,7 +8906,7 @@ static void i386_tr_disas_log(const DisasContextBase *dcbase,
 {
     DisasContext *dc = container_of(dcbase, DisasContext, base);
 
-    qemu_log("IN: %s\n", lookup_symbol(dc->base.pc_first));
+    //qemu_log("IN: %s\n", lookup_symbol(dc->base.pc_first));
     log_target_disas(cpu, dc->base.pc_first, dc->base.tb->size);
 }
 

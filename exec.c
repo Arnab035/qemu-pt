@@ -2578,7 +2578,6 @@ static void *qemu_ram_ptr_length(RAMBlock *ram_block, ram_addr_t addr,
 
         block->host = xen_map_cache(block->offset, block->max_length, 1, lock);
     }
-
     return ramblock_ptr(block, addr);
 }
 
@@ -3536,7 +3535,6 @@ void *address_space_map(AddressSpace *as,
     RCU_READ_LOCK_GUARD();
     fv = address_space_to_flatview(as);
     mr = flatview_translate(fv, addr, &xlat, &l, is_write, attrs);
-
     if (!memory_access_is_direct(mr, is_write)) {
         if (atomic_xchg(&bounce.in_use, true)) {
             return NULL;

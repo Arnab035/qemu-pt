@@ -197,7 +197,6 @@ void helper_rdtsc(CPUX86State *env)
 
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
         val = (uint64_t)arnab_replay_get_qword("host-clock");
-        printf("Rdtsc val: 0x%lx\n", val);	
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
     }
