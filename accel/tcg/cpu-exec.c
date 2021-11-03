@@ -326,16 +326,18 @@ void get_array_of_tnt_bits(void) {
     char *pch;
     char *pch_pip;
     bool stop_parsing_due_to_heartbeat = false;
+    bool stop_parsing_due_to_overflow = false;
     //int len;
 
     int is_ignore_tip = 0;
     int is_ignore_pip = 0;
+    int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 300000, curr_lines_read = 0;
+    int max_lines_read = 50000, curr_lines_read = 0;
 
     //TODO: make this commandline
-    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_04may21.txt.gz";
+    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21.txt.gz";
     if (!tnt_array) {
         tnt_array = malloc(1);
     }
@@ -378,10 +380,45 @@ void get_array_of_tnt_bits(void) {
         }
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
-            stop_parsing_due_to_heartbeat = false;	
+            stop_parsing_due_to_heartbeat = false;
+            continue;
         }
         else if (strncmp(copy, "PSB", 3) == 0) {
             stop_parsing_due_to_heartbeat = true;
+            continue;
+        }
+	else if (strncmp(copy, "OVF", 3) == 0) {
+            stop_parsing_due_to_overflow = true;
+            continue;
+        }
+        if (stop_parsing_due_to_overflow) {
+            if (strncmp(copy, "FUP", 3) == 0) {
+	        if (strncmp(copy+6, "ffffc", 5) == 0) {
+                    count_fup_after_ovf += 1;
+                    if (stop_parsing_due_to_heartbeat) {
+                        stop_parsing_due_to_heartbeat = false;
+                    }
+                } else {
+                    /* this is a useful TIP, not FUP packet */
+                    tnt_array = realloc(tnt_array, count+1);
+                    tnt_array[count] = 'P';
+                    count++;
+                    tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	            tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+	            memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	            tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	            tip_addresses[count_tip].is_useful=1;
+	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
+	            tip_addresses[count_tip].ip_bytes=6;
+	            count_tip++;
+                    stop_parsing_due_to_overflow = false;
+                }
+            }
+            if (count_fup_after_ovf == 2) {
+                count_fup_after_ovf = 0;
+                stop_parsing_due_to_overflow = false;
+            }
+            continue;
         }
         if (!stop_parsing_due_to_heartbeat) {
 	    if (strncmp(copy, "TNT", 3) == 0) {
@@ -470,6 +507,7 @@ void get_array_of_tnt_bits(void) {
     intel_pt_state.fup_address_index_limit = count_fup;
     intel_pt_state.tip_address_index_limit = count_tip;
     intel_pt_state.number_of_lines_consumed += curr_lines_read;
+    printf("Number of lines consumed: %llu\n", intel_pt_state.number_of_lines_consumed);
 
 #if 0 
     printf("TNT array: %d\n", count);
@@ -568,7 +606,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         if (index_array_incremented && 
                 tnt_array[index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
-#if 0
+#if 1
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
 #endif
             env->eip = itb->jmp_target1;
@@ -576,7 +614,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         if (index_array_incremented &&
                 tnt_array[index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
-#if 0
+#if 1
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
 #endif
             env->eip = itb->jmp_target2;
