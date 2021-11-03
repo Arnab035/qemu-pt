@@ -334,7 +334,7 @@ void get_array_of_tnt_bits(void) {
     int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 50000, curr_lines_read = 0;
+    int max_lines_read = 300000, curr_lines_read = 0;
 
     //TODO: make this commandline
     const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21.txt.gz";
@@ -387,13 +387,13 @@ void get_array_of_tnt_bits(void) {
             stop_parsing_due_to_heartbeat = true;
             continue;
         }
-	else if (strncmp(copy, "OVF", 3) == 0) {
+        else if (strncmp(copy, "OVF", 3) == 0) {
             stop_parsing_due_to_overflow = true;
             continue;
         }
         if (stop_parsing_due_to_overflow) {
             if (strncmp(copy, "FUP", 3) == 0) {
-	        if (strncmp(copy+6, "ffffc", 5) == 0) {
+                if (strncmp(copy+6, "ffffc", 5) == 0) {
                     count_fup_after_ovf += 1;
                     if (stop_parsing_due_to_heartbeat) {
                         stop_parsing_due_to_heartbeat = false;
@@ -404,13 +404,13 @@ void get_array_of_tnt_bits(void) {
                     tnt_array[count] = 'P';
                     count++;
                     tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	            tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-	            memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-	            tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	            tip_addresses[count_tip].is_useful=1;
+                    tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+                    tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+                    tip_addresses[count_tip].is_useful=1;
 	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-	            tip_addresses[count_tip].ip_bytes=6;
-	            count_tip++;
+                    tip_addresses[count_tip].ip_bytes=6;
+                    count_tip++;
                     stop_parsing_due_to_overflow = false;
                 }
             }
