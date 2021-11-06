@@ -2595,14 +2595,11 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
         if (start_recording) {
             // only record interrupts for network IO rx
             if (strcmp(event_type, "net_rx_queue") == 0) {
-                printf("rx interrupt\n");
                 arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
             } else if (strcmp(event_type, "net_tx_queue") == 0) {
-                printf("tx interrupt\n");
                 arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
             } else if (strcmp(event_type, "net_ctrl_queue") == 0) {
-                printf("ctrl queue interrupt\n");
-                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "disk");
+                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
             }
         }
     }

@@ -448,6 +448,9 @@ void get_array_of_tnt_bits(void) {
           
 	  /* VMENTRY */
 	        else {
+                    if (is_ignore_pip == 0 && curr_lines_read >= 2) {
+                        continue;
+                    }
                     is_ignore_tip = 1;
 	            if(is_ignore_pip == 1) {
 	                is_ignore_pip = 0;
