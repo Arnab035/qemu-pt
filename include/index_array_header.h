@@ -22,11 +22,13 @@ struct hash_buckets {
   struct hash_buckets *pointer;
 };
 
-struct intel_pt_read_state {
+struct intel_pt_execution_state {
   gzFile intel_pt_file;
   int tnt_index_limit;
   int fup_address_index_limit;
   int tip_address_index_limit;
+  int divergence_count;
+  bool is_simulation_finished;
   char *last_tip_address;
   unsigned long long total_packets_consumed;
   unsigned long long number_of_lines_consumed;
@@ -67,7 +69,7 @@ extern int is_handle_interrupt_in_userspace;
 
 void get_array_of_tnt_bits(void);
 
-extern struct intel_pt_read_state intel_pt_state;
+extern struct intel_pt_execution_state intel_pt_state;
 
 /* I/O replay structures */
 extern void *replay_tx_bh;
@@ -79,5 +81,8 @@ void virtio_net_handle_ctrl_replay(void *, void *);
 
 unsigned long do_strtoul(char *address);   // function declared
 int get_interrupt_number_from_hashtable(char *);
+
+extern uint64_t first_pc_of_tb;
+extern uint64_t size_of_tb;
 
 #endif

@@ -320,7 +320,7 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
  *  use the gzlib standard library
  */
 
-struct intel_pt_read_state intel_pt_state = {};
+struct intel_pt_execution_state intel_pt_state = {};
 
 void get_array_of_tnt_bits(void) { 
     char *pch;
@@ -334,7 +334,7 @@ void get_array_of_tnt_bits(void) {
     int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 300000, curr_lines_read = 0;
+    int max_lines_read = 500000, curr_lines_read = 0;
 
     //TODO: make this commandline
     const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21.txt.gz";
@@ -376,7 +376,8 @@ void get_array_of_tnt_bits(void) {
             curr_lines_read += 1;
         } else {
             printf("Incorrect read from gz file. Simulation probably finished...\n");
-            exit(EXIT_SUCCESS);
+            intel_pt_state.is_simulation_finished = true;
+            break;
         }
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
@@ -448,7 +449,7 @@ void get_array_of_tnt_bits(void) {
           
 	  /* VMENTRY */
 	        else {
-                    if (is_ignore_pip == 0 && curr_lines_read >= 2) {
+                    if (is_ignore_pip == 0 && curr_lines_read >= 5) {
                         continue;
                     }
                     is_ignore_tip = 1;
@@ -562,7 +563,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 #endif /* DEBUG_DISAS */
     /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called. 
      * This is very opportunistic in the sense we try to flush a queue even if there is no tx packet */
-    const char *virtqueue_get_buf_trap = "ffff814bfc20";
+    const char *virtqueue_get_buf_trap = "ffff814e9fe0";
     if (env->eip == do_strtoul((char *)virtqueue_get_buf_trap)) {
         virtio_net_tx_replay(replay_tx_bh);
         virtio_net_handle_ctrl_replay(replay_ctrl_vdev, replay_ctrl_vq);
@@ -609,17 +610,19 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         if (index_array_incremented && 
                 tnt_array[index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
-#if 1
+#if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
 #endif
+            intel_pt_state.divergence_count += 1;
             env->eip = itb->jmp_target1;
         }
         if (index_array_incremented &&
                 tnt_array[index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
-#if 1
+#if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
 #endif
+            intel_pt_state.divergence_count += 1;
             env->eip = itb->jmp_target2;
         }
     }
