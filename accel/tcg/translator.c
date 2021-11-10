@@ -33,6 +33,9 @@ void translator_loop_temp_check(DisasContextBase *db)
     }
 }
 
+uint64_t first_pc_of_tb = 0;
+uint64_t size_of_tb = 0;
+
 void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
                      CPUState *cpu, TranslationBlock *tb, int max_insns)
 {
@@ -42,6 +45,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
     /* Initialize DisasContext */
     db->tb = tb;
     db->pc_first = tb->pc;
+    first_pc_of_tb = db->pc_first;
     db->pc_next = db->pc_first;
     db->is_jmp = DISAS_NEXT;
     db->num_insns = 0;
@@ -135,6 +139,7 @@ void translator_loop(const TranslatorOps *ops, DisasContextBase *db,
 
     /* The disas_log hook may use these values rather than recompute.  */
     db->tb->size = db->pc_next - db->pc_first;
+    size_of_tb = db->tb->size;
     db->tb->icount = db->num_insns;
 
 #ifdef DEBUG_DISAS

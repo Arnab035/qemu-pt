@@ -855,23 +855,6 @@ static inline target_ulong get_rsp_from_tss(CPUX86State *env, int level)
     return cpu_ldq_kernel(env, env->tr.base + index);
 }
 
-/* returns the index i of the ith instruction 
- * within a tb where page fault occurred 
- * parameters : eip is the instruction pointer where page fault occurs
- * */
-
-/*
-static int return_index_of_instruction(target_ulong eip) {
-  int index=0;
-  while(index < size_of_tb_insn_array) {
-    if(tb_insn_array[index] == eip) {
-      return index;
-    }
-    index++;
-  }
-  return -1;
-}*/
-
 
 /*  convert a string address to an unsigned long integer
  *  address
@@ -915,6 +898,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     int type, dpl, selector, cpl, ist;
     int has_error_code, new_stack;
     uint32_t e1, e2, e3, ss;
+    uint64_t last_pc_of_tb = first_pc_of_tb + size_of_tb;
     target_ulong old_eip, esp, offset;
     int number_of_fups = 0;
     if (intno == 81 || intno == 113 || intno == 239) {
@@ -922,7 +906,10 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     }
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
-        if (index_array_incremented) index_array--;
+        if (index_array_incremented) {
+            if (env->eip >= first_pc_of_tb && env->eip <= last_pc_of_tb) // only if interrupt happens 'before' an instruction that falls within a TB.
+                index_array--;
+        }
         if (index_tip_address_incremented && error_code == 0) {
             index_tip_address--;
         }
