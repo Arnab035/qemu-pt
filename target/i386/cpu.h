@@ -2054,9 +2054,14 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
         index_array_incremented &&
         index_tip_address_incremented &&
         tnt_array[index_array-1] == 'P') {
-        assert(env->eip == do_strtoul(tip_addresses[index_tip_address-1].address));
+        //printf("env->eip is 0x%lx\n", env->eip);
+        //printf("tip_address: 0x%lx\n", do_strtoul(tip_addresses[index_tip_address-1].address));
+        if (env->eip != do_strtoul(tip_addresses[index_tip_address-1].address)) {
+            intel_pt_state.divergence_count += 1;
+	}
     }
     //}
+    //printf("total intelpt packets consumed = %llu\n", index_array + intel_pt_state.total_packets_consumed);
 
     if(is_within_block) {
         is_within_block = 0;
