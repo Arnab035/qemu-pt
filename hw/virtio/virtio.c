@@ -678,7 +678,6 @@ static void virtqueue_unmap_sg(VirtQueue *vq, const VirtQueueElement *elem,
     offset = 0;
     for (i = 0; i < elem->in_num; i++) {
         size_t size = MIN(len - offset, elem->in_sg[i].iov_len);
-
         dma_memory_unmap(dma_as, elem->in_sg[i].iov_base,
                          elem->in_sg[i].iov_len,
                          DMA_DIRECTION_FROM_DEVICE, size);
@@ -869,6 +868,7 @@ static void virtqueue_split_flush(VirtQueue *vq, unsigned int count)
     new = old + count;
     vring_used_idx_set(vq, new);
     vq->inuse -= count;
+
     if (unlikely((int16_t)(new - vq->signalled_used) < (uint16_t)(new - old)))
         vq->signalled_used_valid = false;
 }
@@ -2600,6 +2600,8 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
                 arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
             } else if (strcmp(event_type, "net_ctrl_queue") == 0) {
                 arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
+            } else if (strcmp(event_type, "blk_queue") == 0) {
+                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk");
             }
         }
     }
