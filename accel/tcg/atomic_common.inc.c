@@ -25,7 +25,13 @@ void atomic_trace_rmw_pre(CPUArchState *env, target_ulong addr, uint16_t info)
 static inline void
 atomic_trace_rmw_post(CPUArchState *env, target_ulong addr, uint16_t info)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) { 
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", addr);
+    }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, info);
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", addr);
+    }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, info | TRACE_MEM_ST);
 }
 
@@ -38,6 +44,9 @@ void atomic_trace_ld_pre(CPUArchState *env, target_ulong addr, uint16_t info)
 static inline
 void atomic_trace_ld_post(CPUArchState *env, target_ulong addr, uint16_t info)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", addr);
+    }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, info);
 }
 
@@ -50,5 +59,8 @@ void atomic_trace_st_pre(CPUArchState *env, target_ulong addr, uint16_t info)
 static inline
 void atomic_trace_st_post(CPUArchState *env, target_ulong addr, uint16_t info)
 {
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", addr);
+    }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), addr, info);
 }
