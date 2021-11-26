@@ -53,8 +53,8 @@
 #define MAX_VLAN    (1 << 12)   /* Per 802.1Q definition */
 
 /* previously fixed value */
-#define VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE 1024
-#define VIRTIO_NET_TX_QUEUE_DEFAULT_SIZE 1024
+#define VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE 4096
+#define VIRTIO_NET_TX_QUEUE_DEFAULT_SIZE 4096
 
 /* for now, only allow larger queues; with virtio-1, guest can downsize */
 #define VIRTIO_NET_RX_QUEUE_MIN_SIZE VIRTIO_NET_RX_QUEUE_DEFAULT_SIZE
@@ -2442,6 +2442,7 @@ void virtio_net_tx_replay(void *opaque)
     }
 
     ret = virtio_net_flush_tx(q);
+    printf("virtio-net-flush-tx ret: %d\n", ret);
     if (ret == -EBUSY || ret == -EINVAL) {
         return; /* Notification re-enable handled by tx_complete or device
                  * broken */
