@@ -1198,11 +1198,13 @@ static void qemu_tcg_rr_wait_io_event(void)
     CPUState *cpu;
 
     while (all_cpu_threads_idle()) {
-        stop_tcg_kick_timer();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY)
+            stop_tcg_kick_timer();
         qemu_cond_wait(first_cpu->halt_cond, &qemu_global_mutex);
     }
 
-    start_tcg_kick_timer();
+    if (arnab_replay_mode != REPLAY_MODE_PLAY)
+        start_tcg_kick_timer();
 
     CPU_FOREACH(cpu) {
         qemu_wait_io_event_common(cpu);
@@ -1481,6 +1483,7 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     qemu_thread_get_self(cpu->thread);
 
     cpu->thread_id = qemu_get_thread_id();
+
     cpu->created = true;
     cpu->can_do_io = 1;
     qemu_cond_signal(&qemu_cpu_cond);
@@ -1496,8 +1499,8 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
             qemu_wait_io_event_common(cpu);
         }
     }
-
-    start_tcg_kick_timer();
+    if (arnab_replay_mode != REPLAY_MODE_PLAY)
+        start_tcg_kick_timer();
 
     cpu = first_cpu;
 
@@ -1509,12 +1512,14 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         replay_mutex_lock();
         qemu_mutex_lock_iothread();
         /* Account partial waits to QEMU_CLOCK_VIRTUAL.  */
-        qemu_account_warp_timer();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            qemu_account_warp_timer();
 
-        /* Run the timers here.  This is much more efficient than
-         * waking up the I/O thread and waiting for completion.
-         */
-        handle_icount_deadline();
+            /* Run the timers here.  This is much more efficient than
+             * waking up the I/O thread and waiting for completion.
+             */
+            handle_icount_deadline();
+	}
 
         replay_mutex_unlock();
 
@@ -1597,22 +1602,25 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         }
 
         while (cpu && !cpu->queued_work_first && !cpu->exit_request) {
-
             atomic_mb_set(&tcg_current_rr_cpu, cpu);
             current_cpu = cpu;
-
-            qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
+            if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+            }
 
             if (cpu_can_run(cpu)) {
                 int r;
 
                 qemu_mutex_unlock_iothread();
-                prepare_icount_for_run(cpu);
-
+                if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                    prepare_icount_for_run(cpu);
+                }
                 r = tcg_cpu_exec(cpu);
 
-                process_icount_data(cpu);
+                if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                    process_icount_data(cpu);
+                }
                 qemu_mutex_lock_iothread();
 
                 if (r == EXCP_DEBUG) {
@@ -1640,15 +1648,15 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         if (cpu && cpu->exit_request) {
             atomic_mb_set(&cpu->exit_request, 0);
         }
-
-        if (use_icount && all_cpu_threads_idle()) {
-            /*
-             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
-             * in the main_loop, wake it up in order to start the warp timer.
-             */
-            qemu_notify_event();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            if (use_icount && all_cpu_threads_idle()) {
+                /*
+                 * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+                 * in the main_loop, wake it up in order to start the warp timer.
+                 */
+                qemu_notify_event();
+            }
         }
-
         qemu_tcg_rr_wait_io_event();
         deal_with_unplugged_cpus();
     }
