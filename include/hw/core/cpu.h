@@ -383,6 +383,11 @@ struct CPUState {
     AddressSpace *as;
     MemoryRegion *memory;
 
+    char *tnt_array;
+    struct tip_address_info *tip_addresses;
+    struct fup_address_info *fup_addresses;
+    bool is_core_simulation_finished;
+
     void *env_ptr; /* CPUArchState */
     IcountDecr *icount_decr_ptr;
 

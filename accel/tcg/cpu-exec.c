@@ -110,8 +110,6 @@ typedef struct SyncClocks {
 
 #define LENGTH  0x1000
 
-struct tip_address_info *tip_addresses = NULL;
-struct fup_address_info *fup_addresses = NULL;
 //char **pip_cr3_values = NULL;
 
 static void align_clocks(SyncClocks *sc, CPUState *cpu)
@@ -273,7 +271,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         }
     } else {
         if (index_array_incremented && 
-                tnt_array[index_array-1] == 'T' &&
+                cpu->tnt_array[index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
@@ -282,7 +280,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
             env->eip = itb->jmp_target1;
         }
         if (index_array_incremented &&
-                tnt_array[index_array-1] == 'N' &&
+                cpu->tnt_array[index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
@@ -804,7 +802,7 @@ int cpu_exec(CPUState *cpu)
 
         assert_no_pages_locked();
     }
-    if(tnt_array == NULL) {
+    if(cpu->tnt_array == NULL) {
         printf("tnt_array is empty\n");
         exit(1);
     }

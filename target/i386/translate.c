@@ -4556,35 +4556,40 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     target_ulong pc_start = s->base.pc_next;
 
     if (index_array >= intel_pt_state.tnt_index_limit) {
-        if (tnt_array) {
-            free(tnt_array);
-            tnt_array = NULL;
+        if (cpu->tnt_array) {
+            free(cpu->tnt_array);
+            cpu->tnt_array = NULL;
             intel_pt_state.total_packets_consumed += index_array;
             index_array = 0;
         }
-        if (tip_addresses) {
+        if (cpu->tip_addresses) {
             for(i=0; i < index_tip_address; i++) {
-                free((char *)tip_addresses[i].address);
+                free((char *)(cpu->tip_addresses[i].address));
             }
-            free(tip_addresses);
-            tip_addresses = NULL;
+            free(cpu->tip_addresses);
+            cpu->tip_addresses = NULL;
             index_tip_address = 0;
         }
-        if (fup_addresses) {
+        if (cpu->fup_addresses) {
             for(i=0; i < index_fup_address; i++) {
-                free((char *)fup_addresses[i].address);
+                free((char *)(cpu->fup_addresses[i].address));
             }
-            free(fup_addresses);
-            fup_addresses = NULL;
+            free(cpu->fup_addresses);
+            cpu->fup_addresses = NULL;
             index_fup_address = 0;
         }
-        if (!intel_pt_state.is_simulation_finished) {
-            get_array_of_tnt_bits();
+        if (!cpu->is_core_simulation_finished) {
+            get_array_of_tnt_bits(cpu);
         }
 	else {
-            printf("Simulation Finished!\n");
+            printf("Simulation Finished for CPU core %d\n", cpu->cpu_index);
+	    printf("Now simulating next core...");
             printf("Divergence count: %d\n", intel_pt_state.divergence_count);
-            exit(EXIT_SUCCESS);
+            /* To go to the next core, we simulate the pause instruction */
+            X86CPU *cpu = env_archcpu(env);
+            CPUState *cs = CPU(cpu);
+            cs->exception_index = EXCP_INTERRUPT;
+            cpu_loop_exit(cs);
 	}
     }
 
@@ -4619,21 +4624,22 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
-    if (fup_addresses[index_fup_address].type == 'V' &&
-        tnt_array[index_array] == 'F' && 
-        do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
+    if (cpu->fup_addresses[index_fup_address].type == 'V' &&
+        cpu->tnt_array[index_array] == 'F' && 
+        do_strtoul(cpu->fup_addresses[index_fup_address].address) == s->pc) {
             index_array++;
             index_fup_address++;
             index_tip_address++;
             return s->pc;
     }
 
-    if (fup_addresses[index_fup_address].type == 'I' &&
-        tnt_array[index_array] == 'F' &&
-	(do_strtoul(fup_addresses[index_fup_address].address) == s->pc)) {
-            while(!tip_addresses[index_tip_address].is_useful)
+    if (cpu->fup_addresses[index_fup_address].type == 'I' &&
+        cpu->tnt_array[index_array] == 'F' &&
+	(do_strtoul(cpu->fup_addresses[index_fup_address].address) == s->pc)) {
+            while(!cpu->tip_addresses[index_tip_address].is_useful)
                 index_tip_address++;
-            intno = get_interrupt_number_from_interrupt_address(env, do_strtoul(tip_addresses[index_tip_address].address));
+            intno = get_interrupt_number_from_interrupt_address(env, 
+                              do_strtoul(cpu->tip_addresses[index_tip_address].address));
             if (intno < 0) {
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
                 return s->pc;
@@ -5284,10 +5290,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 2: /* call Ev */
             /* XXX: optimize if memory (no 'and' is necessary) */
-	    if(tnt_array[index_array] == 'P') {
+	    if(cpu->tnt_array[index_array] == 'P') {
 	        index_array++;
                 index_array_incremented = 1;
-	        while(tip_addresses[index_tip_address].is_useful == 0) {
+	        while(cpu->tip_addresses[index_tip_address].is_useful == 0) {
 	            index_tip_address++;
 	        }
 	        index_tip_address++;     // consume the TIP address
@@ -5324,10 +5330,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 4: /* jmp Ev */
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
-	    if(tnt_array[index_array] == 'P') {
+	    if(cpu->tnt_array[index_array] == 'P') {
 	        index_array++;
 	        index_array_incremented=1;
-                while(tip_addresses[index_tip_address].is_useful == 0) {
+                while(cpu->tip_addresses[index_tip_address].is_useful == 0) {
 	            index_tip_address++;
 	        }
 	            // consume the TIP address
@@ -6761,14 +6767,14 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         gen_jr(s, s->T0);
         break;
     case 0xc3: /* ret */
-        if(tnt_array[index_array] != 'P') {
+        if(cpu->tnt_array[index_array] != 'P') {
             index_array++;
             index_array_incremented = 1;
         }
         else {
 	    index_array++;
 	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful == 0) {
+	    while(cpu->tip_addresses[index_tip_address].is_useful == 0) {
 	        index_tip_address++;
 	    }
 	    index_tip_address++;     // consume the TIP bit
@@ -6809,10 +6815,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         val = 0;
         goto do_lret;
     case 0xcf: /* iret */
-        if(tnt_array[index_array] == 'P') {
+        if(cpu->tnt_array[index_array] == 'P') {
 	    index_array++;
 	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
+	    while(cpu->tip_addresses[index_tip_address].is_useful==0) {
 	        index_tip_address++;
 	    }
 	    index_tip_address++;
@@ -7521,10 +7527,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     case 0x105: /* syscall */
         /* XXX: is it usable in real mode ? */
 	// consume TIP address if possible here as well
-	if(tnt_array[index_array] == 'P') {
+	if(cpu->tnt_array[index_array] == 'P') {
 	    index_array++;
 	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
+	    while(cpu->tip_addresses[index_tip_address].is_useful==0) {
 	        index_tip_address++;
 	    }
 	    index_tip_address++;
@@ -7540,10 +7546,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         break;
     case 0x107: /* sysret */
 	// consume TIP address here as well
-	if(tnt_array[index_array] == 'P') {
+	if(cpu->tnt_array[index_array] == 'P') {
 	    index_array++;
 	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
+	    while(cpu->tip_addresses[index_tip_address].is_useful==0) {
 	        index_tip_address++;
 	    }
 	    index_tip_address++;

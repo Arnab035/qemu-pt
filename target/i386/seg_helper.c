@@ -904,6 +904,7 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     if (intno == 81 || intno == 113 || intno == 239) {
         if (index_array_incremented) index_array--;
     }
+    CPUState *cs = env_cpu(env);
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
         if (index_array_incremented) {
@@ -917,8 +918,8 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
             index_tip_address++;
             index_fup_address++;
             /* ugly hack */
-            while(tnt_array[index_array] != 'T' && tnt_array[index_array] != 'N') {
-                if (tnt_array[index_array] == 'F') {
+            while(cs->tnt_array[index_array] != 'T' && cs->tnt_array[index_array] != 'N') {
+                if (cs->tnt_array[index_array] == 'F') {
                     number_of_fups++;
                 }
                 index_array++;

@@ -29,14 +29,6 @@ bool tcg_allowed;
 void cpu_loop_exit_noexc(CPUState *cpu)
 {
     /* XXX: restore cpu registers saved in host registers */
-    if(is_io_instruction && index_array_incremented) {
-      index_array--;
-      if(index_tip_address_incremented) {
-        index_tip_address--;
-      }
-      is_io_instruction=0;
-      printf("is_io_instruction is 0\n");
-    }
 
     cpu->exception_index = -1;
     cpu_loop_exit(cpu);

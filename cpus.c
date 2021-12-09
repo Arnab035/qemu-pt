@@ -95,11 +95,14 @@ static bool disk_replay_done_at_init = false;
 static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
 
-char *tnt_array = NULL;   // tnt_array is NOW a global 
 
 #define CPU_THROTTLE_PCT_MIN 1
 #define CPU_THROTTLE_PCT_MAX 99
 #define CPU_THROTTLE_TIMESLICE_NS 10000000
+
+
+/* FULL path of Intel PT trace file location */
+const char *intel_pt_trace_file_prefix = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21";
 
 bool cpu_is_stopped(CPUState *cpu)
 {
@@ -1412,92 +1415,92 @@ static void process_icount_data(CPUState *cpu)
 
 /* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
-static void construct_fully_qualified_address(int i, char *reference_address) {
+static void construct_fully_qualified_address(CPUState *cpu, int i, char *reference_address) {
     int j, chars_to_copy = 0;
     int short_length = 0;
 
-    if(tip_addresses[i].ip_bytes==4) {   // some other value
+    if(cpu->tip_addresses[i].ip_bytes==4) {   // some other value
       //chars_to_copy=12-strlen(tip_addresses[i].address);
-        chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+        chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
         if(chars_to_copy < 0) {
             chars_to_copy=0;
         }
 
         //short_length=8-strlen(tip_addresses[i].address);
-        tip_addresses[i].address=realloc(tip_addresses[i].address,13);
-        for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
-            tip_addresses[i].address[j+chars_to_copy]=tip_addresses[i].address[j];
+        cpu->tip_addresses[i].address=realloc(cpu->tip_addresses[i].address,13);
+        for(j=strlen(cpu->tip_addresses[i].address)-1; j>=0; j--) {
+            cpu->tip_addresses[i].address[j+chars_to_copy]=cpu->tip_addresses[i].address[j];
         }
         if (chars_to_copy > 4) {
             for(j=0; j<chars_to_copy-4; j++) {
-                tip_addresses[i].address[j+4] = '0';
+                cpu->tip_addresses[i].address[j+4] = '0';
             }
             chars_to_copy = 4;
         }
         for(j=0;j<chars_to_copy;j++) {
-            tip_addresses[i].address[j] = reference_address[j];
+            cpu->tip_addresses[i].address[j] = reference_address[j];
         }
-        tip_addresses[i].address[12]='\0';
+        cpu->tip_addresses[i].address[12]='\0';
     }
-    else if(tip_addresses[i].ip_bytes==2) {
+    else if(cpu->tip_addresses[i].ip_bytes==2) {
         if(strlen(reference_address)==6) {
-            if(strlen(tip_addresses[i].address) < 4) {
-                short_length = 4-strlen(tip_addresses[i].address);
-                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address)-short_length;
+            if(strlen(cpu->tip_addresses[i].address) < 4) {
+                short_length = 4-strlen(cpu->tip_addresses[i].address);
+                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address)-short_length;
                 if(chars_to_copy<0) {
                     chars_to_copy=0;
                 }
             }
-            else if(strlen(tip_addresses[i].address)==4) {
+            else if(strlen(cpu->tip_addresses[i].address)==4) {
                 short_length=0;
-                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
                 if(chars_to_copy<0) {
                     chars_to_copy=0;
                 }
             }
         }
         else {
-            if(strlen(tip_addresses[i].address) < 4) {
-                short_length = 4-strlen(tip_addresses[i].address);
-                chars_to_copy = strlen(reference_address)-strlen(tip_addresses[i].address)-short_length;
+            if(strlen(cpu->tip_addresses[i].address) < 4) {
+                short_length = 4-strlen(cpu->tip_addresses[i].address);
+                chars_to_copy = strlen(reference_address)-strlen(cpu->tip_addresses[i].address)-short_length;
                 if(chars_to_copy<0) {
                     chars_to_copy=0;
                 }
             }
-            else if(strlen(tip_addresses[i].address)==4) {
+            else if(strlen(cpu->tip_addresses[i].address)==4) {
                 short_length = 0;
-                chars_to_copy=strlen(reference_address)-strlen(tip_addresses[i].address);
+                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
                 if(chars_to_copy<0) {
                     chars_to_copy=0;
                 }
             }
         }
-        tip_addresses[i].address=realloc(tip_addresses[i].address,13);
+        cpu->tip_addresses[i].address=realloc(cpu->tip_addresses[i].address,13);
 
-        for(j=strlen(tip_addresses[i].address)-1; j>=0; j--) {
-            tip_addresses[i].address[j+chars_to_copy+short_length]=tip_addresses[i].address[j];
+        for(j=strlen(cpu->tip_addresses[i].address)-1; j>=0; j--) {
+            cpu->tip_addresses[i].address[j+chars_to_copy+short_length]=cpu->tip_addresses[i].address[j];
         }
 
         for(j=0;j<chars_to_copy;j++) {
-            tip_addresses[i].address[j]=reference_address[j];
+            cpu->tip_addresses[i].address[j]=reference_address[j];
         }
         if(short_length) {
             for(j=0;j<short_length;j++) {
-                tip_addresses[i].address[chars_to_copy+j]='0';
+                cpu->tip_addresses[i].address[chars_to_copy+j]='0';
             }
         }
-        tip_addresses[i].address[12]='\0';
+        cpu->tip_addresses[i].address[12]='\0';
     }
 }
 
-static void preprocess_tip_array(int size) {
+static void preprocess_tip_array(CPUState *cpu, int size) {
 
     if (intel_pt_state.last_tip_address) {
-        construct_fully_qualified_address(0, intel_pt_state.last_tip_address);
+        construct_fully_qualified_address(cpu, 0, intel_pt_state.last_tip_address);
     }
     int i;
     for(i=1;i<=size;i++) {
-        construct_fully_qualified_address(i, tip_addresses[i-1].address);
+        construct_fully_qualified_address(cpu, i, cpu->tip_addresses[i-1].address);
     }
 }
 
@@ -1518,7 +1521,7 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
     copy[i] = '\0'; return count;
 }
 
-/* get_array_of_tnt_bits()
+/*  get_array_of_tnt_bits()
  *  parameters : none
  *  returns : the array containing the TNT bits
  *  also maintains 2 arrays - one having the TIP addresses with some metadata
@@ -1528,7 +1531,7 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
 
 struct intel_pt_execution_state intel_pt_state = {};
 
-void get_array_of_tnt_bits(void) {
+void get_array_of_tnt_bits(CPUState *cpu) {
     char *pch;
     char *pch_pip;
     bool stop_parsing_due_to_heartbeat = false;
@@ -1541,28 +1544,27 @@ void get_array_of_tnt_bits(void) {
     unsigned long long k, prev_count;
     unsigned long long j;
     int max_lines_read = 500000, curr_lines_read = 0;
+    int cpu_index = cpu->cpu_index;
 
-    //TODO: make this commandline
-    const char *filename = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21.txt.gz";
-    if (!tnt_array) {
-        tnt_array = malloc(1);
+    char filename[100] = {'\0'};
+
+    sprintf(filename, "%s_%d.txt.gz", intel_pt_trace_file_prefix, cpu_index);
+    if (!cpu->tnt_array) {
+        cpu->tnt_array = malloc(1);
     }
 
     //tnt_array[0] = 'P';
     if (!intel_pt_state.intel_pt_file) {
         intel_pt_state.intel_pt_file = gzopen(filename, "r");
     }
-    intel_pt_state.tnt_index_limit = 0;
-    intel_pt_state.fup_address_index_limit = 0;
-    intel_pt_state.tip_address_index_limit = 0;
 
     int count = 0;
 
     int count_tip = 0;
     int count_fup = 0;
 
-    tip_addresses = malloc(1 * sizeof(struct tip_address_info));
-    fup_addresses = malloc(1 * sizeof(struct fup_address_info));
+    cpu->tip_addresses = malloc(1 * sizeof(struct tip_address_info));
+    cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
 
     if(!intel_pt_state.intel_pt_file) {
         fprintf(stderr, "gzopen of %s failed.\n", filename);
@@ -1576,7 +1578,7 @@ void get_array_of_tnt_bits(void) {
             curr_lines_read += 1;
         } else {
             printf("Incorrect read from gz file. Simulation probably finished...\n");
-            intel_pt_state.is_simulation_finished = true;
+            cpu->is_core_simulation_finished = true;
             break;
         }
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
@@ -1601,16 +1603,16 @@ void get_array_of_tnt_bits(void) {
                     }
                 } else {
                     /* this is a useful TIP, not FUP packet */
-                    tnt_array = realloc(tnt_array, count+1);
-                    tnt_array[count] = 'P';
+                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    cpu->tnt_array[count] = 'P';
                     count++;
-                    tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-                    tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-                    memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-                    tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-                    tip_addresses[count_tip].is_useful=1;
+                    cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+                    cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+                    cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+                    cpu->tip_addresses[count_tip].is_useful=1;
 	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-                    tip_addresses[count_tip].ip_bytes=6;
+                    cpu->tip_addresses[count_tip].ip_bytes=6;
                     count_tip++;
                     stop_parsing_due_to_overflow = false;
                 }
@@ -1629,9 +1631,9 @@ void get_array_of_tnt_bits(void) {
 	        pch = strchr(copy, '(');
 	        prev_count = count;
 	        count += ((*++pch) - '0');
-	        tnt_array = realloc(tnt_array, count);
+	        cpu->tnt_array = realloc(cpu->tnt_array, count);
 	        for(j=prev_count,k=0; j<count; j++, k++) {
-	            tnt_array[j]=copy[4+k];
+	            cpu->tnt_array[j]=copy[4+k];
 	        }
             }
             else if(strncmp(copy, "PIP", 3) == 0) {
@@ -1643,9 +1645,9 @@ void get_array_of_tnt_bits(void) {
 	    // these stray PIP packets indicate context switch events
 	            is_ignore_pip = 1;
             // the FUP preceding this PIP will represent the source address for a VMEXIT
-                    fup_addresses[count_fup-1].type = 'V';
+                    cpu->fup_addresses[count_fup-1].type = 'V';
 	        }
-	  /* VMENTRY */
+	    /* VMENTRY */
 	        else {
                     if (is_ignore_pip == 0 && curr_lines_read >= 5) {
                         continue;
@@ -1659,40 +1661,40 @@ void get_array_of_tnt_bits(void) {
             else {
                 if(strncmp(copy, "TIP", 3) == 0) {
 	            if(is_ignore_tip == 0) {
-	                tnt_array = realloc(tnt_array, count+1);
-	                tnt_array[count] = 'P';
+	                cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+	                cpu->tnt_array[count] = 'P';
 	                count++;
 	                // enter TIP addresses into global tip_address_array //
-	                tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	                tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-	                memcpy(tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-	                tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	                tip_addresses[count_tip].is_useful=1;
+	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+	                memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                cpu->tip_addresses[count_tip].is_useful=1;
 	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-	                tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                cpu->tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
 	                count_tip++;
 	            }
 	            else {
-	                tip_addresses = realloc(tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-	                tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
-	                memcpy(tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
-	                tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-	                tip_addresses[count_tip].is_useful=0;
-	                tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+	                memcpy(cpu->tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                cpu->tip_addresses[count_tip].is_useful=0;
+	                cpu->tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
 	                count_tip++;
                         //printf("count: %llu\n", count);
 	                is_ignore_tip=0;
                     }
 	        }
 	        else if(strncmp(copy, "FUP", 3) == 0) {
-                    tnt_array = realloc(tnt_array, count+1);
-                    tnt_array[count] = 'F';
+                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    cpu->tnt_array[count] = 'F';
                     count++;
-                    fup_addresses = realloc(fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
-                    fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
-                    memcpy(fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
-                    fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
-                    fup_addresses[count_fup].type = 'I';
+                    cpu->fup_addresses = realloc(cpu->fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+                    cpu->fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    memcpy(cpu->fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+                    cpu->fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
+                    cpu->fup_addresses[count_fup].type = 'I';
                     count_fup++;
                 }
             }
@@ -1704,9 +1706,6 @@ void get_array_of_tnt_bits(void) {
             }
         }
     }
-    intel_pt_state.tnt_index_limit = count;
-    intel_pt_state.fup_address_index_limit = count_fup;
-    intel_pt_state.tip_address_index_limit = count_tip;
     intel_pt_state.number_of_lines_consumed += curr_lines_read;
     printf("Number of lines consumed: %llu\n", intel_pt_state.number_of_lines_consumed);
 
@@ -1716,10 +1715,10 @@ void get_array_of_tnt_bits(void) {
     printf("TIP array: %d\n", count_tip);
 # endif
    // preprocess the tip addresses //
-    preprocess_tip_array(count_tip);
+    preprocess_tip_array(cpu, count_tip);
 
-    intel_pt_state.last_tip_address = malloc(sizeof(tip_addresses[count_tip-1].address));
-    strcpy(intel_pt_state.last_tip_address, tip_addresses[count_tip-1].address);
+    intel_pt_state.last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
+    strcpy(intel_pt_state.last_tip_address, cpu->tip_addresses[count_tip-1].address);
 
 #if 0
     printf("final count : %d\n", count);
@@ -1737,12 +1736,13 @@ static int tcg_cpu_exec(CPUState *cpu)
     /* create tnt_array here */
     // static char *tnt_array = NULL;
 
-    if(tnt_array == NULL) {
-        get_array_of_tnt_bits();
+    if(cpu->tnt_array == NULL) {
+        get_array_of_tnt_bits(cpu);
     }
 
-    if(!tnt_array) {
-      printf("get_array_of_tnt_bits returns NULL\n");
+    if(!cpu->tnt_array) {
+      printf("get_array_of_tnt_bits returns NULL, for CPU index: %d\n",
+		      cpu->cpu_index);
     }
 
     assert(tcg_enabled());
