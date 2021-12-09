@@ -1557,6 +1557,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     if (!intel_pt_state.intel_pt_file) {
         intel_pt_state.intel_pt_file = gzopen(filename, "r");
     }
+    intel_pt_state.tnt_index_limit = 0;
 
     int count = 0;
 
@@ -1706,6 +1707,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
             }
         }
     }
+    intel_pt_state.tnt_index_limit = count;
     intel_pt_state.number_of_lines_consumed += curr_lines_read;
     printf("Number of lines consumed: %llu\n", intel_pt_state.number_of_lines_consumed);
 
