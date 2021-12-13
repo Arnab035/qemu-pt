@@ -1949,7 +1949,7 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
                     cpu_exec_step_atomic(cpu);
                     qemu_mutex_lock_iothread();
                     break;
-                } else if (r == EXCP_INTERRUPT) {
+                } else if (arnab_replay_mode == REPLAY_MODE_PLAY && r == EXCP_INTERRUPT) {
                     continue;
                 }
             } else if (cpu->stop) {
