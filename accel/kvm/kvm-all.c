@@ -2157,7 +2157,7 @@ static void kvm_handle_rdtsc(CPUState *cs)
             eax = (uint32_t)env->regs[R_EAX];
             edx = (uint32_t)env->regs[R_EDX];
             tsc_clock = (uint64_t) edx << 32 | eax;
-            arnab_replay_put_qword((int64_t)tsc_clock, "host-clock");
+            arnab_replay_put_qword((int64_t)tsc_clock, "host-clock", cs->cpu_index);
         }
     }
 }

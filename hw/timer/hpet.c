@@ -481,12 +481,13 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             return 0;
         case HPET_COUNTER:
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-                cur_tick = (uint64_t)arnab_replay_get_qword("clock");
+                cur_tick = (uint64_t)arnab_replay_get_qword("clock", -1);
+                /*
                 if (!is_rx_queue_empty) {
                     // flush network rx queue every clock read
                     // provided the rx queue is not empty
                     arnab_replay_net_flush_rx_queue();
-                }
+                }*/
                 return cur_tick;
             }
             if (hpet_enabled(s)) {
@@ -497,7 +498,7 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    arnab_replay_put_qword((int64_t)cur_tick, "clock");
+                    arnab_replay_put_qword((int64_t)cur_tick, "clock", -1);
                 }
             }
             return cur_tick;

@@ -189,6 +189,8 @@ void helper_invlpg(CPUX86State *env, target_ulong addr)
 void helper_rdtsc(CPUX86State *env)
 {
     uint64_t val;
+    X86CPU *cpu = env_archcpu(env);
+    CPUState *cs = CPU(cpu);
 
     if ((env->cr[4] & CR4_TSD_MASK) && ((env->hflags & HF_CPL_MASK) != 0)) {
         raise_exception_ra(env, EXCP0D_GPF, GETPC());
@@ -196,7 +198,12 @@ void helper_rdtsc(CPUX86State *env)
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
 
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        val = (uint64_t)arnab_replay_get_qword("host-clock");
+        if (cs->cpu_index == 0) {
+            val = (uint64_t)arnab_replay_get_qword("host-clock", 0);
+        }
+        else if (cs->cpu_index == 1) {
+            val = (uint64_t)arnab_replay_get_qword("host-clock", 1);
+        }
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
     }

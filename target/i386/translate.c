@@ -4644,6 +4644,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
                 return s->pc;
             }
+	    printf("intno: %d\n", intno);
             index_array += 2;
             index_tip_address++;
             index_fup_address++;
@@ -4678,27 +4679,27 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 size_t len;
                 size_t in_len;
                 while (!stopped_execution_of_tb_chain) {
-                    index = arnab_replay_get_qword("disk");
+                    index = arnab_replay_get_qword("disk", -1);
                     if (index == EVENT_BLK_INTERRUPT) {
                         break;
                     }
                     VirtQueueElement *vqe;
                     vqe = g_malloc(sizeof(VirtQueueElement));
                     vqe->index = index;
-                    vqe->len = arnab_replay_get_qword("disk");
-                    vqe->ndescs = arnab_replay_get_qword("disk");
-                    vqe->out_num = arnab_replay_get_qword("disk");
-                    vqe->in_num = arnab_replay_get_qword("disk");
-                    in_len = arnab_replay_get_qword("disk");
+                    vqe->len = arnab_replay_get_qword("disk", -1);
+                    vqe->ndescs = arnab_replay_get_qword("disk", -1);
+                    vqe->out_num = arnab_replay_get_qword("disk", -1);
+                    vqe->in_num = arnab_replay_get_qword("disk", -1);
+                    in_len = arnab_replay_get_qword("disk", -1);
                     vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
                     vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
                     vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
                     vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
                     /* this is a 'read to the guest memory' operation */
                     for (i = 0; i < vqe->in_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
 			uint8_t *data;
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 1, 
                                             MEMTXATTRS_UNSPECIFIED);
@@ -4711,9 +4712,9 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     }
                     /* this is a 'write to the guest memory' operation */
                     for (i = 0; i < vqe->out_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
 			uint8_t *data;
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 0,
                                             MEMTXATTRS_UNSPECIFIED);

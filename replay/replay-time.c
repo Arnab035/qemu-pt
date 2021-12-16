@@ -10,7 +10,6 @@
  */
 
 #include "qemu/osdep.h"
-#include "index_array_header.h"
 #include "sysemu/replay.h"
 #include "replay-internal.h"
 #include "qemu/error-report.h"
@@ -18,20 +17,17 @@
 int64_t replay_save_clock(ReplayClockKind kind, int64_t clock,
                           int64_t raw_icount)
 {
-    /*
-    if (replay_file) {
-        //g_assert(replay_mutex_locked());
+    g_assert(replay_file);
+    g_assert(replay_mutex_locked());
 
-        replay_save_instructions();
-        replay_put_event(EVENT_CLOCK + kind);
-        replay_put_qword(clock);
-    }*/
-    if (arnab_host_clock_replay_file) {
-        if (start_recording) {
-            arnab_replay_put_event(EVENT_CLOCK + kind, "host-clock");
-            arnab_replay_put_qword(clock, "host-clock");
-        }
-    }
+    /*
+     * Due to the caller's locking requirements we get the icount from it
+     * instead of using replay_save_instructions().
+     */
+    replay_advance_current_icount(raw_icount);
+    replay_put_event(EVENT_CLOCK + kind);
+    replay_put_qword(clock);
+
     return clock;
 }
 
@@ -50,29 +46,17 @@ void replay_read_next_clock(ReplayClockKind kind)
 }
 
 /*! Reads next clock event from the input. */
-int64_t replay_read_clock(ReplayClockKind kind, int64_t clock)
+int64_t replay_read_clock(ReplayClockKind kind)
 {
-    //g_assert(replay_file && replay_mutex_locked());
+    int64_t ret;
+    g_assert(replay_file && replay_mutex_locked());
 
-    //replay_account_executed_instructions();
-    if (arnab_host_clock_replay_file) 
-    {
-        int64_t ret;
-        uint8_t event;
-        event = arnab_replay_get_byte("host-clock");
-        if (event == EVENT_CLOCK + kind) {
-            ret = arnab_replay_get_qword("host-clock");
-            printf("Reading clock of type %d. Value: %ld\n", event, ret);
-            return ret;
-        }
-        else {
-            printf("Incorrect clock event read. The incorrect clock type is %d\n", event);
-        }
+    replay_account_executed_instructions();
+
+    if (replay_next_event_is(EVENT_CLOCK + kind)) {
+        replay_read_next_clock(kind);
     }
-    else {
-        error_report("REPLAY INTERNAL ERROR %d", __LINE__);
-        exit(1);
-    }
-    return clock;
+    ret = replay_state.cached_clock[kind];
+
+    return ret;
 }
-

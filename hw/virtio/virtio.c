@@ -2548,7 +2548,7 @@ void virtio_notify_irqfd(VirtIODevice *vdev, VirtQueue *vq)
     if (arnab_replay_mode == REPLAY_MODE_RECORD) {
         if (start_recording) {
             if (strcmp(vdev->name, "virtio-blk") == 0) {
-                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk");
+                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk", -1);
             }
         }
     }
@@ -2595,13 +2595,13 @@ void virtio_notify(VirtIODevice *vdev, VirtQueue *vq, const char *event_type)
         if (start_recording) {
             // only record interrupts for network IO rx
             if (strcmp(event_type, "net_rx_queue") == 0) {
-                arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network");
+                arnab_replay_put_event(EVENT_NET_RX_INTERRUPT, "network", -1);
             } else if (strcmp(event_type, "net_tx_queue") == 0) {
-                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
+                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network", -1);
             } else if (strcmp(event_type, "net_ctrl_queue") == 0) {
-                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network");
+                arnab_replay_put_event(EVENT_NET_TX_INTERRUPT, "network", -1);
             } else if (strcmp(event_type, "blk_queue") == 0) {
-                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk");
+                arnab_replay_put_qword(EVENT_BLK_INTERRUPT, "disk", -1);
             }
         }
     }
