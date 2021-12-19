@@ -38,7 +38,6 @@ extern unsigned long long prev_index_array;
 extern int stopped_execution_of_tb_chain;
 extern int index_tip_address;
 extern int index_fup_address;
-extern int index_cr3_value;
 
 extern int prev_index_tip_address;
 extern int prev_index_fup_address;
