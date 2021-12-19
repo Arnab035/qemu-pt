@@ -383,9 +383,16 @@ struct CPUState {
     AddressSpace *as;
     MemoryRegion *memory;
 
+    /* intel pt specific data */
     char *tnt_array;
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
+    int index_tip_address;
+    int index_fup_address;
+    int index_array;
+    int prev_index_tip_address;
+    int prev_index_fup_address;
+    int prev_index_array;
     bool is_core_simulation_finished;
 
     void *env_ptr; /* CPUArchState */

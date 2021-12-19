@@ -901,31 +901,31 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     uint64_t last_pc_of_tb = first_pc_of_tb + size_of_tb;
     target_ulong old_eip, esp, offset;
     int number_of_fups = 0;
+    CPUState *cpu = env_cpu(env);
     if (intno == 81 || intno == 113 || intno == 239) {
-        if (index_array_incremented) index_array--;
+        if (index_array_incremented) cpu->index_array--;
     }
-    CPUState *cs = env_cpu(env);
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
         if (index_array_incremented) {
             if (env->eip >= first_pc_of_tb && env->eip <= last_pc_of_tb) // only if interrupt happens 'before' an instruction that falls within a TB.
-                index_array--;
+                cpu->index_array--;
         }
         if (index_tip_address_incremented && error_code == 0) {
-            index_tip_address--;
+            cpu->index_tip_address--;
         }
         if (!is_upcoming_page_fault) {
-            index_tip_address++;
-            index_fup_address++;
+            cpu->index_tip_address++;
+            cpu->index_fup_address++;
             /* ugly hack */
-            while(cs->tnt_array[index_array] != 'T' && cs->tnt_array[index_array] != 'N') {
-                if (cs->tnt_array[index_array] == 'F') {
+            while(cpu->tnt_array[cpu->index_array] != 'T' && cpu->tnt_array[cpu->index_array] != 'N') {
+                if (cpu->tnt_array[cpu->index_array] == 'F') {
                     number_of_fups++;
                 }
-                index_array++;
+                cpu->index_array++;
             }
-            index_tip_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
-            index_fup_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
+            cpu->index_tip_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
+            cpu->index_fup_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
         }
         is_upcoming_page_fault = 0;
     }

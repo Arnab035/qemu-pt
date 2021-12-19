@@ -84,8 +84,6 @@
 #endif
 */
 
-/* definition of tb_insn_array */
-
 int stopped_execution_of_tb_chain = 0;
 
 struct hash_buckets *interrupt_hash_table = NULL;
@@ -252,9 +250,9 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 	 */
 	stopped_execution_of_tb_chain = 1;
 
-	index_array = prev_index_array;
-	index_tip_address = prev_index_tip_address;
-	index_fup_address = prev_index_fup_address;
+	cpu->index_array = cpu->prev_index_array;
+	cpu->index_tip_address = cpu->prev_index_tip_address;
+	cpu->index_fup_address = cpu->prev_index_fup_address;
 
         CPUClass *cc = CPU_GET_CLASS(cpu);
         qemu_log_mask_and_addr(CPU_LOG_EXEC, last_tb->pc,
@@ -271,7 +269,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         }
     } else {
         if (index_array_incremented && 
-                cpu->tnt_array[index_array-1] == 'T' &&
+                cpu->tnt_array[cpu->index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
@@ -280,7 +278,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
             env->eip = itb->jmp_target1;
         }
         if (index_array_incremented &&
-                cpu->tnt_array[index_array-1] == 'N' &&
+                cpu->tnt_array[cpu->index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
@@ -824,7 +822,6 @@ int cpu_exec(CPUState *cpu)
             } else {
                 cpu->cflags_next_tb = -1;
             }
-
             tb = tb_find(cpu, last_tb, tb_exit, cflags);
             cpu_loop_exec_tb(cpu, tb, &last_tb, &tb_exit);
             /* Try to align the host and virtual clocks

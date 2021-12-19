@@ -1755,9 +1755,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
              * flush the TBs, allocate a new TB, re-initialize it per
              * above, and re-do the actual code generation.
              */
-            index_array = prev_index_array;
-            index_tip_address = prev_index_tip_address;
-            index_fup_address = prev_index_fup_address;
+            cpu->index_array = cpu->prev_index_array;
+            cpu->index_tip_address = cpu->prev_index_tip_address;
+            cpu->index_fup_address = cpu->prev_index_fup_address;
 
             goto buffer_overflow;
 
@@ -1782,9 +1782,9 @@ TranslationBlock *tb_gen_code(CPUState *cpu,
     }
     search_size = encode_search(tb, (void *)gen_code_buf + gen_code_size);
     if (unlikely(search_size < 0)) {
-        index_array = prev_index_array;
-        index_tip_address = prev_index_tip_address;
-        index_fup_address = prev_index_fup_address;
+        cpu->index_array = cpu->prev_index_array;
+        cpu->index_tip_address = cpu->prev_index_tip_address;
+        cpu->index_fup_address = cpu->prev_index_fup_address;
         goto buffer_overflow;
     }
     tb->tc.size = gen_code_size;

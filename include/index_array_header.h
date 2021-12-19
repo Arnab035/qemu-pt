@@ -25,22 +25,13 @@ struct intel_pt_execution_state {
   unsigned long long number_of_lines_consumed;
 };
 
-extern unsigned long *tb_insn_array;
-
 extern int is_within_block;
 
 extern bool start_recording;
 
-extern unsigned long long index_array;
-extern unsigned long long prev_index_array;
 //extern char **pip_cr3_values;
 
 extern int stopped_execution_of_tb_chain;
-extern int index_tip_address;
-extern int index_fup_address;
-
-extern int prev_index_tip_address;
-extern int prev_index_fup_address;
 extern int is_upcoming_page_fault;
 
 extern int index_array_incremented;
