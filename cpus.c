@@ -1543,7 +1543,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 500000, curr_lines_read = 0;
+    int max_lines_read = 300000000, curr_lines_read = 0;
     int cpu_index = cpu->cpu_index;
 
     char filename[100] = {'\0'};
@@ -1563,9 +1563,11 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 
     int count_tip = 0;
     int count_fup = 0;
+    int count_tsc = 0;
 
     cpu->tip_addresses = malloc(1 * sizeof(struct tip_address_info));
     cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
+    cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
 
     if(!intel_pt_state.intel_pt_file) {
         fprintf(stderr, "gzopen of %s failed.\n", filename);
@@ -1699,7 +1701,16 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                     count_fup++;
                 }
             }
-	}
+	} else {
+            /* TSC packets are present between a PSB and PSBEND */
+            if (strncmp(copy, "TSC", 3) == 0) {
+                cpu->tsc_values = realloc(cpu->tsc_values, (count_tsc+1) * sizeof(struct tsc_counter_info));
+                cpu->tsc_values[count_tsc].tsc_values = malloc(strlen(copy+6) * sizeof(char));
+                memcpy(cpu->tsc_values[count_tsc].tsc_values, copy+6, strlen(copy+6));
+                cpu->tsc_values[count_tsc].tsc_values[strlen(copy+6)] = '\0';
+                count_tsc++;
+            }
+        }
         //start += pos+1;
         if (curr_lines_read >= max_lines_read) {
             if (strncmp(copy, "TNT", 3) == 0) {
@@ -1949,7 +1960,8 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
                     cpu_exec_step_atomic(cpu);
                     qemu_mutex_lock_iothread();
                     break;
-                } else if (arnab_replay_mode == REPLAY_MODE_PLAY && r == EXCP_INTERRUPT) {
+                } else if (arnab_replay_mode == REPLAY_MODE_PLAY &&
+                            (r == EXCP_HALTED || r == EXCP_INTERRUPT)) {
                     continue;
                 }
             } else if (cpu->stop) {

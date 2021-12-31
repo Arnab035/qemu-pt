@@ -387,6 +387,8 @@ struct CPUState {
     char *tnt_array;
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
+    struct tsc_counter_info *tsc_values;
+
     int index_tip_address;
     int index_fup_address;
     int index_array;
@@ -394,6 +396,7 @@ struct CPUState {
     int prev_index_fup_address;
     int prev_index_array;
     bool is_core_simulation_finished;
+    /* end of intel pt specific data */
 
     void *env_ptr; /* CPUArchState */
     IcountDecr *icount_decr_ptr;

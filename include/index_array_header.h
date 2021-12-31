@@ -25,6 +25,10 @@ struct intel_pt_execution_state {
   unsigned long long number_of_lines_consumed;
 };
 
+struct tsc_counter_info {
+  char *tsc_values;
+};
+
 extern int is_within_block;
 
 extern bool start_recording;
