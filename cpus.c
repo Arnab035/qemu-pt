@@ -1495,8 +1495,8 @@ static void construct_fully_qualified_address(CPUState *cpu, int i, char *refere
 
 static void preprocess_tip_array(CPUState *cpu, int size) {
 
-    if (intel_pt_state.last_tip_address) {
-        construct_fully_qualified_address(cpu, 0, intel_pt_state.last_tip_address);
+    if (cpu->last_tip_address) {
+        construct_fully_qualified_address(cpu, 0, cpu->last_tip_address);
     }
     int i;
     for(i=1;i<=size;i++) {
@@ -1529,8 +1529,6 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
  *  use the gzlib standard library
  */
 
-struct intel_pt_execution_state intel_pt_state = {};
-
 void get_array_of_tnt_bits(CPUState *cpu) {
     char *pch;
     char *pch_pip;
@@ -1554,10 +1552,10 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     }
 
     //tnt_array[0] = 'P';
-    if (!intel_pt_state.intel_pt_file) {
-        intel_pt_state.intel_pt_file = gzopen(filename, "r");
+    if (!cpu->intel_pt_file) {
+        cpu->intel_pt_file = gzopen(filename, "r");
     }
-    intel_pt_state.tnt_index_limit = 0;
+    cpu->tnt_index_limit = 0;
 
     int count = 0;
 
@@ -1569,14 +1567,14 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
     cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
 
-    if(!intel_pt_state.intel_pt_file) {
+    if(!cpu->intel_pt_file) {
         fprintf(stderr, "gzopen of %s failed.\n", filename);
         exit(EXIT_FAILURE);
     }
 
     char copy[50];
     while(1) {
-        if(gzgets(intel_pt_state.intel_pt_file, copy, 50) != 0) {
+        if(gzgets(cpu->intel_pt_file, copy, 50) != 0) {
             copy[strcspn(copy, "\n")] = 0;
             curr_lines_read += 1;
         } else {
@@ -1708,6 +1706,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 cpu->tsc_values[count_tsc].tsc_values = malloc(strlen(copy+6) * sizeof(char));
                 memcpy(cpu->tsc_values[count_tsc].tsc_values, copy+6, strlen(copy+6));
                 cpu->tsc_values[count_tsc].tsc_values[strlen(copy+6)] = '\0';
+                printf("TSC value: %s\n", cpu->tsc_values[count_tsc].tsc_values);
                 count_tsc++;
             }
         }
@@ -1718,9 +1717,9 @@ void get_array_of_tnt_bits(CPUState *cpu) {
             }
         }
     }
-    intel_pt_state.tnt_index_limit = count;
-    intel_pt_state.number_of_lines_consumed += curr_lines_read;
-    printf("Number of lines consumed: %llu\n", intel_pt_state.number_of_lines_consumed);
+    cpu->tnt_index_limit = count;
+    cpu->number_of_lines_consumed += curr_lines_read;
+    printf("Number of lines consumed: %llu\n for cpu %d\n", cpu->number_of_lines_consumed, cpu->cpu_index);
 
 #if 0
     printf("TNT array: %d\n", count);
@@ -1730,8 +1729,8 @@ void get_array_of_tnt_bits(CPUState *cpu) {
    // preprocess the tip addresses //
     preprocess_tip_array(cpu, count_tip);
 
-    intel_pt_state.last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
-    strcpy(intel_pt_state.last_tip_address, cpu->tip_addresses[count_tip-1].address);
+    cpu->last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
+    strcpy(cpu->last_tip_address, cpu->tip_addresses[count_tip-1].address);
 
 #if 0
     printf("final count : %d\n", count);
@@ -1745,7 +1744,6 @@ static int tcg_cpu_exec(CPUState *cpu)
 #ifdef CONFIG_PROFILER
     int64_t ti;
 #endif
-
     /* create tnt_array here */
     // static char *tnt_array = NULL;
 

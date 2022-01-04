@@ -222,7 +222,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
         qemu_log_unlock(logfile);
     }
 #endif /* DEBUG_DISAS */
-    /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called. 
+    /* hack: we do a replay of transmitted network packets right before virtqueue_kick is called.
      * This is very opportunistic in the sense we try to flush a queue even if there is no tx packet */
     const char *virtqueue_get_buf_trap = "ffff814e9fe0";
     if (env->eip == do_strtoul((char *)virtqueue_get_buf_trap)) {
@@ -244,9 +244,9 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
          * counter hit zero); we must restore the guest PC to the address
          * of the start of the TB.
          */
-	/* Change by Arnab : stopped execution of tb chain is a global 
-	 * variable - this indicates if the exception that occurs later           
-	 * occurred as a result of cpu->exit_request becoming 1  
+	/* Change by Arnab : stopped execution of tb chain is a global
+	 * variable - this indicates if the exception that occurs later
+	 * occurred as a result of cpu->exit_request becoming 1
 	 */
 	stopped_execution_of_tb_chain = 1;
 
@@ -260,7 +260,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
                                TARGET_FMT_lx "] %s\n",
                                last_tb->tc.ptr, last_tb->pc,
                                lookup_symbol(last_tb->pc));
-        
+
         if (cc->synchronize_from_tb) {
             cc->synchronize_from_tb(cpu, last_tb);
         } else {
@@ -268,13 +268,13 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
             cc->set_pc(cpu, last_tb->pc);
         }
     } else {
-        if (index_array_incremented && 
+        if (index_array_incremented &&
                 cpu->tnt_array[cpu->index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
 #endif
-            intel_pt_state.divergence_count += 1;
+            cpu->divergence_count += 1;
             env->eip = itb->jmp_target1;
         }
         if (index_array_incremented &&
@@ -283,7 +283,7 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
 #if 0
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
 #endif
-            intel_pt_state.divergence_count += 1;
+            cpu->divergence_count += 1;
             env->eip = itb->jmp_target2;
         }
     }
@@ -560,6 +560,11 @@ static inline void cpu_handle_debug_exception(CPUState *cpu)
 
 static inline bool cpu_handle_exception(CPUState *cpu, int *ret)
 {
+    if (cpu->exception_index == EXCP_TB_END) {
+        *ret = cpu->exception_index;
+        cpu->exception_index = -1;
+        return true;
+    }
     if (cpu->exception_index < 0) {
 #ifndef CONFIG_USER_ONLY
         if (replay_has_exception()
@@ -714,6 +719,9 @@ static inline void cpu_loop_exec_tb(CPUState *cpu, TranslationBlock *tb,
     *tb_exit = ret & TB_EXIT_MASK;
     if (*tb_exit != TB_EXIT_REQUESTED) {
         *last_tb = tb;
+        /* the TB isn't forced to EXIT */
+        cpu->exception_index = EXCP_TB_END;
+        cpu->exit_request = 1;
         return;
     }
 
@@ -800,7 +808,7 @@ int cpu_exec(CPUState *cpu)
 
         assert_no_pages_locked();
     }
-    if(cpu->tnt_array == NULL) {
+    if (cpu->tnt_array == NULL) {
         printf("tnt_array is empty\n");
         exit(1);
     }
@@ -812,11 +820,13 @@ int cpu_exec(CPUState *cpu)
             uint32_t cflags = cpu->cflags_next_tb;
             TranslationBlock *tb;
 
-            /* When requested, use an exact setting for cflags for the next
+            /*
+               When requested, use an exact setting for cflags for the next
                execution.  This is used for icount, precise smc, and stop-
                after-access watchpoints.  Since this request should never
                have CF_INVALID set, -1 is a convenient invalid value that
-               does not require tcg headers for cpu_common_reset.  */
+               does not require tcg headers for cpu_common_reset.
+            */
             if (cflags == -1) {
                 cflags = curr_cflags();
             } else {

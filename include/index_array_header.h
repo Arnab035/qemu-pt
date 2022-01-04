@@ -16,15 +16,6 @@ struct fup_address_info {
   char type;  // a single byte to indicate whether this is a FUP associated interrupt or VMEXIT
 };
 
-struct intel_pt_execution_state {
-  gzFile intel_pt_file;
-  int divergence_count;
-  char *last_tip_address;
-  int tnt_index_limit;
-  unsigned long long total_packets_consumed;
-  unsigned long long number_of_lines_consumed;
-};
-
 struct tsc_counter_info {
   char *tsc_values;
 };
@@ -40,8 +31,6 @@ extern int is_upcoming_page_fault;
 
 extern int index_array_incremented;
 extern int index_tip_address_incremented;
-
-extern struct intel_pt_execution_state intel_pt_state;
 
 /* I/O replay structures */
 extern void *replay_tx_bh;

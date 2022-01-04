@@ -2241,7 +2241,6 @@ static inline bool use_goto_tb(DisasContext *s, target_ulong pc)
 static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 {
     target_ulong pc = s->cs_base + eip;
-
     if (use_goto_tb(s, pc))  {
         /* jump to same page: we can use a direct jump */
         tcg_gen_goto_tb(tb_num);
@@ -4544,11 +4543,11 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int rex_w, rex_r;
     target_ulong pc_start = s->base.pc_next;
 
-    if (cpu->index_array >= intel_pt_state.tnt_index_limit) {
+    if (cpu->index_array >= cpu->tnt_index_limit) {
         if (cpu->tnt_array) {
             free(cpu->tnt_array);
             cpu->tnt_array = NULL;
-            intel_pt_state.total_packets_consumed += cpu->index_array;
+            cpu->total_packets_consumed += cpu->index_array;
             cpu->index_array = 0;
         }
         if (cpu->tip_addresses) {
@@ -4573,7 +4572,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	else {
             printf("Simulation Finished for CPU core %d\n", cpu->cpu_index);
 	    printf("Now simulating next core...");
-            printf("Divergence count: %d\n", intel_pt_state.divergence_count);
+            printf("Divergence count: %d\n", cpu->divergence_count);
             /* To go to the next core, we simulate the pause instruction */
             cpu->exception_index = EXCP_INTERRUPT;
             cpu_loop_exit(cpu);

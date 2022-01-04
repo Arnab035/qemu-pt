@@ -20,6 +20,7 @@
 #ifndef QEMU_CPU_H
 #define QEMU_CPU_H
 
+#include <zlib.h>
 #include "hw/qdev-core.h"
 #include "disas/dis-asm.h"
 #include "exec/hwaddr.h"
@@ -383,12 +384,16 @@ struct CPUState {
     AddressSpace *as;
     MemoryRegion *memory;
 
-    /* intel pt specific data */
+    /* start of intel pt specific data */
     char *tnt_array;
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
     struct tsc_counter_info *tsc_values;
+    gzFile intel_pt_file;
 
+    int divergence_count;
+    char *last_tip_address;
+    int tnt_index_limit;
     int index_tip_address;
     int index_fup_address;
     int index_array;
@@ -396,6 +401,8 @@ struct CPUState {
     int prev_index_fup_address;
     int prev_index_array;
     bool is_core_simulation_finished;
+    unsigned long long total_packets_consumed;
+    unsigned long long number_of_lines_consumed;
     /* end of intel pt specific data */
 
     void *env_ptr; /* CPUArchState */
