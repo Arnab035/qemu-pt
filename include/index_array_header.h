@@ -3,8 +3,6 @@
 #ifndef INDEX_ARRAY_H
 #define INDEX_ARRAY_H
 
-#include <zlib.h>
-
 struct tip_address_info {
   char *address;
   int  is_useful;
