@@ -4569,14 +4569,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         if (!cpu->is_core_simulation_finished) {
             get_array_of_tnt_bits(cpu);
         }
-	else {
-            printf("Simulation Finished for CPU core %d\n", cpu->cpu_index);
-	    printf("Now simulating next core...");
-            printf("Divergence count: %d\n", cpu->divergence_count);
-            /* To go to the next core, we simulate the pause instruction */
-            cpu->exception_index = EXCP_INTERRUPT;
-            cpu_loop_exit(cpu);
-	}
     }
 
     if(index_array_incremented) {
@@ -4630,7 +4622,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->index_array += 2;
             cpu->index_tip_address++;
             cpu->index_fup_address++;
-            if (intno == 113) {
+            if (intno == 177) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
                     ReplayIOEvent *event;

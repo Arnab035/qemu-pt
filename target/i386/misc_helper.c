@@ -186,6 +186,15 @@ void helper_invlpg(CPUX86State *env, target_ulong addr)
     tlb_flush_page(CPU(cpu), addr);
 }
 
+uint64_t last_tsc_value_before_cpu0_stalled = 0;
+uint64_t last_tsc_value_before_cpu1_stalled = 0;
+
+bool is_cpu0_stalled = false;
+bool is_cpu1_stalled = false;
+
+uint64_t readahead_tsc_cpu0 = 0;
+uint64_t readahead_tsc_cpu1 = 0;
+
 void helper_rdtsc(CPUX86State *env)
 {
     uint64_t val;
@@ -197,12 +206,56 @@ void helper_rdtsc(CPUX86State *env)
     }
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
 
+    /* the scheduling state machine */
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
         if (cs->cpu_index == 0) {
-            val = (uint64_t)arnab_replay_get_qword("host-clock", 0);
+            if (!is_cpu0_stalled) {
+                if (!readahead_tsc_cpu0) {
+                    val = (uint64_t)arnab_replay_get_qword("host-clock", 0);
+                } else {
+                    val = readahead_tsc_cpu0;
+                    readahead_tsc_cpu0 = 0;
+                }
+            }
+            if (!is_cpu1_stalled) {
+                /* cpu 1 is not stalled */
+                readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);
+                if (val > readahead_tsc_cpu1) {
+                    is_cpu0_stalled = true;
+                    last_tsc_value_before_cpu0_stalled = val;
+                }
+            } else {
+                /* cpu 1 is stalled */
+                if (val > last_tsc_value_before_cpu1_stalled) {
+                    is_cpu1_stalled = false;
+                    is_cpu0_stalled = true;
+                    last_tsc_value_before_cpu0_stalled = val;
+                }
+	    }
         }
         else if (cs->cpu_index == 1) {
-            val = (uint64_t)arnab_replay_get_qword("host-clock", 1);
+            if (!is_cpu1_stalled) {
+                if (!readahead_tsc_cpu1) {
+                    val = (uint64_t)arnab_replay_get_qword("host-clock", 1);
+                } else {
+                    val = readahead_tsc_cpu1;
+                    readahead_tsc_cpu1 = 0;
+                }
+            }
+            if (!is_cpu0_stalled) {
+                /* cpu 0 is not stalled */
+                readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
+                if (val > readahead_tsc_cpu0) {
+                    is_cpu1_stalled = true;
+                    last_tsc_value_before_cpu1_stalled = val;
+                }
+            } else {
+                if (val > last_tsc_value_before_cpu0_stalled) {
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+                    last_tsc_value_before_cpu1_stalled = val;
+                }
+            }
         }
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
