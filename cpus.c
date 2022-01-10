@@ -1968,7 +1968,11 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
                 }
                 break;
             }
-
+            if ((cpu->cpu_index == 0 && is_cpu0_stalled) ||
+                    (cpu->cpu_index == 1 && is_cpu1_stalled)) {
+                continue;
+                /* do not swap CPUs if one of them is stalled */
+            }
             cpu = CPU_NEXT(cpu);
         } /* while (cpu && !cpu->exit_request).. */
 

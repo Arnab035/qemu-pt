@@ -486,6 +486,9 @@ static inline void cpu_tb_jmp_cache_clear(CPUState *cpu)
     }
 }
 
+extern bool is_cpu0_stalled;
+extern bool is_cpu1_stalled;
+
 /**
  * qemu_tcg_mttcg_enabled:
  * Check whether we are running MultiThread TCG or not.
