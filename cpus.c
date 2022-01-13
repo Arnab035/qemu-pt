@@ -1816,6 +1816,17 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
+    readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
+    readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);
+
+    if (readahead_tsc_cpu0 < readahead_tsc_cpu1) {
+        is_cpu1_stalled = true;
+        is_cpu0_stalled = false;
+    } else {
+        is_cpu1_stalled = false;
+        is_cpu0_stalled = true;
+    }
+
     /* wait for initial kick-off after machine start */
     while (first_cpu->stopped) {
         qemu_cond_wait(first_cpu->halt_cond, &qemu_global_mutex);
