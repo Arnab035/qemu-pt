@@ -28,9 +28,12 @@ static bool write_error;
 FILE *replay_file;
 
 /* Files for writing/replaying individual I/O events */
-FILE *arnab_clock_replay_file; 
+FILE *arnab_clock_replay_file_cpu0;
+FILE *arnab_clock_replay_file_cpu1;
+
 FILE *arnab_network_replay_file;
 FILE *arnab_disk_replay_file;
+
 FILE *arnab_host_clock_replay_file_cpu0;
 FILE *arnab_host_clock_replay_file_cpu1;
 
@@ -71,12 +74,21 @@ void replay_put_byte(uint8_t byte)
 
 void arnab_replay_put_byte(uint8_t byte, const char *event_type, int cpu)
 {
-    if (strcmp(event_type, "clock") == 0) {	
-        if (arnab_clock_replay_file) {
-            if (putc(byte, arnab_clock_replay_file) == EOF) {
-	        replay_write_error();
+    if (strcmp(event_type, "clock") == 0) {
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                if (putc(byte, arnab_clock_replay_file_cpu0) == EOF) {
+	            replay_write_error();
+	        }
 	    }
-	}
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                if (putc(byte, arnab_clock_replay_file_cpu1) == EOF) {
+                    replay_write_error();
+                }
+            }
+        }
     }
     else if (strcmp(event_type, "network") == 0) {
         if (arnab_network_replay_file) {
@@ -177,11 +189,21 @@ void replay_put_array(const uint8_t *buf, size_t size)
 void arnab_replay_put_array(const uint8_t *buf, size_t size, const char *event_type, int cpu)
 {
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            arnab_replay_put_dword(size, event_type, cpu);
-            if (fwrite(buf, 1, size, arnab_clock_replay_file) != size) {
-                replay_write_error();
-	    }
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                arnab_replay_put_dword(size, event_type, cpu);
+                if (fwrite(buf, 1, size, arnab_clock_replay_file_cpu0) != size) {
+                    replay_write_error();
+                }
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                arnab_replay_put_dword(size, event_type, cpu);
+                if (fwrite(buf, 1, size, arnab_clock_replay_file_cpu1) != size) {
+                    replay_write_error();
+                }
+            }
         }
     }
     else if (strcmp(event_type, "network") == 0) {
@@ -240,8 +262,15 @@ uint8_t arnab_replay_get_byte(const char *event_type, int cpu)
 {
     uint8_t byte = 0;
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            byte = getc(arnab_clock_replay_file);
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                byte = getc(arnab_clock_replay_file_cpu0);
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                byte = getc(arnab_clock_replay_file_cpu1);
+            }
         }
     }
     else if (strcmp(event_type, "network") == 0) {
@@ -292,9 +321,17 @@ uint16_t arnab_replay_get_word(const char *event_type, int cpu)
 {
     uint16_t word = 0;
     if (strcmp(event_type, "clock") == 0) {
-        if(arnab_clock_replay_file) {
-            word = arnab_replay_get_byte(event_type, cpu);
-	    word = (word << 8) + arnab_replay_get_byte(event_type, cpu);
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                word = arnab_replay_get_byte(event_type, cpu);
+                word = (word << 8) + arnab_replay_get_byte(event_type, cpu);
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                word = arnab_replay_get_byte(event_type, cpu);
+                word = (word << 8) + arnab_replay_get_byte(event_type, cpu);
+            }
         }
     } 
     else if (strcmp(event_type, "network") == 0) {
@@ -344,10 +381,18 @@ uint32_t arnab_replay_get_dword(const char *event_type, int cpu)
 {
     uint32_t dword = 0;
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            dword = arnab_replay_get_word(event_type, cpu);
-            dword = (dword << 16) + arnab_replay_get_word(event_type, cpu);
-	}
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                dword = arnab_replay_get_word(event_type, cpu);
+                dword = (dword << 16) + arnab_replay_get_word(event_type, cpu);
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                dword = arnab_replay_get_word(event_type, cpu);
+                dword = (dword << 16) + arnab_replay_get_word(event_type, cpu);
+            }
+        }
     }
     else if (strcmp(event_type, "network") == 0) {
         if (arnab_network_replay_file) {
@@ -396,10 +441,18 @@ int64_t arnab_replay_get_qword(const char *event_type, int cpu)
 {
     int64_t qword = 0;
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            qword = arnab_replay_get_dword(event_type, cpu);
-    	    qword = (qword << 32) + arnab_replay_get_dword(event_type, cpu);
-        }	    
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                qword = arnab_replay_get_dword(event_type, cpu);
+                qword = (qword << 32) + arnab_replay_get_dword(event_type, cpu);
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                qword = arnab_replay_get_dword(event_type, cpu);
+                qword = (qword << 32) + arnab_replay_get_dword(event_type, cpu);
+            }
+        }
     }
     else if (strcmp(event_type, "network") == 0) {
         if (arnab_network_replay_file) {
@@ -446,11 +499,21 @@ void replay_get_array(uint8_t *buf, size_t *size)
 void arnab_replay_get_array(uint8_t *buf, size_t *size, const char *event_type, int cpu)
 {
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            *size = arnab_replay_get_dword(event_type, cpu);
-	    if (fread(buf, 1, *size, arnab_clock_replay_file) != *size) {
-	        error_report("replay read error");
-	    }
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                *size = arnab_replay_get_dword(event_type, cpu);
+                if (fread(buf, 1, *size, arnab_clock_replay_file_cpu0) != *size) {
+                    error_report("replay read error");
+                }
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                *size = arnab_replay_get_dword(event_type, cpu);
+                if (fread(buf, 1, *size, arnab_clock_replay_file_cpu1) != *size) {
+                    error_report("replay read error");
+                }
+            }
         }
     }
     else if (strcmp(event_type, "network") == 0) {
@@ -506,12 +569,23 @@ void replay_get_array_alloc(uint8_t **buf, size_t *size)
 void arnab_replay_get_array_alloc(uint8_t **buf, size_t *size, const char *event_type, int cpu)
 {
     if (strcmp(event_type, "clock") == 0) {
-        if (arnab_clock_replay_file) {
-            *size = arnab_replay_get_dword(event_type, cpu);
-	    *buf = g_malloc(*size);
-             if (fread(*buf, 1, *size, arnab_clock_replay_file) != *size) {
-	         error_report("replay read error");
-	     }
+        if (cpu == 0) {
+            if (arnab_clock_replay_file_cpu0) {
+                *size = arnab_replay_get_dword(event_type, cpu);
+                *buf = g_malloc(*size);
+                if (fread(*buf, 1, *size, arnab_clock_replay_file_cpu0) != *size) {
+                    error_report("replay read error");
+                }
+            }
+        }
+        else if (cpu == 1) {
+            if (arnab_clock_replay_file_cpu1) {
+                *size = arnab_replay_get_dword(event_type, cpu);
+                *buf = g_malloc(*size);
+                if (fread(*buf, 1, *size, arnab_clock_replay_file_cpu1) != *size) {
+                    error_report("replay read error");
+                }
+            }
         }
     }
     else if (strcmp(event_type, "network") == 0) {

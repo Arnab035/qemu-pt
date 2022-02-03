@@ -108,10 +108,14 @@ extern ReplayState replay_state;
 /* File for replay writing */
 extern FILE *replay_file;
 
-/* Arnab's files for replay writing */
-extern FILE *arnab_clock_replay_file;
+/* Arnab's files for replay writing
+ * segregate clock values per CPU */
+extern FILE *arnab_clock_replay_file_cpu0;
+extern FILE *arnab_clock_replay_file_cpu1;
+
 extern FILE *arnab_network_replay_file;
 extern FILE *arnab_disk_replay_file;
+
 extern FILE *arnab_host_clock_replay_file_cpu0;
 extern FILE *arnab_host_clock_replay_file_cpu1;
 

@@ -35,9 +35,12 @@ char *replay_snapshot;
 static char *replay_filename;
 
 /* individual files for each I/O event to be replayed */
-static char *arnab_clock_replay_filename;
+static char *arnab_clock_replay_filename_cpu0;
+static char *arnab_clock_replay_filename_cpu1;
+
 static char *arnab_network_replay_filename;
 static char *arnab_disk_replay_filename;
+
 static char *arnab_host_clock_replay_filename_cpu0;
 static char *arnab_host_clock_replay_filename_cpu1;
 
@@ -381,22 +384,44 @@ static void arnab_replay_enable(const char *fname, int mode, const char *event_t
 
     if(strcmp(event_type, "clock") == 0) {
             atexit(arnab_clock_replay_finish);
-            arnab_clock_replay_file = fopen(fname, fmode);
-            if (arnab_clock_replay_file == NULL) {
-                fprintf(stderr, "Replay: open %s: %s\n", fname, strerror(errno));
-                exit(1);
-            }
-            arnab_clock_replay_filename = g_strdup(fname);
-            if (mode == REPLAY_MODE_RECORD) {
-                fseek(arnab_clock_replay_file, HEADER_SIZE, SEEK_SET);
-            } else if (mode == REPLAY_MODE_PLAY) {
-                unsigned int version = arnab_replay_get_dword(event_type, -1);
-                if (version != REPLAY_VERSION) {
-                    fprintf(stderr, "%s Replay: invalid input log file version\n", event_type);
+            char **files;
+            files = str_split((char *)fname, ',');
+            if (files) {
+                arnab_clock_replay_file_cpu0 = fopen(*(files + 0), fmode);
+                if (arnab_clock_replay_file_cpu0 == NULL) {
+                    fprintf(stderr, "Replay: open %s: %s\n", *(files+0), strerror(errno));
                     exit(1);
                 }
-                fseek(arnab_clock_replay_file, HEADER_SIZE, SEEK_SET);
+                arnab_clock_replay_filename_cpu0 = g_strdup(*(files+0));
+                if (mode == REPLAY_MODE_RECORD) {
+                    fseek(arnab_clock_replay_file_cpu0, HEADER_SIZE, SEEK_SET);
+                } else if (mode == REPLAY_MODE_PLAY) {
+                    unsigned int version = arnab_replay_get_dword(event_type, 0);
+                    if (version != REPLAY_VERSION) {
+                        fprintf(stderr, "%s Replay: invalid input log file version\n", event_type);
+                        exit(1);
+                    }
+                    fseek(arnab_clock_replay_file_cpu0, HEADER_SIZE, SEEK_SET);
+                }
+                arnab_clock_replay_file_cpu1 = fopen(*(files + 1), fmode);
+                if (arnab_clock_replay_file_cpu1 == NULL) {
+                    fprintf(stderr, "Replay: open %s: %s\n", *(files+1), strerror(errno));
+                    exit(1);
+                }
+                arnab_clock_replay_filename_cpu1 = g_strdup(*(files+1));
+                if (mode == REPLAY_MODE_RECORD) {
+                    fseek(arnab_clock_replay_file_cpu1, HEADER_SIZE, SEEK_SET);
+                } else if (mode == REPLAY_MODE_PLAY) {
+                    unsigned int version = arnab_replay_get_dword(event_type, 1);
+                    if (version != REPLAY_VERSION) {
+                        fprintf(stderr, "%s Replay: invalid input log file version\n", event_type);
+                        exit(1);
+                    }
+                    fseek(arnab_clock_replay_file_cpu1, HEADER_SIZE, SEEK_SET);
+                }
             }
+            free(*(files+0)); free(*(files+1));
+            free(files);
     }
     else if (strcmp(event_type, "network") == 0) {
             atexit(arnab_network_replay_finish);
@@ -688,20 +713,35 @@ void arnab_clock_replay_finish(void)
     if (arnab_replay_mode == REPLAY_MODE_NONE) {
         return;
     }
-    if (arnab_clock_replay_file) {
+    if (arnab_clock_replay_file_cpu0) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
 				            /* write end event */
-	     arnab_replay_put_event(EVENT_END, "clock", -1);
-	     fseek(arnab_clock_replay_file, 0, SEEK_SET);
-	     arnab_replay_put_dword(REPLAY_VERSION, "clock", -1);
+	     arnab_replay_put_event(EVENT_END, "clock", 0);
+	     fseek(arnab_clock_replay_file_cpu0, 0, SEEK_SET);
+	     arnab_replay_put_dword(REPLAY_VERSION, "clock", 0);
 	}
-        fclose(arnab_clock_replay_file);
-	arnab_clock_replay_file = NULL;
+        fclose(arnab_clock_replay_file_cpu0);
+	arnab_clock_replay_file_cpu0 = NULL;
     }
-    if (arnab_clock_replay_filename) {
-       g_free(arnab_clock_replay_filename);
-       arnab_clock_replay_filename = NULL;
+    if (arnab_clock_replay_filename_cpu0) {
+       g_free(arnab_clock_replay_filename_cpu0);
+       arnab_clock_replay_filename_cpu0 = NULL;
     }
+    if (arnab_clock_replay_file_cpu1) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+                                            /* write end event */
+             arnab_replay_put_event(EVENT_END, "clock", 1);
+             fseek(arnab_clock_replay_file_cpu1, 0, SEEK_SET);
+             arnab_replay_put_dword(REPLAY_VERSION, "clock", 1);
+        }
+        fclose(arnab_clock_replay_file_cpu1);
+        arnab_clock_replay_file_cpu1 = NULL;
+    }
+    if (arnab_clock_replay_filename_cpu1) {
+       g_free(arnab_clock_replay_filename_cpu1);
+       arnab_clock_replay_filename_cpu1 = NULL;
+    }
+
 }
 
 void arnab_host_clock_replay_finish(void)
