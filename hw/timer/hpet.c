@@ -433,11 +433,15 @@ static uint32_t hpet_ram_readw(void *opaque, hwaddr addr)
 }
 #endif
 
+uint64_t readahead_hpet_cpu0 = 0;
+uint64_t readahead_hpet_cpu1 = 0;
+
 static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                               unsigned size)
 {
     HPETState *s = opaque;
     uint64_t cur_tick, index;
+    printf("current rpu index running: %d\n", current_cpu->cpu_index);
 
     DPRINTF("qemu: Enter hpet_ram_readl at %" PRIx64 "\n", addr);
     index = addr;
@@ -481,7 +485,28 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             return 0;
         case HPET_COUNTER:
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-                cur_tick = (uint64_t)arnab_replay_get_qword("clock", -1);
+                /* the scheduling state machine (based on hpet) */
+                if (current_cpu->cpu_index == 0) {
+                    cur_tick = readahead_hpet_cpu0;
+                    readahead_hpet_cpu0 = (uint64_t)arnab_replay_get_qword("clock", 0);
+                    if (readahead_hpet_cpu0 > readahead_hpet_cpu1) {
+                        printf("cpu0 stalled\n");
+                        printf("readahead hpet cpu0: 0x%lx\n", readahead_hpet_cpu0);
+                        printf("readahead hpet cpu1: 0x%lx\n", readahead_hpet_cpu1);
+                        is_cpu0_stalled = true;
+                        is_cpu1_stalled = false;
+                    }
+                } else if (current_cpu->cpu_index == 1) {
+                    cur_tick = readahead_hpet_cpu1;
+                    readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("clock", 1);
+                    if (readahead_hpet_cpu1 > readahead_hpet_cpu0) {
+                        printf("cpu1 stalled\n");
+                        is_cpu0_stalled = false;
+                        printf("readahead tsc cpu0: 0x%lx\n", readahead_tsc_cpu0);
+                        printf("readahead tsc cpu1: 0x%lx\n", readahead_tsc_cpu1);
+                        is_cpu1_stalled = true;
+                    }
+                }
                 /*
                 if (!is_rx_queue_empty) {
                     // flush network rx queue every clock read
@@ -498,7 +523,11 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    arnab_replay_put_qword((int64_t)cur_tick, "clock", -1);
+                    if (current_cpu->cpu_index == 0) {
+                        arnab_replay_put_qword((int64_t)cur_tick, "clock", 0);
+                    } else if (current_cpu->cpu_index == 1) {
+                        arnab_replay_put_qword((int64_t)cur_tick, "clock", 1);
+                    }
                 }
             }
             return cur_tick;
