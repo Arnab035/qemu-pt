@@ -186,9 +186,6 @@ void helper_invlpg(CPUX86State *env, target_ulong addr)
     tlb_flush_page(CPU(cpu), addr);
 }
 
-uint64_t last_tsc_value_before_cpu0_stalled = 0;
-uint64_t last_tsc_value_before_cpu1_stalled = 0;
-
 bool is_cpu0_stalled = false;
 bool is_cpu1_stalled = false;
 
@@ -212,6 +209,9 @@ void helper_rdtsc(CPUX86State *env)
             val = readahead_tsc_cpu0;
             readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
             if (readahead_tsc_cpu0 > readahead_tsc_cpu1) {
+                printf("cpu0 stalled\n");
+                printf("readahead tsc cpu0: 0x%lx\n", readahead_tsc_cpu0);
+                printf("readahead tsc cpu1: 0x%lx\n", readahead_tsc_cpu1);
                 is_cpu0_stalled = true;
                 is_cpu1_stalled = false;
             }
@@ -220,11 +220,15 @@ void helper_rdtsc(CPUX86State *env)
             val = readahead_tsc_cpu1;
             readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);
             if (readahead_tsc_cpu1 > readahead_tsc_cpu0) {
+                printf("cpu1 stalled\n");
                 is_cpu0_stalled = false;
+                printf("readahead tsc cpu0: 0x%lx\n", readahead_tsc_cpu0);
+                printf("readahead tsc cpu1: 0x%lx\n", readahead_tsc_cpu1);
                 is_cpu1_stalled = true;
             }
         }
-	printf("val: 0x%lx\n", val);
+
+	printf("csval: 0x%lx\n", val);
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
     }

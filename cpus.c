@@ -1541,7 +1541,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
-    int max_lines_read = 300000000, curr_lines_read = 0;
+    int max_lines_read = 3000000, curr_lines_read = 0;
     int cpu_index = cpu->cpu_index;
 
     char filename[100] = {'\0'};
@@ -1706,7 +1706,6 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 cpu->tsc_values[count_tsc].tsc_values = malloc(strlen(copy+6) * sizeof(char));
                 memcpy(cpu->tsc_values[count_tsc].tsc_values, copy+6, strlen(copy+6));
                 cpu->tsc_values[count_tsc].tsc_values[strlen(copy+6)] = '\0';
-                printf("TSC value: %s\n", cpu->tsc_values[count_tsc].tsc_values);
                 count_tsc++;
             }
         }
@@ -1815,6 +1814,11 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     cpu->can_do_io = 1;
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
+
+    /* HPET > TSC. HPET timer reads first during a timer interrupt */
+
+    readahead_hpet_cpu0 = (uint64_t)arnab_replay_get_qword("clock", 0);
+    readahead_hpet_cpu1 = (uint64_t)arnab_replay_get_qword("clock", 1);
 
     readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
     readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);

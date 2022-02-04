@@ -385,7 +385,7 @@ static void arnab_replay_enable(const char *fname, int mode, const char *event_t
     if(strcmp(event_type, "clock") == 0) {
             atexit(arnab_clock_replay_finish);
             char **files;
-            files = str_split((char *)fname, ',');
+            files = str_split((char *)fname, '-');
             if (files) {
                 arnab_clock_replay_file_cpu0 = fopen(*(files + 0), fmode);
                 if (arnab_clock_replay_file_cpu0 == NULL) {
