@@ -744,8 +744,10 @@ uint32_t cpu_ldub_data(CPUArchState *env, abi_ptr ptr)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = ldub_p(g2h(ptr));
 
+    CPUState *cpu = env_cpu(env);
+
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", cpu->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
@@ -756,10 +758,12 @@ int cpu_ldsb_data(CPUArchState *env, abi_ptr ptr)
     int ret;
     uint16_t meminfo = trace_mem_get_info(MO_SB, MMU_USER_IDX, false);
 
+    CPUState *cpu = env_cpu(env);
+
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = ldsb_p(g2h(ptr));
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", cpu->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
@@ -770,10 +774,12 @@ uint32_t cpu_lduw_data(CPUArchState *env, abi_ptr ptr)
     uint32_t ret;
     uint16_t meminfo = trace_mem_get_info(MO_TEUW, MMU_USER_IDX, false);
 
+    CPUState *cpu = env_cpu(env);
+
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = lduw_p(g2h(ptr));
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", cpu->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
@@ -786,8 +792,9 @@ int cpu_ldsw_data(CPUArchState *env, abi_ptr ptr)
 
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = ldsw_p(g2h(ptr));
+    CPUState *cpu = env_cpu(env);
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", cpu->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
@@ -800,6 +807,10 @@ uint32_t cpu_ldl_data(CPUArchState *env, abi_ptr ptr)
 
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = ldl_p(g2h(ptr));
+
+    if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", env_cpu(env)->cpu_index, ptr);
+    }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
 }
@@ -812,7 +823,7 @@ uint64_t cpu_ldq_data(CPUArchState *env, abi_ptr ptr)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     ret = ldq_p(g2h(ptr));
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, load\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, load\n", env_cpu(env)->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
     return ret;
@@ -885,7 +896,7 @@ void cpu_stb_data(CPUArchState *env, abi_ptr ptr, uint32_t val)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     stb_p(g2h(ptr), val);
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, store\n", env_cpu(env)->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
 }
@@ -897,7 +908,7 @@ void cpu_stw_data(CPUArchState *env, abi_ptr ptr, uint32_t val)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     stw_p(g2h(ptr), val);
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, store\n", env_cpu(env)->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
 }
@@ -909,7 +920,7 @@ void cpu_stl_data(CPUArchState *env, abi_ptr ptr, uint32_t val)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     stl_p(g2h(ptr), val);
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, store\n", env_cpu(env)->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
 }
@@ -921,7 +932,7 @@ void cpu_stq_data(CPUArchState *env, abi_ptr ptr, uint64_t val)
     trace_guest_mem_before_exec(env_cpu(env), ptr, meminfo);
     stq_p(g2h(ptr), val);
     if (arnab_replay_mode == REPLAY_MODE_PLAY && arnab_trace_mem_file) {
-        fprintf(arnab_trace_mem_file, "VA: 0x%lx, store\n", ptr);
+        fprintf(arnab_trace_mem_file, "CPU ID: %d, VA: 0x%lx, store\n", env_cpu(env)->cpu_index, ptr);
     }
     qemu_plugin_vcpu_mem_cb(env_cpu(env), ptr, meminfo);
 }
