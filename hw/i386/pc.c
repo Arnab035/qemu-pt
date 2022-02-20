@@ -340,6 +340,9 @@ GlobalProperty pc_compat_1_4[] = {
 };
 const size_t pc_compat_1_4_len = G_N_ELEMENTS(pc_compat_1_4);
 
+bool is_shmem_multiprocs = false;
+FILE *timer_access_sequence_file;
+
 GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
 {
     GSIState *s;
@@ -718,6 +721,21 @@ void pc_acpi_smi_interrupt(void *opaque, int irq, int level)
 void pc_smp_parse(MachineState *ms, QemuOpts *opts)
 {
     X86MachineState *x86ms = X86_MACHINE(ms);
+    /* we will maintain some state with regards to timer access sequence */
+    is_shmem_multiprocs = true;
+
+    char *timer_access_sequence_filename = getenv("HOME");
+    if (timer_access_sequence_filename != NULL) {
+        timer_access_sequence_filename = strcat(timer_access_sequence_filename, "/timer_access_sequence.txt");
+    }
+
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+        timer_access_sequence_file = fopen(timer_access_sequence_filename, "w");
+        if (timer_access_sequence_file == NULL) {
+            error_report("Could not open timer access sequence file");
+            return;
+        }
+    }
 
     if (opts) {
         unsigned cpus    = qemu_opt_get_number(opts, "cpus", 0);

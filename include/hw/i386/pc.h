@@ -145,6 +145,9 @@ void vmmouse_set_data(const uint32_t *data);
 /* pc.c */
 extern int fd_bootchk;
 
+extern bool is_shmem_multiprocs;
+extern FILE *timer_access_sequence_file;
+
 void pc_acpi_smi_interrupt(void *opaque, int irq, int level);
 
 void pc_hot_add_cpu(MachineState *ms, const int64_t id, Error **errp);
