@@ -20,6 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/main-loop.h"
 #include "cpu.h"
+#include "hw/i386/pc.h"
 #include "exec/helper-proto.h"
 #include "exec/exec-all.h"
 #include "exec/cpu_ldst.h"
@@ -189,9 +190,6 @@ void helper_invlpg(CPUX86State *env, target_ulong addr)
 bool is_cpu0_stalled = false;
 bool is_cpu1_stalled = false;
 
-uint64_t readahead_tsc_cpu0 = 0;
-uint64_t readahead_tsc_cpu1 = 0;
-
 void helper_rdtsc(CPUX86State *env)
 {
     uint64_t val;
@@ -205,30 +203,21 @@ void helper_rdtsc(CPUX86State *env)
 
     /* the scheduling state machine */
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-        if (cs->cpu_index == 0) {
-            val = readahead_tsc_cpu0;
-            readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
-            if (readahead_tsc_cpu0 > readahead_tsc_cpu1) {
-                printf("cpu0 stalled\n");
-                printf("readahead tsc cpu0: 0x%lx\n", readahead_tsc_cpu0);
-                printf("readahead tsc cpu1: 0x%lx\n", readahead_tsc_cpu1);
-                is_cpu0_stalled = true;
-                is_cpu1_stalled = false;
-            }
+        if (timer_type_sequence_array[timer_index_array] == 'T') {
+            timer_index_array++;
+        } else {
+            printf("Warning: Timer sequence isn't being followed...\n");
+            timer_index_array++;
         }
-        else if (cs->cpu_index == 1) {
-            val = readahead_tsc_cpu1;
-            readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);
-            if (readahead_tsc_cpu1 > readahead_tsc_cpu0) {
-                printf("cpu1 stalled\n");
-                is_cpu0_stalled = false;
-                printf("readahead tsc cpu0: 0x%lx\n", readahead_tsc_cpu0);
-                printf("readahead tsc cpu1: 0x%lx\n", readahead_tsc_cpu1);
-                is_cpu1_stalled = true;
-            }
+        val = (uint64_t)arnab_replay_get_qword("host-clock", cs->cpu_index);
+        printf("tsc val: 0x%lx\n", val);
+        if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+            is_cpu0_stalled = false;
+            is_cpu1_stalled = true;
+        } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+            is_cpu0_stalled = true;
+            is_cpu1_stalled = false;
         }
-
-	printf("csval: 0x%lx\n", val);
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
     }

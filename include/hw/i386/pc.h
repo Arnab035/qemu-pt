@@ -148,6 +148,10 @@ extern int fd_bootchk;
 extern bool is_shmem_multiprocs;
 extern FILE *timer_access_sequence_file;
 
+extern char *timer_type_sequence_array;
+extern char *timer_cpuid_sequence_array;
+extern int timer_index_array;
+
 void pc_acpi_smi_interrupt(void *opaque, int irq, int level);
 
 void pc_hot_add_cpu(MachineState *ms, const int64_t id, Error **errp);

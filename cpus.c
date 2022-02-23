@@ -60,6 +60,7 @@
 #include "sysemu/runstate.h"
 #include "hw/boards.h"
 
+#include "hw/i386/pc.h"
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-blk.h"
 #include "index_array_header.h"
@@ -1815,20 +1816,13 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
-    /* HPET > TSC. HPET timer reads first during a timer interrupt */
-
-    readahead_hpet_cpu0 = (uint64_t)arnab_replay_get_qword("clock", 0);
-    readahead_hpet_cpu1 = (uint64_t)arnab_replay_get_qword("clock", 1);
-
-    readahead_tsc_cpu0 = (uint64_t)arnab_replay_get_qword("host-clock", 0);
-    readahead_tsc_cpu1 = (uint64_t)arnab_replay_get_qword("host-clock", 1);
-
-    if (readahead_tsc_cpu0 < readahead_tsc_cpu1) {
-        is_cpu1_stalled = true;
+    if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+        /* cpu0 is scheduled, cpu1 is stalled */
         is_cpu0_stalled = false;
-    } else {
-        is_cpu1_stalled = false;
+        is_cpu1_stalled = true;
+    } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
         is_cpu0_stalled = true;
+        is_cpu1_stalled = false;
     }
 
     /* wait for initial kick-off after machine start */

@@ -343,6 +343,10 @@ const size_t pc_compat_1_4_len = G_N_ELEMENTS(pc_compat_1_4);
 bool is_shmem_multiprocs = false;
 FILE *timer_access_sequence_file;
 
+char *timer_type_sequence_array;
+char *timer_cpuid_sequence_array;
+int timer_index_array = 0;
+
 GSIState *pc_gsi_create(qemu_irq **irqs, bool pci_enabled)
 {
     GSIState *s;
@@ -714,6 +718,42 @@ void pc_acpi_smi_interrupt(void *opaque, int irq, int level)
     }
 }
 
+static void create_timer_access_sequence_array(const char *filename)
+{
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t read;
+    char *timer_type, *cpuid;
+    int i = 0;
+    timer_type_sequence_array = malloc(1 * sizeof(char));
+    timer_cpuid_sequence_array = malloc(1 * sizeof(char));
+    timer_access_sequence_file = fopen(filename, "r");
+    if (timer_access_sequence_file == NULL) {
+        error_report("Could not open timer access sequence file");
+        exit(1);
+    }
+    while ((read = getline(&line, &len, timer_access_sequence_file)) != -1) {
+        line[strlen(line)-1] = 0;
+        timer_type = strtok(line,":");
+        if (strcmp(timer_type,"HPET") == 0) {
+            timer_type_sequence_array[i] = 'H';
+        } else if (strcmp(timer_type,"TSC") == 0) {
+            timer_type_sequence_array[i] = 'T';
+        }
+        cpuid = strtok(NULL,":");
+        /* only 2 CPUs now */
+        if (strcmp(cpuid,"0") == 0) {
+            timer_cpuid_sequence_array[i] = '0';
+        } else if (strcmp(cpuid,"1") == 0) {
+            timer_cpuid_sequence_array[i] = '1';
+        }
+        timer_type_sequence_array = realloc(timer_type_sequence_array, (i+2) * sizeof(char));
+        timer_cpuid_sequence_array = realloc(timer_cpuid_sequence_array, (i+2) * sizeof(char));
+        i++;
+    }
+    return;
+}
+
 /*
  * This function is very similar to smp_parse()
  * in hw/core/machine.c but includes CPU die support.
@@ -724,16 +764,28 @@ void pc_smp_parse(MachineState *ms, QemuOpts *opts)
     /* we will maintain some state with regards to timer access sequence */
     is_shmem_multiprocs = true;
 
-    char *timer_access_sequence_filename = getenv("HOME");
-    if (timer_access_sequence_filename != NULL) {
-        timer_access_sequence_filename = strcat(timer_access_sequence_filename, "/timer_access_sequence.txt");
-    }
+    const char *timer_access_sequence_filename = "/home/arnabjyoti/timer_access_sequence.txt";
 
     if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+        if ( access( timer_access_sequence_filename, F_OK ) == 0 ) {
+            if (remove(timer_access_sequence_filename) != 0) {
+                error_report("Could not remove old timer access sequence file\n");
+                exit(1);
+            }
+        }
         timer_access_sequence_file = fopen(timer_access_sequence_filename, "w");
         if (timer_access_sequence_file == NULL) {
-            error_report("Could not open timer access sequence file");
-            return;
+            error_report("Could not open timer access sequence file\n");
+            exit(1);
+        }
+    }
+
+    else if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        if ( access( timer_access_sequence_filename, F_OK ) == 0 ) {
+            create_timer_access_sequence_array(timer_access_sequence_filename);
+        } else {
+            error_report("Timer access sequence file does not exist\n");
+            exit(1);
         }
     }
 

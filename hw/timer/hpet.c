@@ -433,9 +433,6 @@ static uint32_t hpet_ram_readw(void *opaque, hwaddr addr)
 }
 #endif
 
-uint64_t readahead_hpet_cpu0 = 0;
-uint64_t readahead_hpet_cpu1 = 0;
-
 static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                               unsigned size)
 {
@@ -485,14 +482,20 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
         case HPET_COUNTER:
             if (arnab_replay_mode == REPLAY_MODE_PLAY) {
                 /* the scheduling state machine (based on hpet) */
-                if (current_cpu->cpu_index == 0) {
-                    cur_tick = readahead_hpet_cpu0;
-                    printf("cur_tick for cpu 0: 0x%lx\n", cur_tick);
-                    readahead_hpet_cpu0 = (uint64_t)arnab_replay_get_qword("clock", 0);
-                } else if (current_cpu->cpu_index == 1) {
-                    cur_tick = readahead_hpet_cpu1;
-                    printf("cur_tick for cpu 1: 0x%lx\n", cur_tick);
-                    readahead_hpet_cpu1 = (uint64_t)arnab_replay_get_qword("clock", 1);
+                if (timer_type_sequence_array[timer_index_array] == 'H') {
+                    timer_index_array++;
+                } else {
+                    printf("Warning: Timer sequence isn't being followed...\n");
+                    timer_index_array++;
+                }
+                cur_tick = (uint64_t)arnab_replay_get_qword("clock", current_cpu->cpu_index);
+                printf("hpet value: 0x%lx\n", cur_tick);
+                if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+		} else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+                    is_cpu0_stalled = true;
+                    is_cpu1_stalled = false;
                 }
                 /*
                 if (!is_rx_queue_empty) {
@@ -510,11 +513,8 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             DPRINTF("qemu: reading counter  = %" PRIx64 "\n", cur_tick);
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-                    if (current_cpu->cpu_index == 0) {
-                        arnab_replay_put_qword((int64_t)cur_tick, "clock", 0);
-                    } else if (current_cpu->cpu_index == 1) {
-                        arnab_replay_put_qword((int64_t)cur_tick, "clock", 1);
-                    }
+                    arnab_replay_put_qword((int64_t)cur_tick, "clock", current_cpu->cpu_index);
+                    fprintf(timer_access_sequence_file, "HPET:%d\n", current_cpu->cpu_index);
                 }
             }
             return cur_tick;
