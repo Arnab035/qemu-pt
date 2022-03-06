@@ -2173,7 +2173,7 @@ static void kvm_handle_ipi(CPUState *cs)
             X86CPU *cpu = X86_CPU(cs);
             CPUX86State *env = &cpu->env;
             ipi_dest_id = env->regs[R_EDX];
-            fprintf(timer_access_sequence_file,"IPI:%lu\n", ipi_dest_id);
+            fprintf(timer_access_sequence_file,"IPI-DEST:%lu,IPI-SRC:%d\n", ipi_dest_id,cs->cpu_index);
         }
     }
 }
