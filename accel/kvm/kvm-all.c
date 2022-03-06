@@ -2164,6 +2164,20 @@ static void kvm_handle_rdtsc(CPUState *cs)
     }
 }
 
+static void kvm_handle_ipi(CPUState *cs)
+{
+    uint64_t ipi_dest_id;  //edx contains the dest id of the interrupt
+    if (start_recording) {
+        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+            kvm_cpu_synchronize_state(cs);
+            X86CPU *cpu = X86_CPU(cs);
+            CPUX86State *env = &cpu->env;
+            ipi_dest_id = env->regs[R_EDX];
+            fprintf(timer_access_sequence_file,"IPI:%lu\n", ipi_dest_id);
+        }
+    }
+}
+
 static int kvm_handle_internal_error(CPUState *cpu, struct kvm_run *run)
 {
     fprintf(stderr, "KVM internal error. Suberror: %d\n",
@@ -2425,6 +2439,10 @@ int kvm_cpu_exec(CPUState *cpu)
             kvm_handle_rdtsc(cpu);
             ret = 0;
             break;
+	case KVM_EXIT_IPI:
+	    kvm_handle_ipi(cpu);
+	    ret = 0;
+	    break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
             DPRINTF("irq_window_open\n");
             ret = EXCP_INTERRUPT;
