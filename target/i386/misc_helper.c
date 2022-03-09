@@ -261,6 +261,26 @@ void helper_wrmsr(CPUX86State *env)
     val = ((uint32_t)env->regs[R_EAX]) |
         ((uint64_t)((uint32_t)env->regs[R_EDX]) << 32);
 
+    printf("MSR register accessed: %u\n", (uint32_t)env->regs[R_ECX]);
+
+    /* ICR register has MSR 2096 */
+    if ((uint32_t)env->regs[R_ECX] == 2096) {
+        if (timer_type_sequence_array[timer_index_array] == 'I') {
+            timer_index_array++;
+        } else {
+            printf("Warning: IPI sequence isn't being followed...\n");
+            timer_index_array++;
+        }
+    }
+
+    if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+        is_cpu0_stalled = false;
+        is_cpu1_stalled = true;
+    } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+        is_cpu0_stalled = true;
+        is_cpu1_stalled = false;
+    }
+
     switch ((uint32_t)env->regs[R_ECX]) {
     case MSR_IA32_SYSENTER_CS:
         env->sysenter_cs = val & 0xffff;
