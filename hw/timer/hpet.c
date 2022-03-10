@@ -489,7 +489,6 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                     timer_index_array++;
                 }
                 cur_tick = (uint64_t)arnab_replay_get_qword("clock", current_cpu->cpu_index);
-                printf("hpet value: 0x%lx\n", cur_tick);
                 if (timer_cpuid_sequence_array[timer_index_array] == '0') {
                     is_cpu0_stalled = false;
                     is_cpu1_stalled = true;
@@ -514,7 +513,9 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
             if (start_recording) {
                 if (arnab_replay_mode == REPLAY_MODE_RECORD) {
                     arnab_replay_put_qword((int64_t)cur_tick, "clock", current_cpu->cpu_index);
+                    qemu_mutex_lock(&timer_access_sequence_file_lock);
                     fprintf(timer_access_sequence_file, "HPET:%d\n", current_cpu->cpu_index);
+                    qemu_mutex_unlock(&timer_access_sequence_file_lock);
                 }
             }
             return cur_tick;

@@ -343,6 +343,8 @@ const size_t pc_compat_1_4_len = G_N_ELEMENTS(pc_compat_1_4);
 bool is_shmem_multiprocs = false;
 FILE *timer_access_sequence_file;
 
+QemuMutex timer_access_sequence_file_lock;
+
 char *timer_type_sequence_array;
 char *timer_cpuid_sequence_array;
 int timer_index_array = 0;
@@ -764,6 +766,11 @@ static void create_timer_access_sequence_array(const char *filename)
     return;
 }
 
+static void destroy_timer_access_sequence_lock(void)
+{
+    qemu_mutex_destroy(&timer_access_sequence_file_lock);
+}
+
 /*
  * This function is very similar to smp_parse()
  * in hw/core/machine.c but includes CPU die support.
@@ -788,6 +795,8 @@ void pc_smp_parse(MachineState *ms, QemuOpts *opts)
             error_report("Could not open timer access sequence file\n");
             exit(1);
         }
+        qemu_mutex_init(&timer_access_sequence_file_lock);
+        atexit(destroy_timer_access_sequence_lock);
     }
 
     else if (arnab_replay_mode == REPLAY_MODE_PLAY) {

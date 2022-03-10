@@ -148,6 +148,8 @@ extern int fd_bootchk;
 extern bool is_shmem_multiprocs;
 extern FILE *timer_access_sequence_file;
 
+extern QemuMutex timer_access_sequence_file_lock;
+
 extern char *timer_type_sequence_array;
 extern char *timer_cpuid_sequence_array;
 extern int timer_index_array;
