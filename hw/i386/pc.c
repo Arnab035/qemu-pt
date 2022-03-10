@@ -741,7 +741,7 @@ static void create_timer_access_sequence_array(const char *filename)
             timer_type_sequence_array[i] = 'H';
         } else if (strcmp(timer_type,"TSC") == 0) {
             timer_type_sequence_array[i] = 'T';
-        } else if (strcmp(timer_type,"IPI-DEST") == 0) {
+        } else if (strcmp(timer_type,"IPI-SRC") == 0) {
             timer_type_sequence_array[i] = 'I'; // IPI
         }
         cpuid = strtok(NULL,":");
@@ -750,14 +750,6 @@ static void create_timer_access_sequence_array(const char *filename)
             timer_cpuid_sequence_array[i] = '0';
         } else if (strcmp(cpuid,"1") == 0) {
             timer_cpuid_sequence_array[i] = '1';
-        } else {
-            /* the remaining string will be of the form <cpuid>,IPI-SRC:<cpuid> */
-            cpuid = strtok(NULL, ":");
-            if (strcmp(cpuid,"0") == 0) {
-                timer_cpuid_sequence_array[i] = '0';
-            } else if (strcmp(cpuid,"1") == 0) {
-                timer_cpuid_sequence_array[i] = '1';
-            }
         }
         timer_type_sequence_array = realloc(timer_type_sequence_array, (i+2) * sizeof(char));
         timer_cpuid_sequence_array = realloc(timer_cpuid_sequence_array, (i+2) * sizeof(char));
