@@ -2413,6 +2413,20 @@ void helper_iret_protected(CPUX86State *env, int shift, int next_eip)
     int tss_selector, type;
     uint32_t e1, e2;
 
+    if (cpuid_doing_ipi == 0) {
+        /* this means cpu 0 is executing
+	 * we will stop its execution now, since
+	 * the return from interrupt happened.
+	 * We go back to executing CPU 1 */
+        is_cpu0_stalled = true;
+        is_cpu1_stalled = false;
+        cpuid_doing_ipi = 255;
+    } else if (cpuid_doing_ipi == 1) {
+        is_cpu0_stalled = false;
+        is_cpu1_stalled = true;
+        cpuid_doing_ipi = 255;
+    }
+
     /* specific case for TSS */
     if (env->eflags & NT_MASK) {
 #ifdef TARGET_X86_64

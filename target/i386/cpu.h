@@ -1772,6 +1772,8 @@ struct X86CPU {
 extern VMStateDescription vmstate_x86_cpu;
 #endif
 
+extern uint8_t cpuid_doing_ipi;
+
 /**
  * x86_cpu_do_interrupt:
  * @cpu: vCPU the interrupt is to be handled by.
@@ -2058,6 +2060,7 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
         index_tip_address_incremented &&
         cpu->tnt_array[cpu->index_array-1] == 'P') {
         if (env->eip != do_strtoul(cpu->tip_addresses[cpu->index_tip_address-1].address)) {
+            printf("Divergence in TIP: trying to go to - %lx\n", env->eip);
             cpu->divergence_count += 1;
 	}
     }

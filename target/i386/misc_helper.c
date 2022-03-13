@@ -26,6 +26,8 @@
 #include "exec/cpu_ldst.h"
 #include "exec/address-spaces.h"
 
+uint8_t cpuid_doing_ipi = 255;
+
 void helper_outb(CPUX86State *env, uint32_t port, uint32_t data)
 {
 #ifdef CONFIG_USER_ONLY
@@ -271,12 +273,39 @@ void helper_wrmsr(CPUX86State *env)
             printf("Warning: IPI sequence isn't being followed...\n");
             timer_index_array++;
         }
-        if (timer_cpuid_sequence_array[timer_index_array] == '0') {
-            is_cpu0_stalled = false;
-            is_cpu1_stalled = true;
-        } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
-            is_cpu0_stalled = true;
-            is_cpu1_stalled = false;
+        /*
+	 * This is ugly. I wish there was a better way to fix this :-(
+	 * The reason interrupt number 251 is special is because
+	 * this IPI requires the destination CPU to execute a function
+	 * that the source CPU has passed into a global queue
+	 * before the source CPU can proceed ahead.
+	 *
+	 * We may need to follow
+	 * this process for the other IPIs in the range too (i.e. 252 and 253).
+	 * */
+        if (val == 251) {
+            /* We schedule the destination CPU for a while */
+            if (timer_cpuid_sequence_array[timer_index_array-1] == '0') {
+                /* this means the destination of IPI is 1 */
+                /* let CPU 1 execute */
+                is_cpu0_stalled = true;
+                is_cpu1_stalled = false;
+                cpuid_doing_ipi = 1;
+            } else if (timer_cpuid_sequence_array[timer_index_array-1] == '1') {
+                /* this means the destination of IPI is 0 */
+                /* let CPU 0 execute */
+                is_cpu0_stalled = false;
+                is_cpu1_stalled = true;
+                cpuid_doing_ipi = 0;
+            }
+	} else {
+            if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+                is_cpu0_stalled = false;
+                is_cpu1_stalled = true;
+            } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+                is_cpu0_stalled = true;
+                is_cpu1_stalled = false;
+            }
         }
     }
 
