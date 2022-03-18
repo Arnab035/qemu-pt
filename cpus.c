@@ -1862,80 +1862,6 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         if (!cpu) {
             cpu = first_cpu;
         }
-        if (cpu && !cpu->queued_work_first && !cpu->exit_request) {
-            if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                while(true) {
-                    network_replay_done_at_init = true;
-                    ReplayIOEvent *event;
-                    event = g_malloc0(sizeof(ReplayIOEvent));
-                    event->event_kind = REPLAY_ASYNC_EVENT_NET;
-                    event->opaque = arnab_replay_event_net_load();
-                    if (!event->opaque) {
-                        g_free(event);
-                        break;
-                    }
-                    replay_event_net_run(event->opaque);
-                    g_free(event);
-                }
-            }
-
-            if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                disk_replay_done_at_init = true;
-                unsigned int index;
-                size_t len;
-                size_t in_len;
-                uint8_t *data;
-                int i;
-                while (true) {
-                    index = arnab_replay_get_qword("disk", -1); // disk replay is independent of cpu
-                    if (index == EVENT_BLK_INTERRUPT) {
-                        break;
-                    }
-                    VirtQueueElement *vqe;
-                    vqe = g_malloc(sizeof(VirtQueueElement));
-                    vqe->index = index;
-                    vqe->len = arnab_replay_get_qword("disk", -1);
-                    vqe->ndescs = arnab_replay_get_qword("disk", -1);
-                    vqe->out_num = arnab_replay_get_qword("disk", -1);
-                    vqe->in_num = arnab_replay_get_qword("disk", -1);
-                    in_len = arnab_replay_get_qword("disk", -1);
-                    vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
-                    vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
-                    vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
-                    vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
-                    for (i = 0; i < vqe->in_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
-                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
-                        iov[i].iov_base = address_space_map(
-                                            global_vdev->dma_as, rep_addr, &len, 1,
-                                            MEMTXATTRS_UNSPECIFIED);
-                        iov[i].iov_len = len;
-                        addr[i] = rep_addr;
-                        memcpy(iov[i].iov_base, data, len);
-                        vqe->in_sg[i] = iov[i];
-                        vqe->in_addr[i] = addr[i];
-                    }
-                    for (i = 0; i < vqe->out_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
-                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
-                        iov[i].iov_base = address_space_map(
-                                            global_vdev->dma_as, rep_addr, &len, 0,
-                                            MEMTXATTRS_UNSPECIFIED);
-                        iov[i].iov_len = len;
-                        addr[i] = rep_addr;
-                        memcpy(iov[i].iov_base, data, len);
-                        vqe->out_sg[i] = iov[i];
-                        vqe->out_addr[i] = addr[i];
-                    }
-                    virtqueue_increment_inuse(global_vdev);
-                    virtqueue_push_first_vq(global_vdev, vqe, in_len);
-                    g_free(vqe->in_sg);
-                    g_free(vqe->in_addr);
-                    g_free(vqe->out_sg);
-                    g_free(vqe->out_addr);
-                }
-            }
-        }
 
         while (cpu && !cpu->queued_work_first && !cpu->exit_request) {
             atomic_mb_set(&tcg_current_rr_cpu, cpu);
@@ -1947,10 +1873,85 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
 
             if (cpu_can_run(cpu)) {
                 int r;
-
                 qemu_mutex_unlock_iothread();
                 if (arnab_replay_mode != REPLAY_MODE_PLAY) {
                     prepare_icount_for_run(cpu);
+                }
+
+                if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                    while(true) {
+                        network_replay_done_at_init = true;
+                        ReplayIOEvent *event;
+                        event = g_malloc0(sizeof(ReplayIOEvent));
+                        event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                        event->opaque = arnab_replay_event_net_load();
+                        if (!event->opaque) {
+                            g_free(event);
+                            break;
+                        }
+                        replay_event_net_run(event->opaque);
+                        g_free(event);
+                    }
+                }
+
+                if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                    disk_replay_done_at_init = true;
+                    unsigned int index;
+                    size_t len;
+                    size_t in_len;
+                    int i;
+                    while (true) {
+                        index = arnab_replay_get_qword("disk", -1); // disk replay is independent of cpu
+                        if (index == EVENT_BLK_INTERRUPT) {
+                            break;
+                        }
+                        VirtQueueElement *vqe;
+                        vqe = g_malloc(sizeof(VirtQueueElement));
+                        vqe->index = index;
+                        vqe->len = arnab_replay_get_qword("disk", -1);
+                        vqe->ndescs = arnab_replay_get_qword("disk", -1);
+                        vqe->out_num = arnab_replay_get_qword("disk", -1);
+                        vqe->in_num = arnab_replay_get_qword("disk", -1);
+                        in_len = arnab_replay_get_qword("disk", -1);
+                        vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
+                        vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
+                        vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
+                        vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
+                        for (i = 0; i < vqe->in_num; i++) {
+                            hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                            uint8_t *data;
+                            arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                            iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 1,
+                                            MEMTXATTRS_UNSPECIFIED);
+                            iov[i].iov_len = len;
+                            addr[i] = rep_addr;
+                            memcpy(iov[i].iov_base, data, len);
+                            vqe->in_sg[i] = iov[i];
+                            vqe->in_addr[i] = addr[i];
+                            g_free((void *)data);
+                        }
+                        for (i = 0; i < vqe->out_num; i++) {
+                            hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                            uint8_t *data;
+                            arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                            iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 0,
+                                            MEMTXATTRS_UNSPECIFIED);
+                            iov[i].iov_len = len;
+                            addr[i] = rep_addr;
+                            memcpy(iov[i].iov_base, data, len);
+                            vqe->out_sg[i] = iov[i];
+                            vqe->out_addr[i] = addr[i];
+                            g_free((void *)data);
+                        }
+                        virtqueue_increment_inuse(global_vdev);
+                        virtqueue_push_first_vq(global_vdev, vqe, in_len);
+                        g_free(vqe->in_sg);
+                        g_free(vqe->in_addr);
+                        g_free(vqe->out_sg);
+                        g_free(vqe->out_addr);
+                    }
                 }
                 r = tcg_cpu_exec(cpu);
 
