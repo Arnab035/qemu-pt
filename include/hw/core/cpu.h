@@ -403,6 +403,8 @@ struct CPUState {
     bool is_core_simulation_finished;
     unsigned long long total_packets_consumed;
     unsigned long long number_of_lines_consumed;
+    int index_array_incremented;
+    int index_tip_address_incremented;
     /* end of intel pt specific data */
 
     void *env_ptr; /* CPUArchState */

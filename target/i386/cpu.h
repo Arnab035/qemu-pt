@@ -2056,8 +2056,8 @@ static inline void cpu_get_tb_cpu_state(CPUState *cpu, CPUX86State *env, target_
     printf("index_array: %d\n", cpu->index_array);
 
     if (!stopped_execution_of_tb_chain &&
-        index_array_incremented &&
-        index_tip_address_incremented &&
+        cpu->index_array_incremented &&
+        cpu->index_tip_address_incremented &&
         cpu->tnt_array[cpu->index_array-1] == 'P') {
         if (env->eip != do_strtoul(cpu->tip_addresses[cpu->index_tip_address-1].address)) {
             printf("Divergence in TIP: trying to go to - %lx\n", env->eip);

@@ -94,9 +94,6 @@ FILE *arnab_trace_mem_file;
 
 #include "exec/gen-icount.h"
 
-int index_array_incremented=1;
-int index_tip_address_incremented=1;
-
 typedef struct DisasContext {
     DisasContextBase base;
 
@@ -4571,12 +4568,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         }
     }
 
-    if(index_array_incremented) {
-      index_array_incremented = 0;
+    if(cpu->index_array_incremented) {
+      cpu->index_array_incremented = 0;
     }
 
-    if(index_tip_address_incremented) {
-      index_tip_address_incremented=0;
+    if(cpu->index_tip_address_incremented) {
+      cpu->index_tip_address_incremented = 0;
     }
 
     s->pc_start = s->pc = pc_start;
@@ -4622,7 +4619,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->index_array += 2;
             cpu->index_tip_address++;
             cpu->index_fup_address++;
-            if (intno == 177) {
+            if (intno == 161) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
                     ReplayIOEvent *event;
@@ -4637,7 +4634,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     g_free(event);
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
-            } else if (intno == 81) {
+            } else if (intno == 129) {
                 /* disk interrupt
                  * disk I/O buffers that have been recorded will now be pushed into the guest
 		 * following steps are taken
@@ -4672,7 +4669,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     /* this is a 'read to the guest memory' operation */
                     for (i = 0; i < vqe->in_num; i++) {
                         hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
-			uint8_t *data;
+                        uint8_t *data;
                         arnab_replay_get_array_alloc(&data, &len, "disk", -1);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 1, 
@@ -5267,12 +5264,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             /* XXX: optimize if memory (no 'and' is necessary) */
 	    if(cpu->tnt_array[cpu->index_array] == 'P') {
 	        cpu->index_array++;
-                index_array_incremented = 1;
+                cpu->index_array_incremented = 1;
 	        while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
 	            cpu->index_tip_address++;
 	        }
 	        cpu->index_tip_address++;     // consume the TIP address
-	        index_tip_address_incremented=1;
+	        cpu->index_tip_address_incremented=1;
             }
 	    if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
@@ -5307,13 +5304,13 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
 	    if(cpu->tnt_array[cpu->index_array] == 'P') {
 	        cpu->index_array++;
-	        index_array_incremented=1;
+	        cpu->index_array_incremented = 1;
                 while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
 	            cpu->index_tip_address++;
 	        }
 	            // consume the TIP address
 	        cpu->index_tip_address++;
-	        index_tip_address_incremented=1;
+	        cpu->index_tip_address_incremented=1;
             }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
@@ -6744,16 +6741,16 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     case 0xc3: /* ret */
         if(cpu->tnt_array[cpu->index_array] != 'P') {
             cpu->index_array++;
-            index_array_incremented = 1;
+            cpu->index_array_incremented = 1;
         }
         else {
 	    cpu->index_array++;
-	    index_array_incremented=1;
+	    cpu->index_array_incremented = 1;
 	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
 	        cpu->index_tip_address++;
 	    }
 	    cpu->index_tip_address++;     // consume the TIP bit
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address_incremented=1;
         }
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
@@ -6792,12 +6789,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     case 0xcf: /* iret */
         if(cpu->tnt_array[cpu->index_array] == 'P') {
 	    cpu->index_array++;
-	    index_array_incremented=1;
+	    cpu->index_array_incremented=1;
 	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
 	        cpu->index_tip_address++;
 	    }
 	    cpu->index_tip_address++;
-	    index_tip_address_incremented = 1;
+	    cpu->index_tip_address_incremented = 1;
 	}
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_IRET);
         if (!s->pe) {
@@ -6902,7 +6899,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         next_eip = s->pc - s->cs_base;
         tval += next_eip;
 	cpu->index_array++;
-	index_array_incremented=1;
+	cpu->index_array_incremented=1;
         if (dflag == MO_16) {
             tval &= 0xffff;
         }
@@ -7489,12 +7486,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	// consume TIP address if possible here as well
 	if(cpu->tnt_array[cpu->index_array] == 'P') {
 	    cpu->index_array++;
-	    index_array_incremented=1;
+	    cpu->index_array_incremented=1;
 	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
 	        cpu->index_tip_address++;
 	    }
 	    cpu->index_tip_address++;
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address_incremented=1;
         }
         gen_update_cc_op(s);
         gen_jmp_im(s, pc_start - s->cs_base);
@@ -7508,12 +7505,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 	// consume TIP address here as well
 	if(cpu->tnt_array[cpu->index_array] == 'P') {
 	    cpu->index_array++;
-	    index_array_incremented=1;
+	    cpu->index_array_incremented=1;
 	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
 	        cpu->index_tip_address++;
 	    }
 	    cpu->index_tip_address++;
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address_incremented=1;
         }
         if (!s->pe) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);

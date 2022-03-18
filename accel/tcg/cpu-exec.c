@@ -268,19 +268,19 @@ static inline tcg_target_ulong cpu_tb_exec(CPUState *cpu, TranslationBlock *itb)
             cc->set_pc(cpu, last_tb->pc);
         }
     } else {
-        if (index_array_incremented &&
+        if (cpu->index_array_incremented &&
                 cpu->tnt_array[cpu->index_array-1] == 'T' &&
                 env->eip == itb->jmp_target2) {
-#if 0
+#if 1
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target1);
 #endif
             cpu->divergence_count += 1;
             env->eip = itb->jmp_target1;
         }
-        if (index_array_incremented &&
+        if (cpu->index_array_incremented &&
                 cpu->tnt_array[cpu->index_array-1] == 'N' &&
                 env->eip == itb->jmp_target1) {
-#if 0
+#if 1
             printf("Divergence here: Should go to 0x%lx\n", itb->jmp_target2);
 #endif
             cpu->divergence_count += 1;

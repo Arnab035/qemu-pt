@@ -27,9 +27,6 @@ extern bool start_recording;
 extern int stopped_execution_of_tb_chain;
 extern int is_upcoming_page_fault;
 
-extern int index_array_incremented;
-extern int index_tip_address_incremented;
-
 /* I/O replay structures */
 extern void *replay_tx_bh;
 extern void *replay_ctrl_vq;

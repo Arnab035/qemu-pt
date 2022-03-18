@@ -903,15 +903,15 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     int number_of_fups = 0;
     CPUState *cpu = env_cpu(env);
     if (intno == 81 || intno == 113 || intno == 239) {
-        if (index_array_incremented) cpu->index_array--;
+        if (cpu->index_array_incremented) cpu->index_array--;
     }
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
-        if (index_array_incremented) {
+        if (cpu->index_array_incremented) {
             if (env->eip >= first_pc_of_tb && env->eip <= last_pc_of_tb) // only if interrupt happens 'before' an instruction that falls within a TB.
                 cpu->index_array--;
         }
-        if (index_tip_address_incremented && error_code == 0) {
+        if (cpu->index_tip_address_incremented && error_code == 0) {
             cpu->index_tip_address--;
         }
         if (!is_upcoming_page_fault) {
