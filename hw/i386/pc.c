@@ -737,6 +737,9 @@ static void create_timer_access_sequence_array(const char *filename)
     while ((read = getline(&line, &len, timer_access_sequence_file)) != -1) {
         line[strlen(line)-1] = 0;
         timer_type = strtok(line,":");
+        if (strcmp(timer_type, "TSC-VAL") == 0) {
+            continue;
+        }
         if (strcmp(timer_type,"HPET") == 0) {
             timer_type_sequence_array[i] = 'H';
         } else if (strcmp(timer_type,"TSC") == 0) {

@@ -2319,6 +2319,21 @@ static void kvm_eat_signals(CPUState *cpu)
     } while (sigismember(&chkset, SIG_IPI));
 }
 
+static void kvm_handle_ipi(CPUState *cs)
+{
+    uint64_t tsc_clock;
+    uint32_t eax, edx;
+    kvm_cpu_synchronize_state(cs);
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
+    eax = env->regs[R_EAX];
+    edx = env->regs[R_EDX];
+    tsc_clock = (uint64_t) edx << 32 | eax;
+    qemu_mutex_lock(&timer_access_sequence_file_lock);
+    fprintf(timer_access_sequence_file,"TSC-VAL:%lx\n", tsc_clock);
+    qemu_mutex_unlock(&timer_access_sequence_file_lock);
+}
+
 int kvm_cpu_exec(CPUState *cpu)
 {
     struct kvm_run *run = cpu->kvm_run;
@@ -2432,8 +2447,9 @@ int kvm_cpu_exec(CPUState *cpu)
 	case KVM_EXIT_IPI:
             if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
                 qemu_mutex_lock(&timer_access_sequence_file_lock);
-                fprintf(timer_access_sequence_file, "IPI-SRC:%d\n", cpu->cpu_index);
+                fprintf(timer_access_sequence_file,"IPI-SRC:%d\n", cpu->cpu_index);
                 qemu_mutex_unlock(&timer_access_sequence_file_lock);
+                kvm_handle_ipi(cpu);
             }
 	    ret = 0;
 	    break;
