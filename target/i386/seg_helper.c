@@ -20,6 +20,7 @@
 
 
 #include "qemu/osdep.h"
+#include "hw/i386/pc.h"
 #include "cpu.h"
 #include "qemu/log.h"
 #include "exec/helper-proto.h"
@@ -2418,13 +2419,17 @@ void helper_iret_protected(CPUX86State *env, int shift, int next_eip)
 	 * we will stop its execution now, since
 	 * the return from interrupt happened.
 	 * We go back to executing CPU 1 */
-        is_cpu0_stalled = true;
-        is_cpu1_stalled = false;
-        cpuid_doing_ipi = 255;
+        if (timer_cpuid_sequence_array[timer_index_array] != '0') {
+            is_cpu0_stalled = true;
+            is_cpu1_stalled = false;
+            cpuid_doing_ipi = 255;
+        }
     } else if (cpuid_doing_ipi == 1) {
-        is_cpu0_stalled = false;
-        is_cpu1_stalled = true;
-        cpuid_doing_ipi = 255;
+        if (timer_cpuid_sequence_array[timer_index_array] != '1') {
+            is_cpu0_stalled = false;
+            is_cpu1_stalled = true;
+            cpuid_doing_ipi = 255;
+        }
     }
 
     /* specific case for TSS */
