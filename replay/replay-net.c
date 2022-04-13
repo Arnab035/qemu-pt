@@ -122,7 +122,9 @@ void *arnab_replay_event_net_load(void)
     while (event->id == EVENT_VMEXIT) {
         event->id = arnab_replay_get_byte("network", -1);  // network I/O replay independent of cpu
     }
-    if (event->id == EVENT_NET_TX_INTERRUPT || event->id == EVENT_NET_RX_INTERRUPT) {
+    if (event->id == EVENT_NET_TX_INTERRUPT ||
+		    event->id == EVENT_NET_RX_INTERRUPT ||
+                    event->id == EVENT_END) {
         return NULL;
     }
     event->flags = arnab_replay_get_dword("network", -1);
