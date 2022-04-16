@@ -2453,6 +2453,15 @@ int kvm_cpu_exec(CPUState *cpu)
             }
 	    ret = 0;
 	    break;
+        case KVM_EXIT_EXTERNAL_INTR:
+            if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
+                qemu_mutex_lock(&timer_access_sequence_file_lock);
+                fprintf(timer_access_sequence_file, "EXT_INTR:%d:%d\n", cpu->cpu_index,
+				run->intno.intno);
+                qemu_mutex_unlock(&timer_access_sequence_file_lock);
+            }
+            ret = 0;
+            break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
             DPRINTF("irq_window_open\n");
             ret = EXCP_INTERRUPT;
