@@ -213,6 +213,7 @@ void helper_rdtsc(CPUX86State *env)
         }
         val = (uint64_t)arnab_replay_get_qword("host-clock", cs->cpu_index);
         printf("tsc val: 0x%lx\n", val);
+	printf("timer_index_array: %d\n", timer_index_array-1);
         if (timer_cpuid_sequence_array[timer_index_array] == '0') {
             is_cpu0_stalled = false;
             is_cpu1_stalled = true;
@@ -263,52 +264,68 @@ void helper_wrmsr(CPUX86State *env)
     val = ((uint32_t)env->regs[R_EAX]) |
         ((uint64_t)((uint32_t)env->regs[R_EDX]) << 32);
 
-    printf("MSR register accessed: %u\n", (uint32_t)env->regs[R_ECX]);
-
+    printf("MSR register accessed: %lu\n", (env->regs[R_ECX] & 0xFFFFFFFF));
+    printf("val : %lu\n", val & 0xFFFFFFFF);
     /* ICR register has MSR 2096 */
-    if (arnab_replay_mode == REPLAY_MODE_PLAY && (uint32_t)env->regs[R_ECX] == 2096) {
-        if (timer_type_sequence_array[timer_index_array] == 'I') {
-            timer_index_array++;
-        } else {
-            printf("Warning: IPI sequence isn't being followed...\n");
-            timer_index_array++;
-        }
-        /*
-	 * This is ugly. I wish there was a better way to fix this :-(
-	 * The reason interrupt number 251 is special is because
-	 * this IPI requires the destination CPU to execute a function
-	 * that the source CPU has passed into a global queue
-	 * before the source CPU can proceed ahead.
-	 *
-	 * We may need to follow
-	 * this process for the other IPIs in the range too (i.e. 252 and 253).
-	 * */
-        if (val == 251) {
-            /* We schedule the destination CPU for a while */
-            if (timer_cpuid_sequence_array[timer_index_array-1] == '0') {
-                /* this means the destination of IPI is 1 */
-                /* let CPU 1 execute */
-                is_cpu0_stalled = true;
-                is_cpu1_stalled = false;
-                cpuid_doing_ipi = 1;
-            } else if (timer_cpuid_sequence_array[timer_index_array-1] == '1') {
-                /* this means the destination of IPI is 0 */
-                /* let CPU 0 execute */
-                is_cpu0_stalled = false;
-                is_cpu1_stalled = true;
-                cpuid_doing_ipi = 0;
+    if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+        if ((uint32_t)env->regs[R_ECX] == 2096) {
+            if (timer_type_sequence_array[timer_index_array] == 'I') {
+                timer_index_array++;
+            } else {
+                printf("Warning: IPI sequence isn't being followed...\n");
+                timer_index_array++;
             }
-	} else {
-            if (timer_cpuid_sequence_array[timer_index_array] == '0') {
-                is_cpu0_stalled = false;
-                is_cpu1_stalled = true;
-            } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
-                is_cpu0_stalled = true;
-                is_cpu1_stalled = false;
+	    printf("timer_index_array: %d\n", timer_index_array-1);
+	    printf("Expected IPI, got timer sequence: %c\n", timer_type_sequence_array[timer_index_array-1]);
+            /*
+	     * This is ugly. I wish there was a better way to fix this :-(
+	     * The reason interrupt number 251 is special is because
+	     * this IPI requires the destination CPU to execute a function
+	     * that the source CPU has passed into a global queue
+	     * before the source CPU can proceed ahead.
+	     *
+	     * We may need to follow
+	     * this process for the other IPIs in the range too (i.e. 252 and 253).
+	     * */
+            if ((val & 0xFFFFFFFF) == 251) {
+                 /* We schedule the destination CPU for a while */
+                if (timer_cpuid_sequence_array[timer_index_array-1] == '0') {
+                    /* this means the destination of IPI is 1 */
+                    /* let CPU 1 execute */
+                    is_cpu0_stalled = true;
+                    is_cpu1_stalled = false;
+                    cpuid_doing_ipi = 1;
+                } else if (timer_cpuid_sequence_array[timer_index_array-1] == '1') {
+                    /* this means the destination of IPI is 0 */
+                    /* let CPU 0 execute */
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+                    cpuid_doing_ipi = 0;
+                }
+	    } else {
+                /* if in the middle of IPI, do not perform scheduling */
+                if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+                } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+                    is_cpu0_stalled = true;
+                    is_cpu1_stalled = false;
+                }
+            }
+        }
+        else if ((uint32_t)env->regs[R_ECX] == 2059) {
+            if (timer_type_sequence_array[timer_index_array] == 'E') {
+                timer_index_array++;
+                if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+                } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+                    is_cpu0_stalled = true;
+                    is_cpu1_stalled = false;
+                }
             }
         }
     }
-
     switch ((uint32_t)env->regs[R_ECX]) {
     case MSR_IA32_SYSENTER_CS:
         env->sysenter_cs = val & 0xffff;
