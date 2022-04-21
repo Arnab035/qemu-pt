@@ -648,6 +648,18 @@ static void do_hlt(X86CPU *cpu)
     CPUState *cs = CPU(cpu);
     CPUX86State *env = &cpu->env;
 
+    if (timer_type_sequence_array[timer_index_array] == 'L') {
+        timer_index_array++;
+        if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+            is_cpu0_stalled = false;
+            is_cpu1_stalled = true;
+        } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+            is_cpu0_stalled = true;
+            is_cpu1_stalled = false;
+        }
+    } else {
+        printf("Warning: HLT detected incorrectly. Incorrect sequence of instructions\n");
+    }
     env->hflags &= ~HF_INHIBIT_IRQ_MASK; /* needed if sti is just before */
     cs->halted = 0;
     //cs->exception_index = EXCP_HLT;

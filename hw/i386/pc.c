@@ -748,6 +748,8 @@ static void create_timer_access_sequence_array(const char *filename)
             timer_type_sequence_array[i] = 'I'; // IPI
         } else if (strcmp(timer_type, "EOI") == 0) {
             timer_type_sequence_array[i] = 'E'; // EOI signal
+        } else if (strcmp(timer_type, "HLT") == 0) {
+            timer_type_sequence_array[i] = 'L';
         }
         cpuid = strtok(NULL,":");
         /* only 2 CPUs now */
