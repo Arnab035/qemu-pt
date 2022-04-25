@@ -903,7 +903,8 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     target_ulong old_eip, esp, offset;
     int number_of_fups = 0;
     CPUState *cpu = env_cpu(env);
-    if (intno == 81 || intno == 113 || intno == 239) {
+    if (intno == 81 || intno == 161 || intno == 48 || intno == 239
+		    || intno == 253 || intno == 251) {
         if (cpu->index_array_incremented) cpu->index_array--;
     }
     if (intno == 14) {

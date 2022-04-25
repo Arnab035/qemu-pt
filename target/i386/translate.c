@@ -4634,7 +4634,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     g_free(event);
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
-            } else if (intno == 129) {
+            } else if (intno == 145) {
                 /* disk interrupt
                  * disk I/O buffers that have been recorded will now be pushed into the guest
 		 * following steps are taken
@@ -5302,13 +5302,13 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 4: /* jmp Ev */
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
-	    if(cpu->tnt_array[cpu->index_array] == 'P') {
+	    if (cpu->tnt_array[cpu->index_array] == 'P') {
 	        cpu->index_array++;
 	        cpu->index_array_incremented = 1;
-                while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
-	            cpu->index_tip_address++;
-	        }
 	            // consume the TIP address
+                while (cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
+                    cpu->index_tip_address;
+                }
 	        cpu->index_tip_address++;
 	        cpu->index_tip_address_incremented=1;
             }
@@ -7452,6 +7452,8 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_jmp(s, s->pc - s->cs_base);
         }
+        gen_jmp_im(s, s->pc - s->cs_base);
+        gen_eob(s);
         break;
     case 0x133: /* rdpmc */
         gen_update_cc_op(s);
