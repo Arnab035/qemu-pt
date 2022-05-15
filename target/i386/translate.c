@@ -37,6 +37,7 @@
 
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-blk.h"
+#include "hw/i386/pc.h"
 #include "index_array_header.h"
 
 #define PREFIX_REPZ   0x01
@@ -4599,8 +4600,34 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         cpu->tnt_array[cpu->index_array] == 'F' && 
         do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc) {
             cpu->index_array++;
+            printf("VMEXIT here\n");
+            printf("s->pc: 0x%lx\n", s->pc);
             cpu->index_fup_address++;
             cpu->index_tip_address++;
+            if (s->pc == 0xffffffff810b414e) {
+                gen_jmp_im(s, s->pc - s->cs_base);
+                gen_eob(s);
+                if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+                    if (timer_type_sequence_array[timer_index_array] == 'C') {
+                        timer_index_array++;
+                    }
+                }
+            } else if (s->pc == 0xffffffff811a03fa) {
+                gen_jmp_im(s, s->pc - s->cs_base);
+                gen_eob(s);
+                if (arnab_replay_mode == REPLAY_MODE_PLAY) {
+                    if (timer_type_sequence_array[timer_index_array] == 'F') {
+                        timer_index_array++;
+                    }
+                }
+	    }
+            if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+                is_cpu0_stalled = false;
+                is_cpu1_stalled = true;
+            } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
+                is_cpu0_stalled = true;
+                is_cpu1_stalled = false;
+            }
             return s->pc;
     }
 
@@ -5302,15 +5329,15 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 4: /* jmp Ev */
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
-	    if (cpu->tnt_array[cpu->index_array] == 'P') {
-	        cpu->index_array++;
-	        cpu->index_array_incremented = 1;
-	            // consume the TIP address
+            if (cpu->tnt_array[cpu->index_array] == 'P') {
+                cpu->index_array++;
+                cpu->index_array_incremented = 1;
+	        // consume the TIP address
                 while (cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
-                    cpu->index_tip_address;
+                    cpu->index_tip_address++;
                 }
-	        cpu->index_tip_address++;
-	        cpu->index_tip_address_incremented=1;
+                cpu->index_tip_address++;
+                cpu->index_tip_address_incremented=1;
             }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
