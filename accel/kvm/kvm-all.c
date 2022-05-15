@@ -2372,8 +2372,9 @@ int kvm_cpu_exec(CPUState *cpu)
             struct kvm_guest_debug debug;
             memset(&debug, 0, sizeof(debug));
             debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_HW_BP;
-            debug.arch.debugreg[0] = 0xffffffff810b414e;
-            debug.arch.debugreg[7] = 0x0600 | (2 << (0*2));/* debug controls */
+            debug.arch.debugreg[0] = 0xffffffff810b414e;   /* cpu_idle */
+            debug.arch.debugreg[1] = 0xffffffff811a03fa;   /* free_one_page */
+            debug.arch.debugreg[7] = 0x0600 | (2 << (0*2)) | (2 << (1*2));/* debug controls */
             ret = kvm_vcpu_ioctl(cpu, KVM_SET_GUEST_DEBUG, &debug);
             if (ret < 0)
                 printf("Bug while doing ioctl to set guest debug\n");
@@ -2474,12 +2475,16 @@ int kvm_cpu_exec(CPUState *cpu)
             ret = 0;
             break;
         case KVM_EXIT_DEBUG:
+            if (run->debug.arch.pc == 0xffffffff811a03fa)
+                printf("Run debug : 0x%llx\n", run->debug.arch.pc);
             if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
                 qemu_mutex_lock(&timer_access_sequence_file_lock);
-                fprintf(timer_access_sequence_file,"CPU_RQ:%d\n", cpu->cpu_index);
+                if (run->debug.arch.pc == 0xffffffff810b414e)
+                    fprintf(timer_access_sequence_file,"CPU_RQ:%d\n", cpu->cpu_index);
+                if (run->debug.arch.pc == 0xffffffff811a03fa)
+                    fprintf(timer_access_sequence_file, "FREE_PG:%d\n", cpu->cpu_index);
                 qemu_mutex_unlock(&timer_access_sequence_file_lock);
             }
-            kvm_cpu_synchronize_state(cpu);
             ret = 0;
             break;
         case KVM_EXIT_HLT:
