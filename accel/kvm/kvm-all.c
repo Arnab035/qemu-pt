@@ -2368,16 +2368,6 @@ int kvm_cpu_exec(CPUState *cpu)
             kvm_cpu_kick_self();
         }
 
-	if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            struct kvm_guest_debug debug;
-            memset(&debug, 0, sizeof(debug));
-            debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP;
-            ret = kvm_vcpu_ioctl(cpu, KVM_SET_GUEST_DEBUG, &debug);
-            if (ret < 0)
-                printf("Bug while doing ioctl to set guest debug\n");
-	}
-
-
         /* Read cpu->exit_request before KVM_RUN reads run->immediate_exit.
          * Matching barrier in kvm_eat_signals.
          */
@@ -2469,10 +2459,6 @@ int kvm_cpu_exec(CPUState *cpu)
                 fprintf(timer_access_sequence_file,"EOI:%d\n", cpu->cpu_index);
                 qemu_mutex_unlock(&timer_access_sequence_file_lock);
             }
-            ret = 0;
-            break;
-        case KVM_EXIT_DEBUG:
-            printf("KVM EXIT DEBUG\n");
             ret = 0;
             break;
         case KVM_EXIT_HLT:

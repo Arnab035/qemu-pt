@@ -1265,6 +1265,16 @@ static void *qemu_kvm_cpu_thread_fn(void *arg)
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
+    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
+        struct kvm_guest_debug debug;
+        memset(&debug, 0, sizeof(debug));
+        int ret;
+        debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP;
+        ret = kvm_vcpu_ioctl(cpu, KVM_SET_GUEST_DEBUG, &debug);
+        if (ret < 0)
+            printf("Bug while doing ioctl to set guest debug\n");
+    }
+
     do {
         if (cpu_can_run(cpu)) {
             r = kvm_cpu_exec(cpu);
