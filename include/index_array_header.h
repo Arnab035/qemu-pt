@@ -18,6 +18,11 @@ struct tsc_counter_info {
   char *tsc_values;
 };
 
+/* time to store MTC values too */
+struct mtc_timer_info {
+  char *mtc_values;
+};
+
 extern int is_within_block;
 
 extern bool start_recording;

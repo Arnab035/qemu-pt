@@ -389,6 +389,7 @@ struct CPUState {
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
     struct tsc_counter_info *tsc_values;
+    struct mtc_timer_info *mtc_values;
     gzFile intel_pt_file;
 
     int divergence_count;

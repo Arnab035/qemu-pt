@@ -1265,16 +1265,6 @@ static void *qemu_kvm_cpu_thread_fn(void *arg)
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
-    if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-        struct kvm_guest_debug debug;
-        memset(&debug, 0, sizeof(debug));
-        int ret;
-        debug.control |= KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP;
-        ret = kvm_vcpu_ioctl(cpu, KVM_SET_GUEST_DEBUG, &debug);
-        if (ret < 0)
-            printf("Bug while doing ioctl to set guest debug\n");
-    }
-
     do {
         if (cpu_can_run(cpu)) {
             r = kvm_cpu_exec(cpu);
@@ -1573,10 +1563,13 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     int count_tip = 0;
     int count_fup = 0;
     int count_tsc = 0;
+    int count_mtc = 0;
 
     cpu->tip_addresses = malloc(1 * sizeof(struct tip_address_info));
     cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
     cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
+    /* we are going to store values of MTC now */
+    cpu->mtc_values = malloc(1 * sizeof(struct mtc_timer_info));
 
     if(!cpu->intel_pt_file) {
         fprintf(stderr, "gzopen of %s failed.\n", filename);
@@ -1708,6 +1701,17 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                     cpu->fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
                     cpu->fup_addresses[count_fup].type = 'I';
                     count_fup++;
+                }
+                else if (strncmp(copy, "MTC", 3) == 0) {
+                    /* store MTC values */
+                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    cpu->tnt_array[count] = 'M';
+                    count++;
+                    cpu->mtc_values = realloc(cpu->mtc_values, (count_mtc+1)*sizeof(struct mtc_timer_info));
+                    cpu->mtc_values[count_mtc].mtc_values = malloc(strlen(copy+6) * sizeof(char));
+                    memcpy(cpu->mtc_values[count_mtc].mtc_values, copy+6, strlen(copy+6));
+                    cpu->mtc_values[count_mtc].mtc_values[strlen(copy+6)] = '\0';
+                    count_mtc++;
                 }
             }
 	} else {
