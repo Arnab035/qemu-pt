@@ -4600,34 +4600,8 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         cpu->tnt_array[cpu->index_array] == 'F' && 
         do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc) {
             cpu->index_array++;
-            printf("VMEXIT here\n");
-            printf("s->pc: 0x%lx\n", s->pc);
             cpu->index_fup_address++;
             cpu->index_tip_address++;
-            if (s->pc == 0xffffffff810b414e) {
-                gen_jmp_im(s, s->pc - s->cs_base);
-                gen_eob(s);
-                if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-                    if (timer_type_sequence_array[timer_index_array] == 'C') {
-                        timer_index_array++;
-                    }
-                }
-            } else if (s->pc == 0xffffffff811a03fa) {
-                gen_jmp_im(s, s->pc - s->cs_base);
-                gen_eob(s);
-                if (arnab_replay_mode == REPLAY_MODE_PLAY) {
-                    if (timer_type_sequence_array[timer_index_array] == 'F') {
-                        timer_index_array++;
-                    }
-                }
-	    }
-            if (timer_cpuid_sequence_array[timer_index_array] == '0') {
-                is_cpu0_stalled = false;
-                is_cpu1_stalled = true;
-            } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
-                is_cpu0_stalled = true;
-                is_cpu1_stalled = false;
-            }
             return s->pc;
     }
 
