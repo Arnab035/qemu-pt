@@ -14,8 +14,15 @@ struct fup_address_info {
   char type;  // a single byte to indicate whether this is a FUP associated interrupt or VMEXIT
 };
 
+/*
+ * it is rare with limited experiment time,
+ * to have a TSC without a TMA. We ignore
+ * its absence for now.
+ */
 struct tsc_counter_info {
   char *tsc_values;
+  char *tma_ctc_values;
+  char *tma_fc_values;
 };
 
 /* time to store MTC values too */

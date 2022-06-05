@@ -1522,6 +1522,30 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
     copy[i] = '\0'; return count;
 }
 
+/*
+ * TMA pkt looks like this - TMA CTC 0x8618 FC 0x48
+ * we find the position of 'F', return it
+ *
+ */
+
+static int location_of_fc(char *copy_str) {
+    int i = 0;
+    int count_of_spaces = 0;
+
+    if (!copy_str)
+        return i;
+
+    while(copy_str[i] != '\n') {
+        if (copy_str[i] == ' ')
+            count_of_spaces++;
+        if (count_of_spaces == 3)
+            break;
+        i++;
+    }
+
+    return i+1;
+}
+
 /*  get_array_of_tnt_bits()
  *  parameters : none
  *  returns : the array containing the TNT bits
@@ -1609,10 +1633,18 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 } else {
                     /* this is a useful TIP, not FUP packet */
                     cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    if (!cpu->tnt_array) {
+                        printf("Running out of memory while allocating TNT array\n");
+                        exit(EXIT_FAILURE);
+                    }
                     cpu->tnt_array[count] = 'P';
                     count++;
                     cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
                     cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    if (!cpu->tip_addresses[count_tip].address) {
+                        printf("Running out of memory. We allocated %d packets\n", count_tip);
+                        exit(EXIT_FAILURE);
+                    }
                     memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
                     cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
                     cpu->tip_addresses[count_tip].is_useful=1;
@@ -1637,6 +1669,10 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	        prev_count = count;
 	        count += ((*++pch) - '0');
 	        cpu->tnt_array = realloc(cpu->tnt_array, count);
+                if (!cpu->tnt_array) {
+                    printf("Running out of memory while allocating TNT array\n");
+                    exit(EXIT_FAILURE);
+                }
 	        for(j=prev_count,k=0; j<count; j++, k++) {
 	            cpu->tnt_array[j]=copy[4+k];
 	        }
@@ -1667,11 +1703,23 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 if(strncmp(copy, "TIP", 3) == 0) {
 	            if(is_ignore_tip == 0) {
 	                cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                        if (!cpu->tnt_array) {
+                            printf("Running out of memory while allocating TNT array\n");
+                            exit(EXIT_FAILURE);
+                        }
 	                cpu->tnt_array[count] = 'P';
 	                count++;
 	                // enter TIP addresses into global tip_address_array //
 	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+                        if (!cpu->tip_addresses) {
+                            printf("Running out of memory while storing TIP addresses\n");
+                            exit(EXIT_FAILURE);
+                        }
 	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                        if (!cpu->tip_addresses[count_tip].address) {
+                            printf("Running out of memory while storing address of TIP packet\n");
+                            exit(EXIT_FAILURE);
+                        }
 	                memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
 	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
 	                cpu->tip_addresses[count_tip].is_useful=1;
@@ -1681,7 +1729,15 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	            }
 	            else {
 	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+                        if (!cpu->tip_addresses) {
+                            printf("Running out of memory while stroing TIP addresses\n");
+                            exit(EXIT_FAILURE);
+                        }
 	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+                        if (!cpu->tip_addresses[count_tip].address) {
+                            printf("Running out of memory while storing address of TIP packet\n");
+                            exit(EXIT_FAILURE);
+                        }
 	                memcpy(cpu->tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
 	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
 	                cpu->tip_addresses[count_tip].is_useful=0;
@@ -1693,10 +1749,22 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	        }
 	        else if(strncmp(copy, "FUP", 3) == 0) {
                     cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    if (!cpu->tnt_array) {
+                        printf("Running out of memory while storing TNT packets\n");
+                        exit(EXIT_FAILURE);
+                    }
                     cpu->tnt_array[count] = 'F';
                     count++;
                     cpu->fup_addresses = realloc(cpu->fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+                    if (!cpu->fup_addresses) {
+                        printf("Running out of memory while storing FUP addresses\n");
+                        exit(EXIT_FAILURE);
+                    }
                     cpu->fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    if (!cpu->fup_addresses[count_fup].address) {
+                        printf("Running out of memory while storing address of FUP packet\n");
+                        exit(EXIT_FAILURE);
+                    }
                     memcpy(cpu->fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
                     cpu->fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
                     cpu->fup_addresses[count_fup].type = 'I';
@@ -1705,10 +1773,22 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 else if (strncmp(copy, "MTC", 3) == 0) {
                     /* store MTC values */
                     cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    if (!cpu->tnt_array) {
+                        printf("Running out of memory while storing TNT packets\n");
+                        exit(EXIT_FAILURE);
+                    }
                     cpu->tnt_array[count] = 'M';
                     count++;
                     cpu->mtc_values = realloc(cpu->mtc_values, (count_mtc+1)*sizeof(struct mtc_timer_info));
+                    if (!cpu->mtc_values) {
+                        printf("Running out of memory while storing MTC packets\n");
+                        exit(EXIT_FAILURE);
+                    }
                     cpu->mtc_values[count_mtc].mtc_values = malloc(strlen(copy+6) * sizeof(char));
+                    if (!cpu->mtc_values[count_mtc].mtc_values) {
+                        printf("Running out of memory while storing counter values of MTC\n");
+                        exit(EXIT_FAILURE);
+                    }
                     memcpy(cpu->mtc_values[count_mtc].mtc_values, copy+6, strlen(copy+6));
                     cpu->mtc_values[count_mtc].mtc_values[strlen(copy+6)] = '\0';
                     count_mtc++;
@@ -1717,10 +1797,47 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	} else {
             /* TSC packets are present between a PSB and PSBEND */
             if (strncmp(copy, "TSC", 3) == 0) {
+                cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                if (!cpu->tnt_array) {
+                    printf("Running out of memory while storing packets in TNT array\n");
+                    exit(EXIT_FAILURE);
+                }
+                cpu->tnt_array[count] = 'S';
+                count++;
                 cpu->tsc_values = realloc(cpu->tsc_values, (count_tsc+1) * sizeof(struct tsc_counter_info));
+                if (!cpu->tsc_values) {
+                    printf("Running out of memory while storing TSC packets\n");
+                }
                 cpu->tsc_values[count_tsc].tsc_values = malloc(strlen(copy+6) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tsc_values) {
+                    printf("Running out of memory while stroing TSC values\n");
+                    exit(EXIT_FAILURE);
+                }
                 memcpy(cpu->tsc_values[count_tsc].tsc_values, copy+6, strlen(copy+6));
                 cpu->tsc_values[count_tsc].tsc_values[strlen(copy+6)] = '\0';
+            }
+            /*
+	     * TMA packets are involved in timestamp calculation.
+	     * So, we associate the CTC and FC values with TSC packet for now.
+	     */
+            else if (strncmp(copy, "TMA", 3) == 0) {
+                int loc_of_fc = location_of_fc(copy);
+                int len_of_ctc = loc_of_fc -  1 - 10;
+                int len_of_fc = 2;  // FC packets are of 8 bits, so 2 HEX characters
+                cpu->tsc_values[count_tsc].tma_ctc_values = malloc((len_of_ctc+1) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tma_ctc_values) {
+                    printf("Running out of memory while storing TMA CTC packets\n");
+                    exit(EXIT_FAILURE);
+                }
+                memcpy(cpu->tsc_values[count_tsc].tma_ctc_values, copy+10, len_of_ctc);
+                cpu->tsc_values[count_tsc].tma_ctc_values[len_of_ctc] = '\0';
+                cpu->tsc_values[count_tsc].tma_fc_values = malloc((len_of_fc + 1) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tma_fc_values) {
+                    printf("Running out of memory while storing TMA FC packets\n");
+                    exit(EXIT_FAILURE);
+                }
+                memcpy(cpu->tsc_values[count_tsc].tma_fc_values, copy+loc_of_fc+5, 2);
+                cpu->tsc_values[count_tsc].tma_fc_values[2] = '\0';
                 count_tsc++;
             }
         }
