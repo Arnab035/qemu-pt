@@ -4596,6 +4596,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
+
+    if (cpu->tnt_array[cpu->index_array] == 'M' ||
+               cpu->tnt_array[cpu->index_array] == 'S') {
+        cpu->index_array++;
+        return s->pc;
+    }
     if (cpu->fup_addresses[cpu->index_fup_address].type == 'V' &&
         cpu->tnt_array[cpu->index_array] == 'F' && 
         do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc) {
