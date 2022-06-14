@@ -1349,7 +1349,7 @@ static int64_t tcg_get_icount_limit(void)
          * was set (as there is no QEMU_CLOCK_VIRTUAL timer) or it is more than
          * INT32_MAX nanoseconds ahead, we still use INT32_MAX
          * nanoseconds. */
-         
+
     if ((deadline < 0) || (deadline > INT32_MAX)) {
         deadline = INT32_MAX;
     }
@@ -1520,6 +1520,132 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
     }
     if(pos+i > end) return -1;
     copy[i] = '\0'; return count;
+}
+
+static int find_first_tsc_index(CPUState *cpu, int count) {
+    int i = 0;
+    for( i=0; i < count; i++) {
+        if (cpu->tnt_array[i] == 'S')
+            return i;
+    }
+    return -1;
+}
+
+/*
+ * this function pre-computes all of the TSC values from oher clock sources
+ * it is possible that some of the values calculated are not very accurate
+ * we will use MTC packets in IntelPT and use the algorithm to compute
+ * described in the Intel Software Developer Manual(Volume III).
+ */
+
+static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_tsc_value,
+                                    bool last_is_last_tsc,
+                                    int last_tma_ctc_value,
+				    int last_mtc_payload) {
+    /* first find TSC and get TMA packet */
+    int i = 0;
+    int j = 0;
+    int tsc_index = 0;
+    int tma_ctc_value = 0;
+    unsigned long tsc_value = 0;
+    bool is_last_tsc = false;
+    int number_of_crystal_clocks_passed = 0; // we expect it to be bounded
+    int computed_tsc_index = 0;
+    /* http://halobates.de/blog/p/432 */
+    int mtcfreq = 3;
+    int mtc_index = 0;
+    int mtc_next;
+    int mtc_payload = 0, prev_mtc_payload = 0;
+
+    if (!cpu->computed_tsc_values) {
+        if (!last_tsc_value) {
+            cpu->computed_tsc_values = malloc(1 * sizeof(unsigned long));
+            if (!cpu->computed_tsc_values) {
+                printf("Running out of memory while "
+                      "allocating computed TSC values from TMA/MTC\n");
+                exit(EXIT_FAILURE);
+            }
+            i = find_first_tsc_index(cpu, count);
+            if (i == -1) {
+                /* most likely there is no TSC packet, exit */
+                return;
+            }
+            tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
+            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            computed_tsc_index += 1;
+            tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
+            is_last_tsc = true;
+            tsc_index += 1;
+        } else {
+            /*
+	     * we need to maintain this because IntelPT processing happens
+	     * in stages now
+	     */
+            is_last_tsc = last_is_last_tsc;
+            tma_ctc_value = last_tma_ctc_value;
+        }
+    }
+    for (j = i; j < count; j++) {
+        /* found MTC */
+        if (cpu->tnt_array[j] == 'M') {
+            /* next MTC after a TSC */
+            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values, computed_tsc_index+1);
+            if (!cpu->computed_tsc_values) {
+                printf("Running out of memory while "
+			"allocating computed TSC values array");
+                exit(EXIT_FAILURE);
+            }
+            if (is_last_tsc) {
+                tma_ctc_value &= 0xffff;
+                /*
+		 * number of crystal clocks passed since next MTC
+		 * is given by
+		 * CTC[15:0] = CTC[15:0](next) - TMA.CTC[15:0]
+		 * where CTC[15:0](next) = MTC(payload) << MTCFrequency
+                 */
+                mtc_payload = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
+                mtc_next = mtc_payload << mtcfreq;
+                number_of_crystal_clocks_passed = (mtc_next & 0xffff) - tma_ctc_value;
+                is_last_tsc = false;
+            }
+            /*
+	     * between two MTC packets
+	     * A and B, number of crystal clock cycles
+	     * passed is calculated from the 8-bit payloads
+	     * of respective MTC packets
+	     * (CTCB - CTCA) where CTCi = MTCi[15:8] << MTCFrequency
+	     * and i = A, B.
+	     */
+            else {
+                mtc_payload = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
+                if (mtc_index > 0) {
+                    prev_mtc_payload = do_strtoul(cpu->mtc_values[mtc_index - 1].mtc_value);
+                } else {
+                    prev_mtc_payload = last_mtc_payload;
+                }
+                number_of_crystal_clocks_passed = ((mtc_payload & 0xff00) -
+				              (prev_mtc_payload & 0xff00)) << mtcfreq;
+            }
+            tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] +
+                          (number_of_crystal_clocks_passed * (150/2)); // 150/2 is ratio of frequencies
+                                                                      // we got this doing cpuid
+            mtc_index += 1;
+            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            computed_tsc_index += 1;
+        }
+        // if you found a TSC value, put it into the array anyway
+	else if (cpu->tnt_array[j] == 'S') {
+            is_last_tsc = true;
+            tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
+            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            computed_tsc_index += 1;
+            tsc_index += 1;
+        }
+    }
+    cpu->last_tsc_value = tsc_value;
+    cpu->last_mtc_payload = mtc_payload;
+    cpu->last_is_last_tsc = is_last_tsc;
+    cpu->last_tma_ctc_value = tma_ctc_value;
 }
 
 /*
@@ -1784,13 +1910,13 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                         printf("Running out of memory while storing MTC packets\n");
                         exit(EXIT_FAILURE);
                     }
-                    cpu->mtc_values[count_mtc].mtc_values = malloc(strlen(copy+6) * sizeof(char));
-                    if (!cpu->mtc_values[count_mtc].mtc_values) {
+                    cpu->mtc_values[count_mtc].mtc_value = malloc(strlen(copy+6) * sizeof(char));
+                    if (!cpu->mtc_values[count_mtc].mtc_value) {
                         printf("Running out of memory while storing counter values of MTC\n");
                         exit(EXIT_FAILURE);
                     }
-                    memcpy(cpu->mtc_values[count_mtc].mtc_values, copy+6, strlen(copy+6));
-                    cpu->mtc_values[count_mtc].mtc_values[strlen(copy+6)] = '\0';
+                    memcpy(cpu->mtc_values[count_mtc].mtc_value, copy+6, strlen(copy+6));
+                    cpu->mtc_values[count_mtc].mtc_value[strlen(copy+6)] = '\0';
                     count_mtc++;
                 }
             }
@@ -1808,13 +1934,13 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 if (!cpu->tsc_values) {
                     printf("Running out of memory while storing TSC packets\n");
                 }
-                cpu->tsc_values[count_tsc].tsc_values = malloc(strlen(copy+6) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tsc_values) {
+                cpu->tsc_values[count_tsc].tsc_value = malloc(strlen(copy+6) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tsc_value) {
                     printf("Running out of memory while stroing TSC values\n");
                     exit(EXIT_FAILURE);
                 }
-                memcpy(cpu->tsc_values[count_tsc].tsc_values, copy+6, strlen(copy+6));
-                cpu->tsc_values[count_tsc].tsc_values[strlen(copy+6)] = '\0';
+                memcpy(cpu->tsc_values[count_tsc].tsc_value, copy+6, strlen(copy+6));
+                cpu->tsc_values[count_tsc].tsc_value[strlen(copy+6)] = '\0';
             }
             /*
 	     * TMA packets are involved in timestamp calculation.
@@ -1824,20 +1950,20 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                 int loc_of_fc = location_of_fc(copy);
                 int len_of_ctc = loc_of_fc -  1 - 10;
                 int len_of_fc = 2;  // FC packets are of 8 bits, so 2 HEX characters
-                cpu->tsc_values[count_tsc].tma_ctc_values = malloc((len_of_ctc+1) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tma_ctc_values) {
+                cpu->tsc_values[count_tsc].tma_ctc_value = malloc((len_of_ctc+1) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tma_ctc_value) {
                     printf("Running out of memory while storing TMA CTC packets\n");
                     exit(EXIT_FAILURE);
                 }
-                memcpy(cpu->tsc_values[count_tsc].tma_ctc_values, copy+10, len_of_ctc);
-                cpu->tsc_values[count_tsc].tma_ctc_values[len_of_ctc] = '\0';
-                cpu->tsc_values[count_tsc].tma_fc_values = malloc((len_of_fc + 1) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tma_fc_values) {
+                memcpy(cpu->tsc_values[count_tsc].tma_ctc_value, copy+10, len_of_ctc);
+                cpu->tsc_values[count_tsc].tma_ctc_value[len_of_ctc] = '\0';
+                cpu->tsc_values[count_tsc].tma_fc_value = malloc((len_of_fc + 1) * sizeof(char));
+                if (!cpu->tsc_values[count_tsc].tma_fc_value) {
                     printf("Running out of memory while storing TMA FC packets\n");
                     exit(EXIT_FAILURE);
                 }
-                memcpy(cpu->tsc_values[count_tsc].tma_fc_values, copy+loc_of_fc+5, 2);
-                cpu->tsc_values[count_tsc].tma_fc_values[2] = '\0';
+                memcpy(cpu->tsc_values[count_tsc].tma_fc_value, copy+loc_of_fc+5, 2);
+                cpu->tsc_values[count_tsc].tma_fc_value[2] = '\0';
                 count_tsc++;
             }
         }
@@ -1859,6 +1985,9 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 # endif
    // preprocess the tip addresses //
     preprocess_tip_array(cpu, count_tip);
+    precompute_tsc_values(cpu, count, cpu->last_tsc_value,
+		    cpu->last_is_last_tsc, cpu->last_tma_ctc_value,
+                    cpu->last_mtc_payload); // pass number of 'general' intelpt packets
 
     cpu->last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
     strcpy(cpu->last_tip_address, cpu->tip_addresses[count_tip-1].address);

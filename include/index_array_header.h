@@ -20,14 +20,14 @@ struct fup_address_info {
  * its absence for now.
  */
 struct tsc_counter_info {
-  char *tsc_values;
-  char *tma_ctc_values;
-  char *tma_fc_values;
+  char *tsc_value;
+  char *tma_ctc_value;
+  char *tma_fc_value;
 };
 
 /* time to store MTC values too */
 struct mtc_timer_info {
-  char *mtc_values;
+  char *mtc_value;
 };
 
 extern int is_within_block;

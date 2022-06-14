@@ -392,6 +392,11 @@ struct CPUState {
     struct mtc_timer_info *mtc_values;
     gzFile intel_pt_file;
 
+    unsigned long *computed_tsc_values;
+    unsigned long last_tsc_value;
+    int last_mtc_payload;
+    int last_tma_ctc_value;
+    bool last_is_last_tsc;  // whether the last packet was MTC or TSC?
     int divergence_count;
     char *last_tip_address;
     int tnt_index_limit;
