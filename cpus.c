@@ -1531,6 +1531,20 @@ static int find_first_tsc_index(CPUState *cpu, int count) {
     return -1;
 }
 
+static int find_first_mtc_after_tsc(CPUState *cpu, int count) {
+    int i = 0;
+    int mtc_index = 0;
+    for (i = 0; i < count; i++) {
+        if (cpu->tnt_array[i] == 'M') {
+            mtc_index++;
+        }
+	else if (cpu->tnt_array[i] == 'S') {
+            break;
+        }
+    }
+    return mtc_index;
+}
+
 /*
  * this function pre-computes all of the TSC values from oher clock sources
  * it is possible that some of the values calculated are not very accurate
@@ -1566,16 +1580,20 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 exit(EXIT_FAILURE);
             }
             i = find_first_tsc_index(cpu, count);
-            if (i == -1) {
+            mtc_index = find_first_mtc_after_tsc(cpu, count);
+            if (i == -1)
                 /* most likely there is no TSC packet, exit */
                 return;
-            }
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            printf("computed tsc value: %lx %d\n", cpu->computed_tsc_values[computed_tsc_index],
+                                                  computed_tsc_index);
             computed_tsc_index += 1;
             tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
             is_last_tsc = true;
             tsc_index += 1;
+            if (mtc_index == -1)
+                goto end;
         } else {
             /*
 	     * we need to maintain this because IntelPT processing happens
@@ -1583,13 +1601,15 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
 	     */
             is_last_tsc = last_is_last_tsc;
             tma_ctc_value = last_tma_ctc_value;
+            mtc_payload = last_mtc_payload;
+            tsc_value = last_tsc_value;
         }
     }
-    for (j = i; j < count; j++) {
+    for (j = i+1; j < count; j++) {
         /* found MTC */
         if (cpu->tnt_array[j] == 'M') {
             /* next MTC after a TSC */
-            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values, computed_tsc_index+1);
+            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values, (computed_tsc_index+1) * sizeof(unsigned long));
             if (!cpu->computed_tsc_values) {
                 printf("Running out of memory while "
 			"allocating computed TSC values array");
@@ -1606,6 +1626,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 mtc_payload = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
                 mtc_next = mtc_payload << mtcfreq;
                 number_of_crystal_clocks_passed = (mtc_next & 0xffff) - tma_ctc_value;
+                number_of_crystal_clocks_passed &= 0xffff;
                 is_last_tsc = false;
             }
             /*
@@ -1623,8 +1644,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 } else {
                     prev_mtc_payload = last_mtc_payload;
                 }
-                number_of_crystal_clocks_passed = ((mtc_payload & 0xff00) -
-				              (prev_mtc_payload & 0xff00)) << mtcfreq;
+                number_of_crystal_clocks_passed = (mtc_payload - prev_mtc_payload) << mtcfreq;
             }
             tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] +
                           (number_of_crystal_clocks_passed * (150/2)); // 150/2 is ratio of frequencies
@@ -1642,6 +1662,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
             tsc_index += 1;
         }
     }
+end:
     cpu->last_tsc_value = tsc_value;
     cpu->last_mtc_payload = mtc_payload;
     cpu->last_is_last_tsc = is_last_tsc;
