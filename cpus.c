@@ -1609,7 +1609,8 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
         /* found MTC */
         if (cpu->tnt_array[j] == 'M') {
             /* next MTC after a TSC */
-            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values, (computed_tsc_index+1) * sizeof(unsigned long));
+            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values,
+			    (computed_tsc_index+2) * sizeof(unsigned long));
             if (!cpu->computed_tsc_values) {
                 printf("Running out of memory while "
 			"allocating computed TSC values array");
@@ -1644,7 +1645,12 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 } else {
                     prev_mtc_payload = last_mtc_payload;
                 }
-                number_of_crystal_clocks_passed = (mtc_payload - prev_mtc_payload) << mtcfreq;
+                /* account for MTC rollover, time should move forward ;) */
+                if (mtc_payload < prev_mtc_payload) {
+                    number_of_crystal_clocks_passed = ((0xff - prev_mtc_payload) + 1 + mtc_payload) << mtcfreq;
+                } else {
+                    number_of_crystal_clocks_passed = (mtc_payload - prev_mtc_payload) << mtcfreq;
+                }
             }
             tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] +
                           (number_of_crystal_clocks_passed * (150/2)); // 150/2 is ratio of frequencies
