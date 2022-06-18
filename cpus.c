@@ -1545,9 +1545,9 @@ static int find_first_mtc_after_tsc(CPUState *cpu, int count) {
     return mtc_index;
 }
 
-static int compute_ctc_delta(int ctc, int prev_ctc) {
+static int compute_ctc_delta(int ctc, int prev_ctc, int mtcfreq) {
     if (ctc < prev_ctc) {
-        ctc += 1u << (3 + 8);
+        ctc += 1u << (mtcfreq + 8);
     }
     return ctc - prev_ctc;
 }
@@ -1567,7 +1567,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
     int i = 0;
     int j = 0;
     int tsc_index = 0;
-    int tma_ctc_value = 0;
+    int tma_ctc_value, tma_fc_value;
     unsigned long tsc_value = 0;
     unsigned long tsc_delta = 0;
     bool is_last_tsc = false;
@@ -1589,15 +1589,15 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 exit(EXIT_FAILURE);
             }
             i = find_first_tsc_index(cpu, count);
-            mtc_index = find_first_mtc_after_tsc(cpu, count);
             if (i == -1)
-                /* most likely there is no TSC packet, exit */
                 return;
+            mtc_index = find_first_mtc_after_tsc(cpu, count);
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
             computed_tsc_index += 1;
             tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
-            ctc_mask = (1u << (3+8)) - 1u;  // 3 is the frequency
+            tma_fc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_fc_value);
+            ctc_mask = (1u << (mtcfreq+8)) - 1u;
             tma_ctc_value &= ctc_mask;
             is_last_tsc = true;
             tsc_index += 1;
@@ -1619,7 +1619,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
         if (cpu->tnt_array[j] == 'M') {
             /* next MTC after a TSC */
             cpu->computed_tsc_values = realloc(cpu->computed_tsc_values,
-			    (computed_tsc_index+2) * sizeof(unsigned long));
+				(computed_tsc_index+2) * sizeof(unsigned long));
             if (!cpu->computed_tsc_values) {
                 printf("Running out of memory while "
 			"allocating computed TSC values array");
@@ -1634,8 +1634,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                  */
                 mtc_payload = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
                 mtc_next = mtc_payload << mtcfreq;
-                number_of_crystal_clocks_passed = (mtc_next & 0xffff) - tma_ctc_value;
-                number_of_crystal_clocks_passed &= 0xffff;
+                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_next, tma_ctc_value, mtcfreq);
                 is_last_tsc = false;
             }
             /*
@@ -1653,7 +1652,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 } else {
                     prev_mtc_payload = last_mtc_payload;
                 }
-                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload);
+                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload, mtcfreq);
             }
             tsc_delta = number_of_crystal_clocks_passed * (150/2);
             tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta; // 150/2 is ratio of frequencies
