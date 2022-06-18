@@ -1545,9 +1545,9 @@ static int find_first_mtc_after_tsc(CPUState *cpu, int count) {
     return mtc_index;
 }
 
-static int compute_ctc_delta(int ctc, int prev_ctc, int mtcfreq) {
+static int compute_ctc_delta(int ctc, int prev_ctc) {
     if (ctc < prev_ctc) {
-        ctc += 1u << (mtcfreq + 8);
+        ctc += 256;
     }
     return ctc - prev_ctc;
 }
@@ -1594,9 +1594,11 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
             mtc_index = find_first_mtc_after_tsc(cpu, count);
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            printf("computed tsc value due to TSC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             computed_tsc_index += 1;
             tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
             tma_fc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_fc_value);
+            /* we ignore the higher order bits not provided by MTC */
             ctc_mask = (1u << (mtcfreq+8)) - 1u;
             tma_ctc_value &= ctc_mask;
             is_last_tsc = true;
@@ -1634,7 +1636,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                  */
                 mtc_payload = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
                 mtc_next = mtc_payload << mtcfreq;
-                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_next, tma_ctc_value, mtcfreq);
+                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_next, tma_ctc_value);
                 is_last_tsc = false;
             }
             /*
@@ -1652,12 +1654,14 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 } else {
                     prev_mtc_payload = last_mtc_payload;
                 }
-                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload, mtcfreq);
+                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload);
+                tma_fc_value = 0;
             }
-            tsc_delta = number_of_crystal_clocks_passed * (150/2);
-            tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta; // 150/2 is ratio of frequencies
+            tsc_delta = number_of_crystal_clocks_passed * (150/2); // 150/2 is frequency ratio.
+            tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta - tma_fc_value;
             mtc_index += 1;
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            printf("computed tsc value due to MTC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             computed_tsc_index += 1;
         }
         // if you found a TSC value, put it into the array anyway
@@ -1665,10 +1669,13 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
             is_last_tsc = true;
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            printf("computed tsc value due to TSC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             computed_tsc_index += 1;
             tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
-            ctc_mask = (1u << (3+8)) - 1u;  // 3 is the frequency
+             /* we ignore the higher order bits not provided by MTC */
+            ctc_mask = (1u << (mtcfreq+8)) - 1u;
             tma_ctc_value &= ctc_mask;
+            tma_fc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_fc_value);
             tsc_index += 1;
         }
     }
