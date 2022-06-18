@@ -1545,6 +1545,13 @@ static int find_first_mtc_after_tsc(CPUState *cpu, int count) {
     return mtc_index;
 }
 
+static int compute_ctc_delta(int ctc, int prev_ctc) {
+    if (ctc < prev_ctc) {
+        ctc += 1u << (3 + 8);
+    }
+    return ctc - prev_ctc;
+}
+
 /*
  * this function pre-computes all of the TSC values from oher clock sources
  * it is possible that some of the values calculated are not very accurate
@@ -1562,6 +1569,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
     int tsc_index = 0;
     int tma_ctc_value = 0;
     unsigned long tsc_value = 0;
+    unsigned long tsc_delta = 0;
     bool is_last_tsc = false;
     int number_of_crystal_clocks_passed = 0; // we expect it to be bounded
     int computed_tsc_index = 0;
@@ -1570,6 +1578,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
     int mtc_index = 0;
     int mtc_next;
     int mtc_payload = 0, prev_mtc_payload = 0;
+    int ctc_mask;
 
     if (!cpu->computed_tsc_values) {
         if (!last_tsc_value) {
@@ -1586,10 +1595,10 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 return;
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
-            printf("computed tsc value: %lx %d\n", cpu->computed_tsc_values[computed_tsc_index],
-                                                  computed_tsc_index);
             computed_tsc_index += 1;
             tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
+            ctc_mask = (1u << (3+8)) - 1u;  // 3 is the frequency
+            tma_ctc_value &= ctc_mask;
             is_last_tsc = true;
             tsc_index += 1;
             if (mtc_index == -1)
@@ -1617,7 +1626,6 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 exit(EXIT_FAILURE);
             }
             if (is_last_tsc) {
-                tma_ctc_value &= 0xffff;
                 /*
 		 * number of crystal clocks passed since next MTC
 		 * is given by
@@ -1645,16 +1653,10 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 } else {
                     prev_mtc_payload = last_mtc_payload;
                 }
-                /* account for MTC rollover, time should move forward ;) */
-                if (mtc_payload < prev_mtc_payload) {
-                    number_of_crystal_clocks_passed = ((0xff - prev_mtc_payload) + 1 + mtc_payload) << mtcfreq;
-                } else {
-                    number_of_crystal_clocks_passed = (mtc_payload - prev_mtc_payload) << mtcfreq;
-                }
+                number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload);
             }
-            tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] +
-                          (number_of_crystal_clocks_passed * (150/2)); // 150/2 is ratio of frequencies
-                                                                      // we got this doing cpuid
+            tsc_delta = number_of_crystal_clocks_passed * (150/2);
+            tsc_value = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta; // 150/2 is ratio of frequencies
             mtc_index += 1;
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
             computed_tsc_index += 1;
@@ -1665,6 +1667,9 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
             cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
             computed_tsc_index += 1;
+            tma_ctc_value = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
+            ctc_mask = (1u << (3+8)) - 1u;  // 3 is the frequency
+            tma_ctc_value &= ctc_mask;
             tsc_index += 1;
         }
     }
