@@ -1569,7 +1569,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
     int tsc_index = 0; // two pointers to array
     int mtc_index = 0;
     int computed_tsc_index = 0;
-    int ctc, mtc_payload, prev_mtc_payload, tsc_delta;
+    int ctc, mtc_payload, prev_mtc_payload, tsc_delta, fc;
     /* http://halobates.de/blog/p/432 */
     int mtcfreq = 3;
     unsigned long tsc_value = 0;
@@ -1640,21 +1640,32 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 }
                 number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload) << mtcfreq;
             }
-            tsc_delta = number_of_crystal_clocks_passed * (150 / 2);
+            tsc_delta = (number_of_crystal_clocks_passed * (150 / 2)) - fc;
             cpu->computed_tsc_values[computed_tsc_index] = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta;
             printf("computed tsc value due to MTC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             computed_tsc_index += 1;
             mtc_index += 1;
+            fc = 0;
         }
         // if you found a TSC value, put it into the array anyway
 	else if (cpu->tnt_array[j] == 'S') {
             is_last_tsc = true;
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
-            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            if (computed_tsc_index > 0) {
+                if (tsc_value < cpu->computed_tsc_values[computed_tsc_index-1]) {
+                    cpu->computed_tsc_values[computed_tsc_index-1] = tsc_value;
+                    computed_tsc_index -= 1;
+                } else {
+                    cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+                }
+            } else {
+                cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
+            }
             printf("computed tsc value due to TSC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             ctc = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
              /* we ignore the higher order bits not provided by MTC */
             ctc = (ctc >> mtcfreq) & 0xff;
+            fc = do_strtoul(cpu->tsc_values[tsc_index].tma_fc_value);
             tsc_index += 1;
             computed_tsc_index += 1;
         }
