@@ -1651,16 +1651,7 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
 	else if (cpu->tnt_array[j] == 'S') {
             is_last_tsc = true;
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
-            if (computed_tsc_index > 0) {
-                if (tsc_value < cpu->computed_tsc_values[computed_tsc_index-1]) {
-                    cpu->computed_tsc_values[computed_tsc_index-1] = tsc_value;
-                    computed_tsc_index -= 1;
-                } else {
-                    cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
-                }
-            } else {
-                cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
-            }
+            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
             printf("computed tsc value due to TSC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
             ctc = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
              /* we ignore the higher order bits not provided by MTC */
