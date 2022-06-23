@@ -30,6 +30,8 @@ struct mtc_timer_info {
   char *mtc_value;
 };
 
+extern unsigned long **precomputed_tsc_values;
+
 extern int is_within_block;
 
 extern bool start_recording;

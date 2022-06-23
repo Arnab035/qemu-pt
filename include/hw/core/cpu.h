@@ -392,7 +392,6 @@ struct CPUState {
     struct mtc_timer_info *mtc_values;
     gzFile intel_pt_file;
 
-    unsigned long *computed_tsc_values;
     unsigned long last_tsc_value;
     int last_mtc_payload;
     int last_tma_ctc_value;
@@ -407,6 +406,7 @@ struct CPUState {
     int prev_index_fup_address;
     int prev_index_array;
     bool is_core_simulation_finished;
+    bool consume_precomputed_tsc;
     unsigned long long total_packets_consumed;
     unsigned long long number_of_lines_consumed;
     int index_array_incremented;

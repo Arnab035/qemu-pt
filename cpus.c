@@ -96,6 +96,9 @@ static bool disk_replay_done_at_init = false;
 static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
 
+/* precomputed tsc values per CPU */
+unsigned long **precomputed_tsc_values = NULL;
+
 
 #define CPU_THROTTLE_PCT_MIN 1
 #define CPU_THROTTLE_PCT_MAX 99
@@ -1576,10 +1579,10 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
     bool is_last_tsc = false;
     int number_of_crystal_clocks_passed;
 
-    if (!cpu->computed_tsc_values) {
+    if (!precomputed_tsc_values[cpu->cpu_index]) {
         if (!last_tsc_value) {
-            cpu->computed_tsc_values = malloc(1 * sizeof(unsigned long));
-            if (!cpu->computed_tsc_values) {
+            precomputed_tsc_values[cpu->cpu_index] = malloc(1 * sizeof(unsigned long));
+            if (!precomputed_tsc_values[cpu->cpu_index]) {
                 printf("Running out of memory while "
                       "allocating computed TSC values from TMA/MTC\n");
                 exit(EXIT_FAILURE);
@@ -1605,9 +1608,9 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
         /* found MTC */
         if (cpu->tnt_array[j] == 'M') {
             /* next MTC after a TSC */
-            cpu->computed_tsc_values = realloc(cpu->computed_tsc_values,
+            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
 				(computed_tsc_index+2) * sizeof(unsigned long));
-            if (!cpu->computed_tsc_values) {
+            if (!precomputed_tsc_values[cpu->cpu_index]) {
                 printf("Running out of memory while "
 			"allocating computed TSC values array");
                 exit(EXIT_FAILURE);
@@ -1641,8 +1644,9 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
                 number_of_crystal_clocks_passed = compute_ctc_delta(mtc_payload, prev_mtc_payload) << mtcfreq;
             }
             tsc_delta = (number_of_crystal_clocks_passed * (150 / 2)) - fc;
-            cpu->computed_tsc_values[computed_tsc_index] = cpu->computed_tsc_values[computed_tsc_index-1] + tsc_delta;
-            printf("computed tsc value due to MTC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
+            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index] =
+                                   precomputed_tsc_values[cpu->cpu_index][computed_tsc_index-1] + tsc_delta;
+            printf("computed tsc value due to MTC: 0x%lx\n", precomputed_tsc_values[cpu->cpu_index][computed_tsc_index]);
             computed_tsc_index += 1;
             mtc_index += 1;
             fc = 0;
@@ -1651,8 +1655,8 @@ static void precompute_tsc_values(CPUState *cpu, int count, unsigned long last_t
 	else if (cpu->tnt_array[j] == 'S') {
             is_last_tsc = true;
             tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
-            cpu->computed_tsc_values[computed_tsc_index] = tsc_value;
-            printf("computed tsc value due to TSC: 0x%lx\n", cpu->computed_tsc_values[computed_tsc_index]);
+            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index] = tsc_value;
+            printf("computed tsc value due to TSC: 0x%lx\n", precomputed_tsc_values[cpu->cpu_index][computed_tsc_index]);
             ctc = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
              /* we ignore the higher order bits not provided by MTC */
             ctc = (ctc >> mtcfreq) & 0xff;
@@ -2026,6 +2030,16 @@ static int tcg_cpu_exec(CPUState *cpu)
 #endif
     /* create tnt_array here */
     // static char *tnt_array = NULL;
+    //
+    if (precomputed_tsc_values == NULL) {
+        precomputed_tsc_values = (unsigned long **)malloc(2 * sizeof(unsigned long *));
+        if (!precomputed_tsc_values) {
+            printf("Could not allocate array for precomputed tsc values\n");
+            exit(EXIT_FAILURE);
+        }
+        precomputed_tsc_values[0] = NULL;
+        precomputed_tsc_values[1] = NULL;
+    }
 
     if(cpu->tnt_array == NULL) {
         get_array_of_tnt_bits(cpu);
