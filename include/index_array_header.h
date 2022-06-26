@@ -30,7 +30,9 @@ struct mtc_timer_info {
   char *mtc_value;
 };
 
+/* these are associated with per-cpu precomputed timer values */
 extern unsigned long **precomputed_tsc_values;
+extern unsigned long *precomputed_tsc_values_index;
 
 extern int is_within_block;
 

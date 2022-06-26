@@ -4599,6 +4599,43 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 
     if (cpu->tnt_array[cpu->index_array] == 'M' ||
                cpu->tnt_array[cpu->index_array] == 'S') {
+        if (cpu->tnt_array[cpu->index_array] == 'S' &&
+             !cpu->consume_precomputed_tsc) {
+            cpu->consume_precomputed_tsc = true;
+        }
+        if (cpu->consume_precomputed_tsc) {
+            if (cpu->cpu_index == 0) {
+                /* this is cpu0
+		 * if cpu0(current tsc) > cpu1(next tsc), schedule cpu1
+		 * otherwise let cpu 0 continue */
+                printf("Now scheduling: cpu0:  0x%lx\n",
+				precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]]);
+                printf("cpu1: 0x%lx\n",
+                                precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
+                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]] >
+                        precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+                    is_cpu0_stalled = true;
+                    is_cpu1_stalled = false;
+                } else {
+                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
+                }
+            } else if (cpu->cpu_index == 1) {
+                /* this is cpu1
+		 * if cpu1(current tsc) > cpu0(next tsc), schedule cpu0
+		 * otherwise let cpu 1 continue */
+                printf("Now scheduling: cpu1:  0x%lx\n",
+                         precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]]);
+                printf("cpu0: 0x%lx\n",
+                          precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
+                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]] >
+                       precomputed_tsc_values[0][precomputed_tsc_values_index[0]]) {
+                    is_cpu0_stalled = false;
+                    is_cpu1_stalled = true;
+                } else {
+                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
+                }
+            }
+        }
         cpu->index_array++;
         return s->pc;
     }
