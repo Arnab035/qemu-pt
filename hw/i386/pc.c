@@ -750,10 +750,6 @@ static void create_timer_access_sequence_array(const char *filename)
             timer_type_sequence_array[i] = 'E'; // EOI signal
         } else if (strcmp(timer_type, "HLT") == 0) {
             timer_type_sequence_array[i] = 'L';
-        } else if (strcmp(timer_type, "CPU_RQ") == 0) {
-            timer_type_sequence_array[i] = 'C';
-        } else if (strcmp(timer_type, "FREE_PG") == 0) {
-            timer_type_sequence_array[i] = 'F';
         }
         cpuid = strtok(NULL,":");
         /* only 2 CPUs now */
