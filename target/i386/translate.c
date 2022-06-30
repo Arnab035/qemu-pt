@@ -4564,7 +4564,32 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->fup_addresses = NULL;
             cpu->index_fup_address = 0;
         }
+        if (cpu->mtc_values) {
+            int i = 0;
+            while (cpu->mtc_values[i].mtc_value) {
+                free(cpu->mtc_values[i].mtc_value);
+                cpu->mtc_values[i].mtc_value = NULL;
+                i++;
+            }
+            free(cpu->mtc_values);
+            cpu->mtc_values = NULL;
+        }
+        if (cpu->tsc_values) {
+            int i = 0;
+            while (cpu->tsc_values[i].tsc_value) {
+                free(cpu->tsc_values[i].tsc_value);
+                cpu->tsc_values[i].tsc_value = NULL;
+                free(cpu->tsc_values[i].tma_ctc_value);
+                cpu->tsc_values[i].tma_ctc_value = NULL;
+                free(cpu->tsc_values[i].tma_fc_value);
+                cpu->tsc_values[i].tma_fc_value = NULL;
+                i++;
+            }
+            free(cpu->tsc_values);
+            cpu->tsc_values = NULL;
+        }
         if (!cpu->is_core_simulation_finished) {
+            get_array_of_timing_packets(cpu);
             get_array_of_tnt_bits(cpu);
         }
     }

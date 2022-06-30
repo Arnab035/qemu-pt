@@ -1682,6 +1682,123 @@ static int location_of_fc(char *copy_str) {
     return i+1;
 }
 
+/* the intel pt trace now is read in 2 passes
+ * the first pass gets us all the TSC, MTC, TMA packets
+ * till a certain number of lines have been read in the
+ * trace. this segregation will help since we need to
+ * pause reading other intel pt packets when the
+ * VM is running in root mode, but timing packets
+ * need to still be collected
+ *
+ * get_array_of_timing_packets()
+ * parameters: none
+ * returns the array containing the timing packets
+ */
+
+void get_array_of_timing_packets(CPUState *cpu) {
+    int cpu_index = cpu->cpu_index;
+    bool is_useful = false;
+    char *pch_pip;
+    int max_lines_read = 3000000, curr_lines_read;
+
+    char filename[100] = {'\0'};
+    sprintf(filename, "%s_%d.txt.gz", intel_pt_trace_file_prefix, cpu_index);
+
+    if (!cpu->intel_pt_file_timer) {
+        cpu->intel_pt_file_timer = gzopen(filename, "r");
+        if (!cpu->intel_pt_file_timer) {
+            fprintf(stderr, "gzopen of %s failed.\n", filename);
+            exit(EXIT_FAILURE);
+        }
+    }
+    cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
+    if (!cpu->tsc_values) {
+        printf("Could not allocate memory to store TSC values\n");
+        exit(EXIT_FAILURE);
+    }
+    cpu->mtc_values = malloc(1 * sizeof(struct mtc_timer_info));
+    if (!cpu->mtc_values) {
+        printf("Could not allocate memory to store MTC values\n");
+        exit(EXIT_FAILURE);
+    }
+    int count_tsc = 0;
+    int count_mtc = 0;
+    char copy[50];
+    while (1) {
+        if (gzgets(cpu->intel_pt_file_timer, copy, 50) != 0) {
+            copy[strcspn(copy, "\n")] = 0;
+            curr_lines_read += 1;
+        } else {
+            /* will be taken care of by the other function that reads non-timer packets */
+            break;
+        }
+        if (strncmp(copy, "PIP", 3) == 0) {
+            pch_pip = strchr(copy, '=');
+            if ((*++pch_pip - '0') == 0) {
+                is_useful = false;
+            }
+	    else if ((*++pch_pip - '0') == 1) {
+                is_useful = true;
+            }
+        }
+        if (strncmp(copy, "MTC", 3) == 0) {
+            cpu->mtc_values = realloc(cpu->mtc_values, (count_mtc+1)*sizeof(struct mtc_timer_info));
+            if (!cpu->mtc_values) {
+                printf("Running out of memory while storing MTC values\n");
+                exit(EXIT_FAILURE);
+            }
+            cpu->mtc_values[count_mtc].mtc_value = malloc(strlen(copy+6) * sizeof(char));
+            if (!cpu->mtc_values[count_mtc].mtc_value) {
+                printf("Running out of memory while storing counter values of MTC\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(cpu->mtc_values[count_mtc].mtc_value, copy+6, strlen(copy+6));
+            cpu->mtc_values[count_mtc].mtc_value[strlen(copy+6)] = '\0';
+            cpu->mtc_values[count_mtc].is_useful = is_useful;
+            count_mtc++;
+        }
+	else if (strncmp(copy, "TSC", 3) == 0) {
+            cpu->tsc_values = realloc(cpu->tsc_values, (count_tsc+1)*sizeof(struct tsc_counter_info));
+            if (!cpu->tsc_values) {
+                printf("Running out of memory while storing TSC packets\n");
+                exit(EXIT_FAILURE);
+            }
+            cpu->tsc_values[count_tsc].tsc_value = malloc(strlen(copy+6) * sizeof(char));
+            if (!cpu->tsc_values[count_tsc].tsc_value) {
+                printf("Running out of memory while stroing TSC values\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(cpu->tsc_values[count_tsc].tsc_value, copy+6, strlen(copy+6));
+            cpu->tsc_values[count_tsc].tsc_value[strlen(copy+6)] = '\0';
+	}
+        else if (strncmp(copy, "TMA", 3) == 0) {
+            int loc_of_fc = location_of_fc(copy);
+            int len_of_ctc = loc_of_fc - 1 - 10;
+            int len_of_fc = 2;
+            cpu->tsc_values[count_tsc].tma_ctc_value = malloc((len_of_ctc+1) * sizeof(char));
+            if (!cpu->tsc_values[count_tsc].tma_ctc_value) {
+                printf("Running out of memory while storing TMA CTC packets\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(cpu->tsc_values[count_tsc].tma_ctc_value, copy+10, len_of_ctc);
+            cpu->tsc_values[count_tsc].tma_ctc_value[len_of_ctc] = '\0';
+            cpu->tsc_values[count_tsc].tma_fc_value = malloc((len_of_fc + 1) * sizeof(char));
+            if (!cpu->tsc_values[count_tsc].tma_fc_value) {
+                printf("Running out of memory while storing TMA FC packets\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(cpu->tsc_values[count_tsc].tma_fc_value, copy+loc_of_fc+5, 2);
+            cpu->tsc_values[count_tsc].tma_fc_value[2] = '\0';
+            cpu->tsc_values[count_tsc].is_useful = is_useful;
+            count_tsc++;
+        }
+        if (curr_lines_read >= max_lines_read) {
+            if (strncmp(copy, "TNT", 3) == 0)
+                break;
+        }
+    }
+}
+
 /*  get_array_of_tnt_bits()
  *  parameters : none
  *  returns : the array containing the TNT bits
@@ -1695,6 +1812,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     char *pch_pip;
     bool stop_parsing_due_to_heartbeat = false;
     bool stop_parsing_due_to_overflow = false;
+    bool stop_parsing_due_to_guest_in_nonroot_mode = false;
     //int len;
 
     int is_ignore_tip = 0;
@@ -1713,8 +1831,8 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     }
 
     //tnt_array[0] = 'P';
-    if (!cpu->intel_pt_file) {
-        cpu->intel_pt_file = gzopen(filename, "r");
+    if (!cpu->intel_pt_file_other) {
+        cpu->intel_pt_file_other = gzopen(filename, "r");
     }
     cpu->tnt_index_limit = 0;
 
@@ -1722,29 +1840,33 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 
     int count_tip = 0;
     int count_fup = 0;
-    int count_tsc = 0;
-    int count_mtc = 0;
 
     cpu->tip_addresses = malloc(1 * sizeof(struct tip_address_info));
     cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
-    cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
-    /* we are going to store values of MTC now */
-    cpu->mtc_values = malloc(1 * sizeof(struct mtc_timer_info));
 
-    if(!cpu->intel_pt_file) {
+    if(!cpu->intel_pt_file_other) {
         fprintf(stderr, "gzopen of %s failed.\n", filename);
         exit(EXIT_FAILURE);
     }
 
     char copy[50];
     while(1) {
-        if(gzgets(cpu->intel_pt_file, copy, 50) != 0) {
+        if(gzgets(cpu->intel_pt_file_other, copy, 50) != 0) {
             copy[strcspn(copy, "\n")] = 0;
             curr_lines_read += 1;
         } else {
             printf("Incorrect read from gz file. Simulation probably finished...\n");
             cpu->is_core_simulation_finished = true;
             break;
+        }
+        if (strncmp(copy, "PIP", 3) == 0) {
+            pch_pip = strchr(copy, '=');
+            if((*++pch_pip - '0') == 1) {
+                stop_parsing_due_to_guest_in_nonroot_mode = false;
+            }
+        }
+        if (stop_parsing_due_to_guest_in_nonroot_mode) {
+            continue;
         }
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
@@ -1823,6 +1945,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	            is_ignore_pip = 1;
             // the FUP preceding this PIP will represent the source address for a VMEXIT
                     cpu->fup_addresses[count_fup-1].type = 'V';
+                    stop_parsing_due_to_guest_in_nonroot_mode = true;
 	        }
 	    /* VMENTRY */
 	        else {
@@ -1915,69 +2038,19 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                     }
                     cpu->tnt_array[count] = 'M';
                     count++;
-                    cpu->mtc_values = realloc(cpu->mtc_values, (count_mtc+1)*sizeof(struct mtc_timer_info));
-                    if (!cpu->mtc_values) {
-                        printf("Running out of memory while storing MTC packets\n");
-                        exit(EXIT_FAILURE);
-                    }
-                    cpu->mtc_values[count_mtc].mtc_value = malloc(strlen(copy+6) * sizeof(char));
-                    if (!cpu->mtc_values[count_mtc].mtc_value) {
-                        printf("Running out of memory while storing counter values of MTC\n");
-                        exit(EXIT_FAILURE);
-                    }
-                    memcpy(cpu->mtc_values[count_mtc].mtc_value, copy+6, strlen(copy+6));
-                    cpu->mtc_values[count_mtc].mtc_value[strlen(copy+6)] = '\0';
-                    count_mtc++;
                 }
             }
-	} else {
-            /* TSC packets are present between a PSB and PSBEND */
+        } else {
             if (strncmp(copy, "TSC", 3) == 0) {
                 cpu->tnt_array = realloc(cpu->tnt_array, count+1);
                 if (!cpu->tnt_array) {
-                    printf("Running out of memory while storing packets in TNT array\n");
+                    printf("Running out of memory while storing TSC packets in TNT array\n");
                     exit(EXIT_FAILURE);
                 }
                 cpu->tnt_array[count] = 'S';
                 count++;
-                cpu->tsc_values = realloc(cpu->tsc_values, (count_tsc+1) * sizeof(struct tsc_counter_info));
-                if (!cpu->tsc_values) {
-                    printf("Running out of memory while storing TSC packets\n");
-                }
-                cpu->tsc_values[count_tsc].tsc_value = malloc(strlen(copy+6) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tsc_value) {
-                    printf("Running out of memory while stroing TSC values\n");
-                    exit(EXIT_FAILURE);
-                }
-                memcpy(cpu->tsc_values[count_tsc].tsc_value, copy+6, strlen(copy+6));
-                cpu->tsc_values[count_tsc].tsc_value[strlen(copy+6)] = '\0';
-            }
-            /*
-	     * TMA packets are involved in timestamp calculation.
-	     * So, we associate the CTC and FC values with TSC packet for now.
-	     */
-            else if (strncmp(copy, "TMA", 3) == 0) {
-                int loc_of_fc = location_of_fc(copy);
-                int len_of_ctc = loc_of_fc -  1 - 10;
-                int len_of_fc = 2;  // FC packets are of 8 bits, so 2 HEX characters
-                cpu->tsc_values[count_tsc].tma_ctc_value = malloc((len_of_ctc+1) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tma_ctc_value) {
-                    printf("Running out of memory while storing TMA CTC packets\n");
-                    exit(EXIT_FAILURE);
-                }
-                memcpy(cpu->tsc_values[count_tsc].tma_ctc_value, copy+10, len_of_ctc);
-                cpu->tsc_values[count_tsc].tma_ctc_value[len_of_ctc] = '\0';
-                cpu->tsc_values[count_tsc].tma_fc_value = malloc((len_of_fc + 1) * sizeof(char));
-                if (!cpu->tsc_values[count_tsc].tma_fc_value) {
-                    printf("Running out of memory while storing TMA FC packets\n");
-                    exit(EXIT_FAILURE);
-                }
-                memcpy(cpu->tsc_values[count_tsc].tma_fc_value, copy+loc_of_fc+5, 2);
-                cpu->tsc_values[count_tsc].tma_fc_value[2] = '\0';
-                count_tsc++;
             }
         }
-        //start += pos+1;
         if (curr_lines_read >= max_lines_read) {
             if (strncmp(copy, "TNT", 3) == 0) {
                 break;
@@ -1997,7 +2070,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     preprocess_tip_array(cpu, count_tip);
     precompute_tsc_values(cpu, count, cpu->last_tsc_value,
 		    cpu->last_tma_ctc_value,
-                    cpu->last_mtc_payload); // pass number of 'general' intelpt packets
+                    cpu->last_mtc_payload);
 
     cpu->last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
     strcpy(cpu->last_tip_address, cpu->tip_addresses[count_tip-1].address);

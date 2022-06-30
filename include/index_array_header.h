@@ -23,11 +23,15 @@ struct tsc_counter_info {
   char *tsc_value;
   char *tma_ctc_value;
   char *tma_fc_value;
+  // a marker that says if TSC value appears when guest is executing
+  bool is_useful;
 };
 
 /* time to store MTC values too */
 struct mtc_timer_info {
   char *mtc_value;
+  // a marker that says if MTC packet appears when guest is executing
+  bool is_useful;
 };
 
 /* these are associated with per-cpu precomputed timer values */

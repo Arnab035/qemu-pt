@@ -10,6 +10,7 @@ void resume_all_vcpus(void);
 void pause_all_vcpus(void);
 void cpu_stop_current(void);
 void cpu_ticks_init(void);
+void get_array_of_timing_packets(CPUState *cpu);
 void get_array_of_tnt_bits(CPUState *cpu);
 
 void configure_icount(QemuOpts *opts, Error **errp);

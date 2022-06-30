@@ -390,7 +390,14 @@ struct CPUState {
     struct fup_address_info *fup_addresses;
     struct tsc_counter_info *tsc_values;
     struct mtc_timer_info *mtc_values;
-    gzFile intel_pt_file;
+    /* we have two file pointers - one for reading timer data
+     * the other for reading other packets
+     * this is inefficient - but let's get it to work first
+     * it is expected that both these pointers will always be in sync
+     * if not, something is wrong
+     * */
+    gzFile intel_pt_file_timer;
+    gzFile intel_pt_file_other;
 
     unsigned long last_tsc_value;
     int last_mtc_payload;
