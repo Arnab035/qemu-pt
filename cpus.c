@@ -1760,6 +1760,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
         if (stop_parsing_due_to_guest_in_nonroot_mode) {
             continue;
         }
+
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
             stop_parsing_due_to_heartbeat = false;
@@ -1841,9 +1842,6 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	        }
 	    /* VMENTRY */
 	        else {
-                    if (is_ignore_pip == 0 && curr_lines_read >= 5) {
-                        continue;
-                    }
                     is_ignore_tip = 1;
 	            if(is_ignore_pip == 1) {
 	                is_ignore_pip = 0;
@@ -1952,7 +1950,6 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     cpu->tnt_index_limit = count;
     cpu->number_of_lines_consumed += curr_lines_read;
     printf("Number of lines consumed: %llu\n for cpu %d\n", cpu->number_of_lines_consumed, cpu->cpu_index);
-
 #if 0
     printf("TNT array: %d\n", count);
     printf("FUP array: %d\n", count_fup);
