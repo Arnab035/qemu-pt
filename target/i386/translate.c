@@ -4564,32 +4564,8 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->fup_addresses = NULL;
             cpu->index_fup_address = 0;
         }
-        if (cpu->mtc_values) {
-            int i = 0;
-            while (cpu->mtc_values[i].mtc_value) {
-                free(cpu->mtc_values[i].mtc_value);
-                cpu->mtc_values[i].mtc_value = NULL;
-                i++;
-            }
-            free(cpu->mtc_values);
-            cpu->mtc_values = NULL;
-        }
-        if (cpu->tsc_values) {
-            int i = 0;
-            while (cpu->tsc_values[i].tsc_value) {
-                free(cpu->tsc_values[i].tsc_value);
-                cpu->tsc_values[i].tsc_value = NULL;
-                free(cpu->tsc_values[i].tma_ctc_value);
-                cpu->tsc_values[i].tma_ctc_value = NULL;
-                free(cpu->tsc_values[i].tma_fc_value);
-                cpu->tsc_values[i].tma_fc_value = NULL;
-                i++;
-            }
-            free(cpu->tsc_values);
-            cpu->tsc_values = NULL;
-        }
         if (!cpu->is_core_simulation_finished) {
-            get_array_of_timing_packets(cpu);
+            get_array_of_timing_values(cpu);
             get_array_of_tnt_bits(cpu);
         }
     }
@@ -4632,13 +4608,23 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             if (cpu->cpu_index == 0) {
                 /* this is cpu0
 		 * if cpu0(current tsc) > cpu1(next tsc), schedule cpu1
-		 * otherwise let cpu 0 continue */
+		 * otherwise let cpu 0 continue
+		 * only compare those precomputed TSC values,
+		 * that represent the time when the guest is running in a
+		 * non-root mode
+		 * */
+                while (!precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].is_useful) {
+                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
+                }
+                while (!precomputed_tsc_values[1][precomputed_tsc_values_index[1]].is_useful) {
+                    precomputed_tsc_values_index[1] += 1;
+                }
                 printf("Now scheduling: cpu0:  0x%lx\n",
-				precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]]);
+				precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value);
                 printf("cpu1: 0x%lx\n",
-                                precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
-                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]] >
-                        precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+                                precomputed_tsc_values[1][precomputed_tsc_values_index[1]].tsc_value);
+                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value >
+                        precomputed_tsc_values[1][precomputed_tsc_values_index[1]].tsc_value) {
                     is_cpu0_stalled = true;
                     is_cpu1_stalled = false;
                 } else {
@@ -4648,12 +4634,18 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 /* this is cpu1
 		 * if cpu1(current tsc) > cpu0(next tsc), schedule cpu0
 		 * otherwise let cpu 1 continue */
+                while (!precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].is_useful) {
+                    precomputed_tsc_values[cpu->cpu_index] += 1;
+                }
+                while (!precomputed_tsc_values[0][precomputed_tsc_values_index[0]].is_useful) {
+                    precomputed_tsc_values[0] += 1;
+                }
                 printf("Now scheduling: cpu1:  0x%lx\n",
-                         precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]]);
+                         precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value);
                 printf("cpu0: 0x%lx\n",
-                          precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
-                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]] >
-                       precomputed_tsc_values[0][precomputed_tsc_values_index[0]]) {
+                          precomputed_tsc_values[0][precomputed_tsc_values_index[0]].tsc_value);
+                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value >
+                       precomputed_tsc_values[0][precomputed_tsc_values_index[0]].tsc_value) {
                     is_cpu0_stalled = false;
                     is_cpu1_stalled = true;
                 } else {

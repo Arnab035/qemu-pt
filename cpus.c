@@ -97,7 +97,7 @@ static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
 
 /* precomputed tsc values per CPU */
-unsigned long **precomputed_tsc_values = NULL;
+struct tsc_val_meta **precomputed_tsc_values = NULL;
 unsigned long *precomputed_tsc_values_index = NULL;
 
 
@@ -1526,29 +1526,6 @@ int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
     copy[i] = '\0'; return count;
 }
 
-static int find_first_tsc_index(CPUState *cpu, int count) {
-    int i = 0;
-    for( i=0; i < count; i++) {
-        if (cpu->tnt_array[i] == 'S')
-            return i;
-    }
-    return -1;
-}
-
-static int find_first_mtc_after_tsc(CPUState *cpu, int count) {
-    int i = 0;
-    int mtc_index = 0;
-    for (i = 0; i < count; i++) {
-        if (cpu->tnt_array[i] == 'M') {
-            mtc_index++;
-        }
-	else if (cpu->tnt_array[i] == 'S') {
-            break;
-        }
-    }
-    return mtc_index;
-}
-
 static int compute_mtc_delta(int mtc, int last_mtc) {
     if (mtc > last_mtc) {
         return mtc - last_mtc;
@@ -1561,101 +1538,6 @@ static uint64_t multdiv(uint64_t t, uint32_t n, uint32_t d) {
     if (!d)
         return 0;
     return (t/d) * n + ((t % d) * n)/d;
-}
-
-/*
- * this function pre-computes all of the TSC values from oher clock sources
- * it is possible that some of the values calculated are not very accurate
- * we will use MTC packets in IntelPT and use the algorithm to compute
- * described in the Intel Software Developer Manual(Volume III).
- */
-
-static void precompute_tsc_values(CPUState *cpu, int count, unsigned long long last_tsc_value,
-                                    unsigned long long last_ctc_val,
-				    int last_mtc_payload) {
-    /* first find TSC and get TMA packet */
-    int i = 0;
-    int j = 0;
-    int tsc_index = 0; // two pointers to array
-    int mtc_index = 0;
-    int computed_tsc_index = 0;
-    uint32_t ctc, fc, ctc_rem, mtc, last_mtc, mtc_delta;
-    uint64_t ctc_timestamp, last_ctc, ctc_delta;
-    /* http://halobates.de/blog/p/432 */
-    int mtcfreq = 3;
-    int ctc_rem_mask = (1 << mtcfreq) - 1;
-    unsigned long tsc_value = 0;
-
-    if (!precomputed_tsc_values[cpu->cpu_index]) {
-        if (!last_tsc_value) {
-            i = find_first_tsc_index(cpu, count);
-            if (i == -1)
-                return;
-            mtc_index = find_first_mtc_after_tsc(cpu, count);
-            if (mtc_index == -1)
-                goto end;
-        } else {
-            /*
-	     * we need to maintain this because IntelPT processing happens
-	     * in stages now
-	     */
-            last_ctc = last_ctc_val;
-            last_mtc = last_mtc_payload;
-            tsc_value = last_tsc_value;
-        }
-    }
-    for (j = i; j < count; j++) {
-        /* found MTC */
-        if (cpu->tnt_array[j] == 'M') {
-            /* next MTC after a TSC */
-            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
-				(computed_tsc_index+1) * sizeof(unsigned long));
-            if (!precomputed_tsc_values[cpu->cpu_index]) {
-                printf("Running out of memory while "
-			"allocating computed TSC values array");
-                exit(EXIT_FAILURE);
-            }
-            mtc = do_strtoul(cpu->mtc_values[mtc_index].mtc_value);
-            mtc_delta = compute_mtc_delta(mtc, last_mtc);
-            ctc_delta += mtc_delta << mtcfreq;
-            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index] =
-                                   ctc_timestamp + multdiv(ctc_delta, 150, 2);
-            last_mtc = mtc;
-            printf("MTC: 0x%x\n", mtc);
-            printf("Computed TSC: 0x%lx\n", precomputed_tsc_values[cpu->cpu_index][computed_tsc_index]);
-            computed_tsc_index += 1;
-            mtc_index += 1;
-            fc = 0;
-        }
-        // if you found a TSC value, put it into the array anyway
-	else if (cpu->tnt_array[j] == 'S') {
-            tsc_value = do_strtoul(cpu->tsc_values[tsc_index].tsc_value);
-            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
-                             (computed_tsc_index+1) * sizeof(unsigned long));
-            if (!precomputed_tsc_values[cpu->cpu_index]) {
-                printf("Running out of memory while "
-                       "allocating computed TSC values array");
-                exit(EXIT_FAILURE);
-            }
-            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index] = tsc_value;
-            printf("TSC: 0x%lx\n", precomputed_tsc_values[cpu->cpu_index][computed_tsc_index]);
-            ctc = do_strtoul(cpu->tsc_values[tsc_index].tma_ctc_value);
-            ctc_rem = ctc & ctc_rem_mask;
-            fc = do_strtoul(cpu->tsc_values[tsc_index].tma_fc_value);
-            /* we ignore the higher order bits not provided by MTC */
-            last_mtc = (ctc >> mtcfreq) & 0xff;
-            last_ctc = ctc - ctc_rem;
-            ctc_timestamp = tsc_value - fc;
-            ctc_timestamp -= multdiv(ctc_rem, 150, 2);
-            ctc_delta = 0;
-            tsc_index += 1;
-            computed_tsc_index += 1;
-        }
-    }
-end:
-    cpu->last_tsc_value = tsc_value;
-    cpu->last_mtc_payload = last_mtc;
-    cpu->last_tma_ctc_value = last_ctc;
 }
 
 /*
@@ -1688,17 +1570,21 @@ static int location_of_fc(char *copy_str) {
  * trace. this segregation will help since we need to
  * pause reading other intel pt packets when the
  * VM is running in root mode, but timing packets
- * need to still be collected
+ * need to still be collected.
+ * at the same time, this function also computes all the 
+ * TSC values, this saves memory and time
  *
- * get_array_of_timing_packets()
+ * get_array_of_timing_values()
  * parameters: none
- * returns the array containing the timing packets
+ * returns the array containing the timing values
+ * stored in cpu->computed_tsc_values
  */
 
-void get_array_of_timing_packets(CPUState *cpu) {
+void get_array_of_timing_values(CPUState *cpu) {
     int cpu_index = cpu->cpu_index;
     bool is_useful = false;
     char *pch_pip;
+    bool start_tsc_computation = false;
     int max_lines_read = 3000000, curr_lines_read;
 
     char filename[100] = {'\0'};
@@ -1711,18 +1597,13 @@ void get_array_of_timing_packets(CPUState *cpu) {
             exit(EXIT_FAILURE);
         }
     }
-    cpu->tsc_values = malloc(1 * sizeof(struct tsc_counter_info));
-    if (!cpu->tsc_values) {
-        printf("Could not allocate memory to store TSC values\n");
-        exit(EXIT_FAILURE);
-    }
-    cpu->mtc_values = malloc(1 * sizeof(struct mtc_timer_info));
-    if (!cpu->mtc_values) {
-        printf("Could not allocate memory to store MTC values\n");
-        exit(EXIT_FAILURE);
-    }
-    int count_tsc = 0;
-    int count_mtc = 0;
+    int computed_tsc_index = 0;
+    uint32_t ctc, fc, ctc_rem, mtc_value, last_mtc, mtc_delta;
+    uint64_t ctc_timestamp, ctc_delta, tsc_value;
+    /* http://halobates.de/blog/p/432 */
+    int mtcfreq = 3;
+    int ctc_rem_mask = (1 << mtcfreq) - 1;
+    char tsc[16], mtc[3], tma_ctc[5], tma_fc[3];
     char copy[50];
     while (1) {
         if (gzgets(cpu->intel_pt_file_timer, copy, 50) != 0) {
@@ -1742,61 +1623,72 @@ void get_array_of_timing_packets(CPUState *cpu) {
             }
         }
         if (strncmp(copy, "MTC", 3) == 0) {
-            cpu->mtc_values = realloc(cpu->mtc_values, (count_mtc+1)*sizeof(struct mtc_timer_info));
-            if (!cpu->mtc_values) {
-                printf("Running out of memory while storing MTC values\n");
+            if (start_tsc_computation) {
+                precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index], 
+                                   (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
+                if (!precomputed_tsc_values[cpu->cpu_index]) {
+                    printf("Running out of memory while computing and storing TSC values\n");
+                    exit(EXIT_FAILURE);
+                }
+                memcpy(mtc, copy+6, strlen(copy+6));
+                mtc[strlen(copy+6)] = '\0';
+                mtc_value = do_strtoul(mtc);
+                mtc_delta = compute_mtc_delta(mtc_value, last_mtc);
+                ctc_delta += mtc_delta << mtcfreq;
+                precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].tsc_value = 
+                                                 ctc_timestamp + multdiv(ctc_delta, 150, 2);
+                precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].is_useful = is_useful;
+                last_mtc = mtc_value;
+                computed_tsc_index += 1;
+                fc = 0;
+            }
+        } else if (strncmp(copy, "TSC", 3) == 0) {
+            if (!start_tsc_computation)
+                start_tsc_computation = true;
+            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index], 
+                              (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
+            if (!precomputed_tsc_values[cpu->cpu_index]) {
+                printf("Running out of memory while computing and storing TSC values\n");
                 exit(EXIT_FAILURE);
             }
-            cpu->mtc_values[count_mtc].mtc_value = malloc(strlen(copy+6) * sizeof(char));
-            if (!cpu->mtc_values[count_mtc].mtc_value) {
-                printf("Running out of memory while storing counter values of MTC\n");
+            memcpy(tsc, copy+6, strlen(copy+6));
+            tsc[strlen(copy+6)] = '\0';
+            tsc_value = do_strtoul(tsc);
+            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
+                                     (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
+            if (!precomputed_tsc_values[cpu->cpu_index]) {
+                printf("Running out of memory while "
+                        "allocating computed TSC values array");
                 exit(EXIT_FAILURE);
             }
-            memcpy(cpu->mtc_values[count_mtc].mtc_value, copy+6, strlen(copy+6));
-            cpu->mtc_values[count_mtc].mtc_value[strlen(copy+6)] = '\0';
-            cpu->mtc_values[count_mtc].is_useful = is_useful;
-            count_mtc++;
-        }
-	else if (strncmp(copy, "TSC", 3) == 0) {
-            cpu->tsc_values = realloc(cpu->tsc_values, (count_tsc+1)*sizeof(struct tsc_counter_info));
-            if (!cpu->tsc_values) {
-                printf("Running out of memory while storing TSC packets\n");
-                exit(EXIT_FAILURE);
-            }
-            cpu->tsc_values[count_tsc].tsc_value = malloc(strlen(copy+6) * sizeof(char));
-            if (!cpu->tsc_values[count_tsc].tsc_value) {
-                printf("Running out of memory while stroing TSC values\n");
-                exit(EXIT_FAILURE);
-            }
-            memcpy(cpu->tsc_values[count_tsc].tsc_value, copy+6, strlen(copy+6));
-            cpu->tsc_values[count_tsc].tsc_value[strlen(copy+6)] = '\0';
-	}
-        else if (strncmp(copy, "TMA", 3) == 0) {
+            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].tsc_value = tsc_value;
+            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].is_useful = is_useful;
+            computed_tsc_index += 1;
+        } else if (strncmp(copy, "TMA", 3) == 0) {
             int loc_of_fc = location_of_fc(copy);
             int len_of_ctc = loc_of_fc - 1 - 10;
             int len_of_fc = 2;
-            cpu->tsc_values[count_tsc].tma_ctc_value = malloc((len_of_ctc+1) * sizeof(char));
-            if (!cpu->tsc_values[count_tsc].tma_ctc_value) {
-                printf("Running out of memory while storing TMA CTC packets\n");
-                exit(EXIT_FAILURE);
-            }
-            memcpy(cpu->tsc_values[count_tsc].tma_ctc_value, copy+10, len_of_ctc);
-            cpu->tsc_values[count_tsc].tma_ctc_value[len_of_ctc] = '\0';
-            cpu->tsc_values[count_tsc].tma_fc_value = malloc((len_of_fc + 1) * sizeof(char));
-            if (!cpu->tsc_values[count_tsc].tma_fc_value) {
-                printf("Running out of memory while storing TMA FC packets\n");
-                exit(EXIT_FAILURE);
-            }
-            memcpy(cpu->tsc_values[count_tsc].tma_fc_value, copy+loc_of_fc+5, 2);
-            cpu->tsc_values[count_tsc].tma_fc_value[2] = '\0';
-            cpu->tsc_values[count_tsc].is_useful = is_useful;
-            count_tsc++;
-        }
+            memcpy(tma_ctc, copy+10, len_of_ctc);
+            tma_ctc[len_of_ctc] = '\0';
+            memcpy(tma_fc, copy+loc_of_fc+5, len_of_fc);
+            tma_fc[2] = '\0';
+            ctc = do_strtoul(tma_ctc);
+            ctc_rem = ctc & ctc_rem_mask;
+            fc = do_strtoul(tma_fc);
+            last_mtc = (ctc >> mtcfreq) & 0xff;
+            ctc_timestamp = tsc_value - fc;
+            ctc_timestamp -= multdiv(ctc_rem, 150, 2);
+            ctc_delta = 0;
+        } else
+             continue;
         if (curr_lines_read >= max_lines_read) {
             if (strncmp(copy, "TNT", 3) == 0)
                 break;
         }
     }
+    cpu->last_tsc_value = tsc_value;
+    cpu->last_mtc_payload = last_mtc;
+    cpu->last_tma_ctc_value = ctc;
 }
 
 /*  get_array_of_tnt_bits()
@@ -1812,7 +1704,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     char *pch_pip;
     bool stop_parsing_due_to_heartbeat = false;
     bool stop_parsing_due_to_overflow = false;
-    bool stop_parsing_due_to_guest_in_nonroot_mode = false;
+    bool stop_parsing_due_to_guest_in_nonroot_mode = true;
     //int len;
 
     int is_ignore_tip = 0;
@@ -2068,9 +1960,6 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 # endif
    // preprocess the tip addresses //
     preprocess_tip_array(cpu, count_tip);
-    precompute_tsc_values(cpu, count, cpu->last_tsc_value,
-		    cpu->last_tma_ctc_value,
-                    cpu->last_mtc_payload);
 
     cpu->last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
     strcpy(cpu->last_tip_address, cpu->tip_addresses[count_tip-1].address);
@@ -2091,7 +1980,7 @@ static int tcg_cpu_exec(CPUState *cpu)
     // static char *tnt_array = NULL;
     //
     if (precomputed_tsc_values == NULL) {
-        precomputed_tsc_values = (unsigned long **)malloc(2 * sizeof(unsigned long *));
+        precomputed_tsc_values = (struct tsc_val_meta **)malloc(2 * sizeof(struct tsc_val_meta *));
         if (!precomputed_tsc_values) {
             printf("Could not allocate array for precomputed tsc values\n");
             exit(EXIT_FAILURE);
@@ -2109,6 +1998,7 @@ static int tcg_cpu_exec(CPUState *cpu)
     }
 
     if(cpu->tnt_array == NULL) {
+        get_array_of_timing_values(cpu);
         get_array_of_tnt_bits(cpu);
     }
 

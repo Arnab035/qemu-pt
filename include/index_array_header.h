@@ -19,23 +19,14 @@ struct fup_address_info {
  * to have a TSC without a TMA. We ignore
  * its absence for now.
  */
-struct tsc_counter_info {
-  char *tsc_value;
-  char *tma_ctc_value;
-  char *tma_fc_value;
+struct tsc_val_meta {
+  uint64_t tsc_value;
   // a marker that says if TSC value appears when guest is executing
   bool is_useful;
 };
 
-/* time to store MTC values too */
-struct mtc_timer_info {
-  char *mtc_value;
-  // a marker that says if MTC packet appears when guest is executing
-  bool is_useful;
-};
-
 /* these are associated with per-cpu precomputed timer values */
-extern unsigned long **precomputed_tsc_values;
+extern struct tsc_val_meta **precomputed_tsc_values;
 extern unsigned long *precomputed_tsc_values_index;
 
 extern int is_within_block;

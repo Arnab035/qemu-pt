@@ -388,8 +388,6 @@ struct CPUState {
     char *tnt_array;
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
-    struct tsc_counter_info *tsc_values;
-    struct mtc_timer_info *mtc_values;
     /* we have two file pointers - one for reading timer data
      * the other for reading other packets
      * this is inefficient - but let's get it to work first
@@ -399,7 +397,7 @@ struct CPUState {
     gzFile intel_pt_file_timer;
     gzFile intel_pt_file_other;
 
-    unsigned long last_tsc_value;
+    uint64_t last_tsc_value;
     int last_mtc_payload;
     int last_tma_ctc_value;
     bool last_is_last_tsc;  // whether the last packet was MTC or TSC?
