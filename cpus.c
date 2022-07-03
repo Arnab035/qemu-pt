@@ -1584,8 +1584,8 @@ void get_array_of_timing_values(CPUState *cpu) {
     int cpu_index = cpu->cpu_index;
     bool is_useful = false;
     char *pch_pip;
-    bool start_tsc_computation = false;
     int max_lines_read = 3000000, curr_lines_read;
+    bool start_recording = false;
 
     char filename[100] = {'\0'};
     sprintf(filename, "%s_%d.txt.gz", intel_pt_trace_file_prefix, cpu_index);
@@ -1618,12 +1618,14 @@ void get_array_of_timing_values(CPUState *cpu) {
             if ((*++pch_pip - '0') == 0) {
                 is_useful = false;
             }
-	    else if ((*++pch_pip - '0') == 1) {
+	    else {
+                printf("NR: %s\n", pch_pip);
                 is_useful = true;
+                /* start recording timing values from the first vmentry */
             }
         }
         if (strncmp(copy, "MTC", 3) == 0) {
-            if (start_tsc_computation) {
+            if (start_recording) {
                 precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index], 
                                    (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
                 if (!precomputed_tsc_values[cpu->cpu_index]) {
@@ -1643,42 +1645,44 @@ void get_array_of_timing_values(CPUState *cpu) {
                 fc = 0;
             }
         } else if (strncmp(copy, "TSC", 3) == 0) {
-            if (!start_tsc_computation)
-                start_tsc_computation = true;
-            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index], 
+            if (is_useful) {
+                /* first time you get a TSC when the guest is in non-root mode, start recording */
+                if (!start_recording) {
+                    start_recording = true;
+                }
+                if (start_recording) {
+                    precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
                               (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
-            if (!precomputed_tsc_values[cpu->cpu_index]) {
-                printf("Running out of memory while computing and storing TSC values\n");
-                exit(EXIT_FAILURE);
+                    if (!precomputed_tsc_values[cpu->cpu_index]) {
+                        printf("Running out of memory while computing and storing TSC values\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    memcpy(tsc, copy+6, strlen(copy+6));
+                    tsc[strlen(copy+6)] = '\0';
+                    tsc_value = do_strtoul(tsc);
+                    /* only record those TSC values when the guest is running in non-root mode */
+                    precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].tsc_value = tsc_value;
+                    precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].is_useful = is_useful;
+                    computed_tsc_index += 1;
+                }
             }
-            memcpy(tsc, copy+6, strlen(copy+6));
-            tsc[strlen(copy+6)] = '\0';
-            tsc_value = do_strtoul(tsc);
-            precomputed_tsc_values[cpu->cpu_index] = realloc(precomputed_tsc_values[cpu->cpu_index],
-                                     (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
-            if (!precomputed_tsc_values[cpu->cpu_index]) {
-                printf("Running out of memory while "
-                        "allocating computed TSC values array");
-                exit(EXIT_FAILURE);
-            }
-            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].tsc_value = tsc_value;
-            precomputed_tsc_values[cpu->cpu_index][computed_tsc_index].is_useful = is_useful;
-            computed_tsc_index += 1;
         } else if (strncmp(copy, "TMA", 3) == 0) {
-            int loc_of_fc = location_of_fc(copy);
-            int len_of_ctc = loc_of_fc - 1 - 10;
-            int len_of_fc = 2;
-            memcpy(tma_ctc, copy+10, len_of_ctc);
-            tma_ctc[len_of_ctc] = '\0';
-            memcpy(tma_fc, copy+loc_of_fc+5, len_of_fc);
-            tma_fc[2] = '\0';
-            ctc = do_strtoul(tma_ctc);
-            ctc_rem = ctc & ctc_rem_mask;
-            fc = do_strtoul(tma_fc);
-            last_mtc = (ctc >> mtcfreq) & 0xff;
-            ctc_timestamp = tsc_value - fc;
-            ctc_timestamp -= multdiv(ctc_rem, 150, 2);
-            ctc_delta = 0;
+            if (start_recording) {
+                int loc_of_fc = location_of_fc(copy);
+                int len_of_ctc = loc_of_fc - 1 - 10;
+                int len_of_fc = 2;
+                memcpy(tma_ctc, copy+10, len_of_ctc);
+                tma_ctc[len_of_ctc] = '\0';
+                memcpy(tma_fc, copy+loc_of_fc+5, len_of_fc);
+                tma_fc[2] = '\0';
+                ctc = do_strtoul(tma_ctc);
+                ctc_rem = ctc & ctc_rem_mask;
+                fc = do_strtoul(tma_fc);
+                last_mtc = (ctc >> mtcfreq) & 0xff;
+                ctc_timestamp = tsc_value - fc;
+                ctc_timestamp -= multdiv(ctc_rem, 150, 2);
+                ctc_delta = 0;
+            }
         } else
              continue;
         if (curr_lines_read >= max_lines_read) {
@@ -1896,7 +1900,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
 	                is_ignore_tip=0;
                     }
 	        }
-	        else if(strncmp(copy, "FUP", 3) == 0) {
+                else if(strncmp(copy, "FUP", 3) == 0) {
                     cpu->tnt_array = realloc(cpu->tnt_array, count+1);
                     if (!cpu->tnt_array) {
                         printf("Running out of memory while storing TNT packets\n");

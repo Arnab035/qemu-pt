@@ -4635,10 +4635,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 		 * if cpu1(current tsc) > cpu0(next tsc), schedule cpu0
 		 * otherwise let cpu 1 continue */
                 while (!precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].is_useful) {
-                    precomputed_tsc_values[cpu->cpu_index] += 1;
+                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
                 }
                 while (!precomputed_tsc_values[0][precomputed_tsc_values_index[0]].is_useful) {
-                    precomputed_tsc_values[0] += 1;
+                    precomputed_tsc_values_index[0] += 1;
                 }
                 printf("Now scheduling: cpu1:  0x%lx\n",
                          precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value);
