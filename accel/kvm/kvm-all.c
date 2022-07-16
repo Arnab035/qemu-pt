@@ -2319,6 +2319,7 @@ static void kvm_eat_signals(CPUState *cpu)
     } while (sigismember(&chkset, SIG_IPI));
 }
 
+
 static void kvm_handle_ipi(CPUState *cs)
 {
     uint64_t tsc_clock;
@@ -2444,31 +2445,13 @@ int kvm_cpu_exec(CPUState *cpu)
             }
             ret = 0;
             break;
-	case KVM_EXIT_IPI:
+        case KVM_EXIT_IPI:
             if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
                 qemu_mutex_lock(&timer_access_sequence_file_lock);
-                fprintf(timer_access_sequence_file,"IPI-SRC:%d\n", cpu->cpu_index);
+                fprintf(timer_access_sequence_file, "IPI-SRC:%d\n", cpu->cpu_index);
                 qemu_mutex_unlock(&timer_access_sequence_file_lock);
                 kvm_handle_ipi(cpu);
             }
-	    ret = 0;
-	    break;
-        case KVM_EXIT_WRMSR:
-            if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
-                qemu_mutex_lock(&timer_access_sequence_file_lock);
-                fprintf(timer_access_sequence_file,"EOI:%d\n", cpu->cpu_index);
-                qemu_mutex_unlock(&timer_access_sequence_file_lock);
-            }
-            ret = 0;
-            break;
-        case KVM_EXIT_HLT:
-            if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
-                qemu_mutex_lock(&timer_access_sequence_file_lock);
-                fprintf(timer_access_sequence_file, "HLT:%d\n", cpu->cpu_index);
-                qemu_mutex_unlock(&timer_access_sequence_file_lock);
-            }
-            ret = EXCP_INTERRUPT;
-            break;
         case KVM_EXIT_IRQ_WINDOW_OPEN:
             DPRINTF("irq_window_open\n");
             ret = EXCP_INTERRUPT;
