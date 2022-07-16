@@ -26,8 +26,10 @@ struct tsc_val_meta {
 };
 
 /* these are associated with per-cpu precomputed timer values */
-extern struct tsc_val_meta **precomputed_tsc_values;
 extern unsigned long *precomputed_tsc_values_index;
+/* keep only 'useful TSC values in the below array
+ * we will eventually delete the array with both useful and non-useful values  */
+extern unsigned long **useful_precomputed_tsc_values;
 
 extern int is_within_block;
 

@@ -388,19 +388,8 @@ struct CPUState {
     char *tnt_array;
     struct tip_address_info *tip_addresses;
     struct fup_address_info *fup_addresses;
-    /* we have two file pointers - one for reading timer data
-     * the other for reading other packets
-     * this is inefficient - but let's get it to work first
-     * it is expected that both these pointers will always be in sync
-     * if not, something is wrong
-     * */
-    gzFile intel_pt_file_timer;
-    gzFile intel_pt_file_other;
+    gzFile intel_pt_file;
 
-    uint64_t last_tsc_value;
-    int last_mtc_payload;
-    int last_tma_ctc_value;
-    bool last_is_last_tsc;  // whether the last packet was MTC or TSC?
     int divergence_count;
     char *last_tip_address;
     int tnt_index_limit;
@@ -411,7 +400,6 @@ struct CPUState {
     int prev_index_fup_address;
     int prev_index_array;
     bool is_core_simulation_finished;
-    bool consume_precomputed_tsc;
     unsigned long long total_packets_consumed;
     unsigned long long number_of_lines_consumed;
     int index_array_incremented;
