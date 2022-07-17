@@ -1656,7 +1656,6 @@ static void get_array_of_timing_values(int index) {
             memcpy(mtc, copy+6, strlen(copy+6));
             mtc[strlen(copy+6)] = '\0';
             mtc_value = do_strtoul(mtc);
-            printf("MTC: 0x%x\n", mtc_value);
             mtc_delta = compute_mtc_delta(mtc_value, last_mtc);
             ctc_delta += mtc_delta << mtcfreq;
             if (use_tsc_offset)
@@ -1666,11 +1665,8 @@ static void get_array_of_timing_values(int index) {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
                                                  ctc_timestamp + multdiv(ctc_delta, 150, 2);
             precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
-            printf("from MTC: 0x%lx index: %d\n", precomputed_tsc_values[computed_tsc_index].tsc_value,
-                                                       computed_tsc_index);
             last_mtc = mtc_value;
             computed_tsc_index += 1;
-            printf("is useful: %d\n", is_useful);
             fc = 0;
         } else if (strncmp(copy, "TSC", 3) == 0) {
             is_tsc_seen = true;
@@ -1690,9 +1686,6 @@ static void get_array_of_timing_values(int index) {
                 use_tsc_offset = true;
                 precomputed_tsc_values[computed_tsc_index].tsc_value = tsc_value + tsc_offset;
             }
-            printf("from TSC: 0x%lx index: %d\n", precomputed_tsc_values[computed_tsc_index].tsc_value,
-                                                 computed_tsc_index);
-            printf("is useful: %d\n", is_useful);
             precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
             computed_tsc_index += 1;
         } else if (strncmp(copy, "TMA", 3) == 0) {
@@ -2004,27 +1997,6 @@ static int tcg_cpu_exec(CPUState *cpu)
     /* create tnt_array here */
     // static char *tnt_array = NULL;
     //
-    if (useful_precomputed_tsc_values == NULL) {
-        useful_precomputed_tsc_values = (unsigned long **)malloc(2 * sizeof(unsigned long *));
-        if (!useful_precomputed_tsc_values) {
-            printf("Could not allocate array for precomputed tsc values\n");
-            exit(EXIT_FAILURE);
-        }
-        useful_precomputed_tsc_values[0] = NULL;
-        useful_precomputed_tsc_values[1] = NULL;
-
-        precomputed_tsc_values_index = (unsigned long *)malloc(2 * sizeof(unsigned long));
-        if (!precomputed_tsc_values_index) {
-            printf("Could not allocate array for storing index into precomputed tsc values\n");
-            exit(EXIT_FAILURE);
-        }
-        precomputed_tsc_values_index[0] = 0;
-        precomputed_tsc_values_index[1] = 0;
-        // do it once, not tied to any cpu //
-        get_array_of_timing_values(0);
-        get_array_of_timing_values(1);
-    }
-
     if(cpu->tnt_array == NULL) {
         get_array_of_tnt_bits(cpu);
     }
@@ -2094,13 +2066,36 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
 
-    if (timer_cpuid_sequence_array[timer_index_array] == '0') {
+    if (useful_precomputed_tsc_values == NULL) {
+        useful_precomputed_tsc_values = (unsigned long **)malloc(2 * sizeof(unsigned long *));
+        if (!useful_precomputed_tsc_values) {
+            printf("Could not allocate array for precomputed tsc values\n");
+            exit(EXIT_FAILURE);
+        }
+        useful_precomputed_tsc_values[0] = NULL;
+        useful_precomputed_tsc_values[1] = NULL;
+
+        precomputed_tsc_values_index = (unsigned long *)malloc(2 * sizeof(unsigned long));
+        if (!precomputed_tsc_values_index) {
+            printf("Could not allocate array for storing index into precomputed tsc values\n");
+            exit(EXIT_FAILURE);
+        }
+        precomputed_tsc_values_index[0] = 0;
+        precomputed_tsc_values_index[1] = 0;
+        // do it once, not tied to any cpu //
+        get_array_of_timing_values(0);
+        get_array_of_timing_values(1);
+    }
+
+    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] >
+            useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
         /* cpu0 is scheduled, cpu1 is stalled */
-        is_cpu0_stalled = false;
-        is_cpu1_stalled = true;
-    } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
         is_cpu0_stalled = true;
         is_cpu1_stalled = false;
+    } else if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] <=
+               useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+        is_cpu0_stalled = false;
+        is_cpu1_stalled = true;
     }
 
     /* wait for initial kick-off after machine start */
