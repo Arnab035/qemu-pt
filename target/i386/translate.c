@@ -65,8 +65,6 @@
 # define clztl  clz32
 #endif
 
-#define KERNEL_BASE   0xffffffff80000000
-
 /* For a switch indexed by MODRM, match all memory operands for a given OP.  */
 #define CASE_MODRM_MEM_OP(OP) \
     case (0 << 6) | (OP << 3) | 0 ... (0 << 6) | (OP << 3) | 7: \
@@ -4565,7 +4563,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->index_fup_address = 0;
         }
         if (!cpu->is_core_simulation_finished) {
-            get_array_of_timing_values(cpu);
             get_array_of_tnt_bits(cpu);
         }
     }
@@ -4595,65 +4592,6 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
 
     if (sigsetjmp(s->jmpbuf, 0) != 0) {
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
-        return s->pc;
-    }
-
-    if (cpu->tnt_array[cpu->index_array] == 'M' ||
-               cpu->tnt_array[cpu->index_array] == 'S') {
-        if (cpu->tnt_array[cpu->index_array] == 'S' &&
-             !cpu->consume_precomputed_tsc) {
-            cpu->consume_precomputed_tsc = true;
-        }
-        if (cpu->consume_precomputed_tsc) {
-            if (cpu->cpu_index == 0) {
-                /* this is cpu0
-		 * if cpu0(current tsc) > cpu1(next tsc), schedule cpu1
-		 * otherwise let cpu 0 continue
-		 * only compare those precomputed TSC values,
-		 * that represent the time when the guest is running in a
-		 * non-root mode
-		 * */
-                while (!precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].is_useful) {
-                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
-                }
-                while (!precomputed_tsc_values[1][precomputed_tsc_values_index[1]].is_useful) {
-                    precomputed_tsc_values_index[1] += 1;
-                }
-                printf("Now scheduling: cpu0:  0x%lx\n",
-				precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value);
-                printf("cpu1: 0x%lx\n",
-                                precomputed_tsc_values[1][precomputed_tsc_values_index[1]].tsc_value);
-                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value >
-                        precomputed_tsc_values[1][precomputed_tsc_values_index[1]].tsc_value) {
-                    is_cpu0_stalled = true;
-                    is_cpu1_stalled = false;
-                } else {
-                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
-                }
-            } else if (cpu->cpu_index == 1) {
-                /* this is cpu1
-		 * if cpu1(current tsc) > cpu0(next tsc), schedule cpu0
-		 * otherwise let cpu 1 continue */
-                while (!precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].is_useful) {
-                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
-                }
-                while (!precomputed_tsc_values[0][precomputed_tsc_values_index[0]].is_useful) {
-                    precomputed_tsc_values_index[0] += 1;
-                }
-                printf("Now scheduling: cpu1:  0x%lx\n",
-                         precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value);
-                printf("cpu0: 0x%lx\n",
-                          precomputed_tsc_values[0][precomputed_tsc_values_index[0]].tsc_value);
-                if (precomputed_tsc_values[cpu->cpu_index][precomputed_tsc_values_index[cpu->cpu_index]].tsc_value >
-                       precomputed_tsc_values[0][precomputed_tsc_values_index[0]].tsc_value) {
-                    is_cpu0_stalled = false;
-                    is_cpu1_stalled = true;
-                } else {
-                    precomputed_tsc_values_index[cpu->cpu_index] += 1;
-                }
-            }
-        }
-        cpu->index_array++;
         return s->pc;
     }
     if (cpu->fup_addresses[cpu->index_fup_address].type == 'V' &&

@@ -1994,18 +1994,6 @@ static int tcg_cpu_exec(CPUState *cpu)
 #ifdef CONFIG_PROFILER
     int64_t ti;
 #endif
-    /* create tnt_array here */
-    // static char *tnt_array = NULL;
-    //
-    if(cpu->tnt_array == NULL) {
-        get_array_of_tnt_bits(cpu);
-    }
-
-    if(!cpu->tnt_array) {
-      printf("get_array_of_tnt_bits returns NULL, for CPU index: %d\n",
-		      cpu->cpu_index);
-    }
-
     assert(tcg_enabled());
 #ifdef CONFIG_PROFILER
     ti = profile_getclock();
@@ -2137,6 +2125,15 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         }
 
         while (cpu && !cpu->queued_work_first && !cpu->exit_request) {
+            if (cpu->tnt_array == NULL) {
+                get_array_of_tnt_bits(cpu);
+            }
+
+            if (!cpu->tnt_array) {
+                printf("get_array_of_tnt_bits returns NULL, for CPU index: %d\n",
+                           cpu->cpu_index);
+                exit(EXIT_FAILURE);
+            }
             atomic_mb_set(&tcg_current_rr_cpu, cpu);
             current_cpu = cpu;
             if (arnab_replay_mode != REPLAY_MODE_PLAY) {
@@ -2144,112 +2141,138 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
                               (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
             }
 
-            if (cpu_can_run(cpu)) {
-                int r;
-                qemu_mutex_unlock_iothread();
-                if (arnab_replay_mode != REPLAY_MODE_PLAY) {
-                    prepare_icount_for_run(cpu);
-                }
-
-                if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                    while(true) {
-                        network_replay_done_at_init = true;
-                        ReplayIOEvent *event;
-                        event = g_malloc0(sizeof(ReplayIOEvent));
-                        event->event_kind = REPLAY_ASYNC_EVENT_NET;
-                        event->opaque = arnab_replay_event_net_load();
-                        if (!event->opaque) {
-                            g_free(event);
-                            break;
-                        }
-                        replay_event_net_run(event->opaque);
-                        g_free(event);
+            if (cpu->tnt_array[cpu->index_array] == 'M' ||
+                   cpu->tnt_array[cpu->index_array] == 'S') {
+                if (cpu->cpu_index == 0) {
+                    printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
+                    printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
+                    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] >
+                         useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+                        is_cpu0_stalled = true;
+                        is_cpu1_stalled = false;
+                    } else {
+                        precomputed_tsc_values_index[0] += 1;
+                    }
+                } else if (cpu->cpu_index == 1) {
+                    printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
+                    printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
+                    if (useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]] >
+                         useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]) {
+                        is_cpu0_stalled = false;
+                        is_cpu1_stalled = true;
+                    } else {
+                        precomputed_tsc_values_index[1] += 1;
                     }
                 }
+                cpu->index_array++;
+            } else {
+                if (cpu_can_run(cpu)) {
+                    int r;
+                    qemu_mutex_unlock_iothread();
+                    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                        prepare_icount_for_run(cpu);
+                    }
 
-                if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                    disk_replay_done_at_init = true;
-                    unsigned int index;
-                    size_t len;
-                    size_t in_len;
-                    int i;
-                    while (true) {
-                        index = arnab_replay_get_qword("disk", -1); // disk replay is independent of cpu
-                        if (index == EVENT_BLK_INTERRUPT) {
-                            break;
+                    if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                        while(true) {
+                            network_replay_done_at_init = true;
+                            ReplayIOEvent *event;
+                            event = g_malloc0(sizeof(ReplayIOEvent));
+                            event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                            event->opaque = arnab_replay_event_net_load();
+                            if (!event->opaque) {
+                                g_free(event);
+                                break;
+                            }
+                            replay_event_net_run(event->opaque);
+                            g_free(event);
                         }
-                        VirtQueueElement *vqe;
-                        vqe = g_malloc(sizeof(VirtQueueElement));
-                        vqe->index = index;
-                        vqe->len = arnab_replay_get_qword("disk", -1);
-                        vqe->ndescs = arnab_replay_get_qword("disk", -1);
-                        vqe->out_num = arnab_replay_get_qword("disk", -1);
-                        vqe->in_num = arnab_replay_get_qword("disk", -1);
-                        in_len = arnab_replay_get_qword("disk", -1);
-                        vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
-                        vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
-                        vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
-                        vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
-                        for (i = 0; i < vqe->in_num; i++) {
-                            hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
-                            uint8_t *data;
-                            arnab_replay_get_array_alloc(&data, &len, "disk", -1);
-                            iov[i].iov_base = address_space_map(
+                    }
+
+                    if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                        disk_replay_done_at_init = true;
+                        unsigned int index;
+                        size_t len;
+                        size_t in_len;
+                        int i;
+                        while (true) {
+                            index = arnab_replay_get_qword("disk", -1); // disk replay is independent of cpu
+                            if (index == EVENT_BLK_INTERRUPT) {
+                                break;
+                            }
+                            VirtQueueElement *vqe;
+                            vqe = g_malloc(sizeof(VirtQueueElement));
+                            vqe->index = index;
+                            vqe->len = arnab_replay_get_qword("disk", -1);
+                            vqe->ndescs = arnab_replay_get_qword("disk", -1);
+                            vqe->out_num = arnab_replay_get_qword("disk", -1);
+                            vqe->in_num = arnab_replay_get_qword("disk", -1);
+                            in_len = arnab_replay_get_qword("disk", -1);
+                            vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
+                            vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
+                            vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
+                            vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
+                            for (i = 0; i < vqe->in_num; i++) {
+                                hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                                uint8_t *data;
+                                arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                                iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 1,
                                             MEMTXATTRS_UNSPECIFIED);
-                            iov[i].iov_len = len;
-                            addr[i] = rep_addr;
-                            memcpy(iov[i].iov_base, data, len);
-                            vqe->in_sg[i] = iov[i];
-                            vqe->in_addr[i] = addr[i];
-                            g_free((void *)data);
-                        }
-                        for (i = 0; i < vqe->out_num; i++) {
-                            hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
-                            uint8_t *data;
-                            arnab_replay_get_array_alloc(&data, &len, "disk", -1);
-                            iov[i].iov_base = address_space_map(
+                                iov[i].iov_len = len;
+                                addr[i] = rep_addr;
+                                memcpy(iov[i].iov_base, data, len);
+                                vqe->in_sg[i] = iov[i];
+                                vqe->in_addr[i] = addr[i];
+                                g_free((void *)data);
+                            }
+                            for (i = 0; i < vqe->out_num; i++) {
+                                hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                                uint8_t *data;
+                                arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                                iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 0,
                                             MEMTXATTRS_UNSPECIFIED);
-                            iov[i].iov_len = len;
-                            addr[i] = rep_addr;
-                            memcpy(iov[i].iov_base, data, len);
-                            vqe->out_sg[i] = iov[i];
-                            vqe->out_addr[i] = addr[i];
-                            g_free((void *)data);
+                                iov[i].iov_len = len;
+                                addr[i] = rep_addr;
+                                memcpy(iov[i].iov_base, data, len);
+                                vqe->out_sg[i] = iov[i];
+                                vqe->out_addr[i] = addr[i];
+                                g_free((void *)data);
+                            }
+                            virtqueue_increment_inuse(global_vdev);
+                            virtqueue_push_first_vq(global_vdev, vqe, in_len);
+                            g_free(vqe->in_sg);
+                            g_free(vqe->in_addr);
+                            g_free(vqe->out_sg);
+                            g_free(vqe->out_addr);
                         }
-                        virtqueue_increment_inuse(global_vdev);
-                        virtqueue_push_first_vq(global_vdev, vqe, in_len);
-                        g_free(vqe->in_sg);
-                        g_free(vqe->in_addr);
-                        g_free(vqe->out_sg);
-                        g_free(vqe->out_addr);
                     }
-                }
-                r = tcg_cpu_exec(cpu);
+                    r = tcg_cpu_exec(cpu);
 
-                if (arnab_replay_mode != REPLAY_MODE_PLAY) {
-                    process_icount_data(cpu);
-                }
-                qemu_mutex_lock_iothread();
-
-                if (r == EXCP_DEBUG) {
-                    cpu_handle_guest_debug(cpu);
-                    break;
-                } else if (r == EXCP_ATOMIC) {
-                    qemu_mutex_unlock_iothread();
-                    cpu_exec_step_atomic(cpu);
+                    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                        process_icount_data(cpu);
+                    }
                     qemu_mutex_lock_iothread();
-                    break;
-                } else if (arnab_replay_mode == REPLAY_MODE_PLAY &&
+
+                    if (r == EXCP_DEBUG) {
+                        cpu_handle_guest_debug(cpu);
+                        break;
+                    } else if (r == EXCP_ATOMIC) {
+                        qemu_mutex_unlock_iothread();
+                        cpu_exec_step_atomic(cpu);
+                        qemu_mutex_lock_iothread();
+                        break;
+                    } else if (arnab_replay_mode == REPLAY_MODE_PLAY &&
                             (r == EXCP_HALTED || r == EXCP_INTERRUPT)) {
-                    continue;
+                        continue;
+                    }
+                } else if (cpu->stop) {
+                    if (cpu->unplug) {
+                        cpu = CPU_NEXT(cpu);
+                    }
+                    break;
                 }
-            } else if (cpu->stop) {
-                if (cpu->unplug) {
-                    cpu = CPU_NEXT(cpu);
-                }
-                break;
             }
             /* do not swap CPUs if one of them is stalled */
             if ((cpu->cpu_index == 1 && is_cpu0_stalled) ||
