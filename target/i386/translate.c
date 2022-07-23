@@ -4602,6 +4602,10 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->index_tip_address++;
             return s->pc;
     }
+    if (cpu->tnt_array[cpu->index_array] == 'M' ||
+            cpu->tnt_array[cpu->index_array] == 'S') {
+        return s->pc;
+    }
 
     if (cpu->fup_addresses[cpu->index_fup_address].type == 'I' &&
         cpu->tnt_array[cpu->index_array] == 'F' &&
