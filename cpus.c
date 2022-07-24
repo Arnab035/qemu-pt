@@ -1620,11 +1620,10 @@ static void get_array_of_timing_values(int index) {
         }
     }
     int computed_tsc_index = 0;
-    uint32_t ctc, fc, ctc_rem, mtc_value, last_mtc, mtc_delta;
+    uint32_t ctc, fc, /*ctc_rem,*/ mtc_value, last_mtc, mtc_delta;
     uint64_t ctc_timestamp, ctc_delta, tsc_value;
     /* http://halobates.de/blog/p/432 */
     int mtcfreq = 3;
-    int ctc_rem_mask = (1 << mtcfreq) - 1;
     char tsc[16], mtc[3], tma_ctc[5], tma_fc[3];
     char copy[50];
     bool is_tsc_seen = false;
@@ -1656,14 +1655,19 @@ static void get_array_of_timing_values(int index) {
             memcpy(mtc, copy+6, strlen(copy+6));
             mtc[strlen(copy+6)] = '\0';
             mtc_value = do_strtoul(mtc);
+            printf("0x%x\n", mtc_value);
             mtc_delta = compute_mtc_delta(mtc_value, last_mtc);
             ctc_delta += mtc_delta << mtcfreq;
-            if (use_tsc_offset)
+            if (use_tsc_offset) {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
                                                  ctc_timestamp + multdiv(ctc_delta, 150, 2) + tsc_offset;
-            else
+                printf("MTC: 0x%lx\n", precomputed_tsc_values[computed_tsc_index].tsc_value);
+            }
+            else {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
                                                  ctc_timestamp + multdiv(ctc_delta, 150, 2);
+                printf("MTC: 0x%lx\n", precomputed_tsc_values[computed_tsc_index].tsc_value);
+            }
             precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
             last_mtc = mtc_value;
             computed_tsc_index += 1;
@@ -1697,11 +1701,9 @@ static void get_array_of_timing_values(int index) {
             memcpy(tma_fc, copy+loc_of_fc+5, len_of_fc);
             tma_fc[2] = '\0';
             ctc = do_strtoul(tma_ctc);
-            ctc_rem = ctc & ctc_rem_mask;
             fc = do_strtoul(tma_fc);
             last_mtc = (ctc >> mtcfreq) & 0xff;
             ctc_timestamp = tsc_value - fc;
-            ctc_timestamp -= multdiv(ctc_rem, 150, 2);
             ctc_delta = 0;
         } else
              continue;
