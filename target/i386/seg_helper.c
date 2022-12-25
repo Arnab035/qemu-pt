@@ -857,37 +857,39 @@ static inline target_ulong get_rsp_from_tss(CPUX86State *env, int level)
 }
 
 
-/*  convert a string address to an unsigned long integer
+/*
+ *  convert a string address to an unsigned long integer
  *  address
  */
 
 unsigned long do_strtoul(char *address) {
-  char *full_address = malloc(17 * sizeof(char));
-  int i;
-  unsigned long address_in_int;
-  if(strncmp(address, "ffff", 4)==0) {
-    for(i=0;i<=3;i++) {
-      full_address[i]='f';
+    char *full_address = malloc(17 * sizeof(char));
+    int i;
+    unsigned long address_in_int;
+    /*
+     * sometimes the addresses in kernel space are shortened (for e.g.
+     *     like this : 0xffff80000000)
+     * this if condition is to ensure that
+     * we still compute the correct address when that happens
+     */
+    if(strncmp(address, "ffff", 4)==0 &&
+		strncmp(address+4, "ffff", 4) != 0) {
+        for(i=0;i<=3;i++) {
+            full_address[i]='f';
+        }
+        for(i=4;i<=15;i++) {
+            full_address[i] = address[i-4];
+        }
+        full_address[i]='\0';
     }
-    for(i=4;i<=15;i++) {
-      full_address[i] = address[i-4];
+    else {
+        for(i=0;i<=15;i++)
+            full_address[i]=address[i];
     }
-    full_address[i]='\0';
-  }
-  else {
-    for(i=0;i<=15;i++) {
-      if(address[i] == '\0') {
-        break;
-      }
-      full_address[i]=address[i];
-      
-    }
-    full_address[i]='\0';
-  }
-  //printf("full_address : %s\n", full_address);
-  address_in_int = strtoul(full_address, NULL, 16);
-  free(full_address);
-  return address_in_int;
+    //printf("full_address : %s\n", full_address);
+    address_in_int = strtoul(full_address, NULL, 16);
+    free(full_address);
+    return address_in_int;
 }
 
 
