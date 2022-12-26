@@ -107,7 +107,7 @@ unsigned long *precomputed_tsc_values_index = NULL;
 
 
 /* FULL path of Intel PT trace file location */
-const char *intel_pt_trace_file_prefix = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may21";
+const char *intel_pt_trace_file_prefix = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may22";
 
 bool cpu_is_stopped(CPUState *cpu)
 {
@@ -1421,80 +1421,21 @@ static void process_icount_data(CPUState *cpu)
 /* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
 
 static void construct_fully_qualified_address(CPUState *cpu, int i, char *reference_address) {
-    int j, chars_to_copy = 0;
-    int short_length = 0;
-
-    if(cpu->tip_addresses[i].ip_bytes==4) {   // some other value
-      //chars_to_copy=12-strlen(tip_addresses[i].address);
-        chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
-        if(chars_to_copy < 0) {
-            chars_to_copy=0;
+    int num_chars_to_copy, j;
+    int ref_addr_len = strlen(reference_address);
+    if (cpu->tip_addresses[i].ip_bytes == 4 ||
+		cpu->tip_addresses[i].ip_bytes == 2) {
+        num_chars_to_copy = ref_addr_len - strlen(cpu->tip_addresses[i].address);
+        if (num_chars_to_copy > 0) {
+            cpu->tip_addresses[i].address = realloc(cpu->tip_addresses[i].address, ref_addr_len + 1);
+	    for (j = strlen(cpu->tip_addresses[i].address) - 1; j >= 0; j--) {
+	        cpu->tip_addresses[i].address[j + num_chars_to_copy] = cpu->tip_addresses[i].address[j];
+	    }
+	    for (j = 0; j < num_chars_to_copy; j++) {
+	        cpu->tip_addresses[i].address[j] = reference_address[j];
+	    }
+	    cpu->tip_addresses[i].address[ref_addr_len] = '\0';
         }
-
-        //short_length=8-strlen(tip_addresses[i].address);
-        cpu->tip_addresses[i].address=realloc(cpu->tip_addresses[i].address,13);
-        for(j=strlen(cpu->tip_addresses[i].address)-1; j>=0; j--) {
-            cpu->tip_addresses[i].address[j+chars_to_copy]=cpu->tip_addresses[i].address[j];
-        }
-        if (chars_to_copy > 4) {
-            for(j=0; j<chars_to_copy-4; j++) {
-                cpu->tip_addresses[i].address[j+4] = '0';
-            }
-            chars_to_copy = 4;
-        }
-        for(j=0;j<chars_to_copy;j++) {
-            cpu->tip_addresses[i].address[j] = reference_address[j];
-        }
-        cpu->tip_addresses[i].address[12]='\0';
-    }
-    else if(cpu->tip_addresses[i].ip_bytes==2) {
-        if(strlen(reference_address)==6) {
-            if(strlen(cpu->tip_addresses[i].address) < 4) {
-                short_length = 4-strlen(cpu->tip_addresses[i].address);
-                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address)-short_length;
-                if(chars_to_copy<0) {
-                    chars_to_copy=0;
-                }
-            }
-            else if(strlen(cpu->tip_addresses[i].address)==4) {
-                short_length=0;
-                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
-                if(chars_to_copy<0) {
-                    chars_to_copy=0;
-                }
-            }
-        }
-        else {
-            if(strlen(cpu->tip_addresses[i].address) < 4) {
-                short_length = 4-strlen(cpu->tip_addresses[i].address);
-                chars_to_copy = strlen(reference_address)-strlen(cpu->tip_addresses[i].address)-short_length;
-                if(chars_to_copy<0) {
-                    chars_to_copy=0;
-                }
-            }
-            else if(strlen(cpu->tip_addresses[i].address)==4) {
-                short_length = 0;
-                chars_to_copy=strlen(reference_address)-strlen(cpu->tip_addresses[i].address);
-                if(chars_to_copy<0) {
-                    chars_to_copy=0;
-                }
-            }
-        }
-        cpu->tip_addresses[i].address=realloc(cpu->tip_addresses[i].address,13);
-
-        for(j=strlen(cpu->tip_addresses[i].address)-1; j>=0; j--) {
-            cpu->tip_addresses[i].address[j+chars_to_copy+short_length]=cpu->tip_addresses[i].address[j];
-        }
-
-        for(j=0;j<chars_to_copy;j++) {
-            cpu->tip_addresses[i].address[j]=reference_address[j];
-        }
-        if(short_length) {
-            for(j=0;j<short_length;j++) {
-                cpu->tip_addresses[i].address[chars_to_copy+j]='0';
-            }
-        }
-        cpu->tip_addresses[i].address[12]='\0';
     }
 }
 
@@ -1603,7 +1544,7 @@ static void get_array_of_timing_values(int index) {
     int cpu_index = index;
     printf("starting for cpu %d\n", index);
     /* todo: make this a command line option */
-    long long int tsc_offset = -1845286737062;
+    long long int tsc_offset = -377862686095928;
     bool use_tsc_offset = true;
     bool is_useful = false;
     char *pch_pip;
@@ -1655,18 +1596,15 @@ static void get_array_of_timing_values(int index) {
             memcpy(mtc, copy+6, strlen(copy+6));
             mtc[strlen(copy+6)] = '\0';
             mtc_value = do_strtoul(mtc);
-            printf("0x%x\n", mtc_value);
             mtc_delta = compute_mtc_delta(mtc_value, last_mtc);
             ctc_delta += mtc_delta << mtcfreq;
             if (use_tsc_offset) {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
-                                                 ctc_timestamp + multdiv(ctc_delta, 150, 2) + tsc_offset;
-                printf("MTC: 0x%lx\n", precomputed_tsc_values[computed_tsc_index].tsc_value);
+                                                 ctc_timestamp + multdiv(ctc_delta, 126, 2) + tsc_offset;
             }
             else {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
-                                                 ctc_timestamp + multdiv(ctc_delta, 150, 2);
-                printf("MTC: 0x%lx\n", precomputed_tsc_values[computed_tsc_index].tsc_value);
+                                                 ctc_timestamp + multdiv(ctc_delta, 126, 2);
             }
             precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
             last_mtc = mtc_value;
