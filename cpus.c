@@ -1428,13 +1428,13 @@ static void construct_fully_qualified_address(CPUState *cpu, int i, char *refere
         num_chars_to_copy = ref_addr_len - strlen(cpu->tip_addresses[i].address);
         if (num_chars_to_copy > 0) {
             cpu->tip_addresses[i].address = realloc(cpu->tip_addresses[i].address, ref_addr_len + 1);
-	    for (j = strlen(cpu->tip_addresses[i].address) - 1; j >= 0; j--) {
-	        cpu->tip_addresses[i].address[j + num_chars_to_copy] = cpu->tip_addresses[i].address[j];
-	    }
-	    for (j = 0; j < num_chars_to_copy; j++) {
-	        cpu->tip_addresses[i].address[j] = reference_address[j];
-	    }
-	    cpu->tip_addresses[i].address[ref_addr_len] = '\0';
+            for (j = strlen(cpu->tip_addresses[i].address) - 1; j >= 0; j--) {
+                cpu->tip_addresses[i].address[j + num_chars_to_copy] = cpu->tip_addresses[i].address[j];
+            }
+            for (j = 0; j < num_chars_to_copy; j++) {
+                cpu->tip_addresses[i].address[j] = reference_address[j];
+            }
+            cpu->tip_addresses[i].address[ref_addr_len] = '\0';
         }
     }
 }
@@ -1475,10 +1475,8 @@ static int compute_mtc_delta(int mtc, int last_mtc) {
     }
 }
 
-static uint64_t multdiv(uint64_t t, uint32_t n, uint32_t d) {
-    if (!d)
-        return 0;
-    return (t/d) * n + ((t % d) * n)/d;
+static uint64_t conv_ctc_tsc_delta(uint64_t t, uint32_t n, uint32_t d) {
+    return t * (n/d);
 }
 
 /*
@@ -1544,7 +1542,7 @@ static void get_array_of_timing_values(int index) {
     int cpu_index = index;
     printf("starting for cpu %d\n", index);
     /* todo: make this a command line option */
-    long long int tsc_offset = -377862686095928;
+    long long int tsc_offset = -937638300709518;
     bool use_tsc_offset = true;
     bool is_useful = false;
     char *pch_pip;
@@ -1600,11 +1598,11 @@ static void get_array_of_timing_values(int index) {
             ctc_delta += mtc_delta << mtcfreq;
             if (use_tsc_offset) {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
-                                                 ctc_timestamp + multdiv(ctc_delta, 126, 2) + tsc_offset;
+                                                 ctc_timestamp + conv_ctc_tsc_delta(ctc_delta, 126, 2) + tsc_offset;
             }
             else {
                 precomputed_tsc_values[computed_tsc_index].tsc_value =
-                                                 ctc_timestamp + multdiv(ctc_delta, 126, 2);
+                                                 ctc_timestamp + conv_ctc_tsc_delta(ctc_delta, 126, 2);
             }
             precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
             last_mtc = mtc_value;
