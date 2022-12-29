@@ -2084,23 +2084,21 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
                 if (cpu->cpu_index == 0) {
                     printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
                     printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
-                    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] >
+                    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0] + 1] >
                          useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
                         is_cpu0_stalled = true;
                         is_cpu1_stalled = false;
-                    } else {
-                        precomputed_tsc_values_index[0] += 1;
                     }
+                    precomputed_tsc_values_index[0] += 1;
                 } else if (cpu->cpu_index == 1) {
                     printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
                     printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
-                    if (useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]] >
+                    if (useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1] + 1] >
                          useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]) {
                         is_cpu0_stalled = false;
                         is_cpu1_stalled = true;
-                    } else {
-                        precomputed_tsc_values_index[1] += 1;
                     }
+                    precomputed_tsc_values_index[1] += 1;
                 }
                 cpu->index_array++;
             } else {
