@@ -4606,20 +4606,34 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             cpu->tnt_array[cpu->index_array] == 'S') {
         return s->pc;
     }
-
     if (cpu->fup_addresses[cpu->index_fup_address].type == 'I' &&
         cpu->tnt_array[cpu->index_array] == 'F' &&
 	(do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc)) {
             while(!cpu->tip_addresses[cpu->index_tip_address].is_useful)
                 cpu->index_tip_address++;
-            intno = get_interrupt_number_from_interrupt_address(env, 
+            intno = get_interrupt_number_from_interrupt_address(env,
                               do_strtoul(cpu->tip_addresses[cpu->index_tip_address].address));
             if (intno < 0) {
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
                 return s->pc;
             }
-	    printf("intno: %d\n", intno);
-            cpu->index_array += 2;
+            printf("intno: %d\n", intno);
+            /*
+             * the way we increment the pointer to the array containing
+             * intel PT packets is very hacky here.. we assume that
+             * a TIP packet follows an FUP packet.. but this is not necessary
+             * especially with the introduction of the timing packets
+             * an MTC/CYC packet might just be produced between an FUP & a TIP
+             * which further complicates things... since MTC/TSC packets
+             * are scheduling points...
+             * for now, we ignore such scheduling to make our lives easy ;-)
+             */
+            cpu->index_array += 1;
+            while (cpu->tnt_array[cpu->index_array] == 'M' ||
+                   cpu->tnt_array[cpu->index_array] == 'S') {
+                cpu->index_array += 1;
+            }
+            cpu->index_array += 1;
             cpu->index_tip_address++;
             cpu->index_fup_address++;
             if (intno == 161) {
