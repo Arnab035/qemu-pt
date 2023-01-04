@@ -1431,6 +1431,15 @@ static void construct_fully_qualified_address(CPUState *cpu, int i, char *refere
             for (j = strlen(cpu->tip_addresses[i].address) - 1; j >= 0; j--) {
                 cpu->tip_addresses[i].address[j + num_chars_to_copy] = cpu->tip_addresses[i].address[j];
             }
+            /* initialize the remaining address to 0s */
+            memset(cpu->tip_addresses[i].address, '0', num_chars_to_copy);
+            /* now start the process of copying the remaining address from the previous address */
+            if (num_chars_to_copy >= 12)
+                num_chars_to_copy = 12;
+            else if (num_chars_to_copy >= 8 && num_chars_to_copy < 12)
+                num_chars_to_copy = 8;
+            else if (num_chars_to_copy >= 4 && num_chars_to_copy < 8)
+                num_chars_to_copy = 4;
             for (j = 0; j < num_chars_to_copy; j++) {
                 cpu->tip_addresses[i].address[j] = reference_address[j];
             }
