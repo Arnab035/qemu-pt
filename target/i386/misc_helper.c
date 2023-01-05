@@ -203,7 +203,6 @@ void helper_rdtsc(CPUX86State *env)
     }
     cpu_svm_check_intercept_param(env, SVM_EXIT_RDTSC, 0, GETPC());
 
-    /* the scheduling state machine */
     if (arnab_replay_mode == REPLAY_MODE_PLAY) {
         if (timer_type_sequence_array[timer_index_array] == 'T') {
             timer_index_array++;
@@ -214,13 +213,6 @@ void helper_rdtsc(CPUX86State *env)
         val = (uint64_t)arnab_replay_get_qword("host-clock", cs->cpu_index);
         printf("tsc val: 0x%lx\n", val);
 	printf("timer_index_array: %d\n", timer_index_array-1);
-        if (timer_cpuid_sequence_array[timer_index_array] == '0') {
-            is_cpu0_stalled = false;
-            is_cpu1_stalled = true;
-        } else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
-            is_cpu0_stalled = true;
-            is_cpu1_stalled = false;
-        }
     } else {
         val = cpu_get_tsc(env) + env->tsc_offset;
     }
