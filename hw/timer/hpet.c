@@ -489,19 +489,6 @@ static uint64_t hpet_ram_read(void *opaque, hwaddr addr,
                     timer_index_array++;
                 }
                 cur_tick = (uint64_t)arnab_replay_get_qword("clock", current_cpu->cpu_index);
-                if (timer_cpuid_sequence_array[timer_index_array] == '0') {
-                    is_cpu0_stalled = false;
-                    is_cpu1_stalled = true;
-		} else if (timer_cpuid_sequence_array[timer_index_array] == '1') {
-                    is_cpu0_stalled = true;
-                    is_cpu1_stalled = false;
-                }
-                /*
-                if (!is_rx_queue_empty) {
-                    // flush network rx queue every clock read
-                    // provided the rx queue is not empty
-                    arnab_replay_net_flush_rx_queue();
-                }*/
                 return cur_tick;
             }
             if (hpet_enabled(s)) {
