@@ -1551,7 +1551,7 @@ static void get_array_of_timing_values(int index) {
     int cpu_index = index;
     printf("starting for cpu %d\n", index);
     /* todo: make this a command line option */
-    long long int tsc_offset = -937638300709518;
+    long long int tsc_offset = -3116029756375259;
     bool use_tsc_offset = true;
     bool is_useful = false;
     char *pch_pip;
@@ -1713,7 +1713,6 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     while(1) {
         if(gzgets(cpu->intel_pt_file, copy, 50) != 0) {
             copy[strcspn(copy, "\n")] = 0;
-            curr_lines_read += 1;
         } else {
             printf("Incorrect read from gz file. Simulation probably finished...\n");
             cpu->is_core_simulation_finished = true;
@@ -1728,6 +1727,7 @@ void get_array_of_tnt_bits(CPUState *cpu) {
         if (stop_parsing_due_to_guest_in_nonroot_mode) {
             continue;
         }
+        curr_lines_read += 1;
 
         //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
         if (strncmp(copy, "PSBEND", 6) == 0) {
@@ -1809,12 +1809,12 @@ void get_array_of_tnt_bits(CPUState *cpu) {
                     stop_parsing_due_to_guest_in_nonroot_mode = true;
 	        }
 	    /* VMENTRY */
-	        else {
+                else {
                     is_ignore_tip = 1;
-	            if(is_ignore_pip == 1) {
-	                is_ignore_pip = 0;
-	            }
-	        }
+                    if(is_ignore_pip == 1) {
+                        is_ignore_pip = 0;
+                    }
+                }
             }
             else {
                 if(strncmp(copy, "TIP", 3) == 0) {
