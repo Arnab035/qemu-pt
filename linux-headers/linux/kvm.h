@@ -237,6 +237,8 @@ struct kvm_hyperv_exit {
 #define KVM_EXIT_HYPERV           27
 #define KVM_EXIT_ARM_NISV         28
 #define KVM_EXIT_RDTSC            29
+#define KVM_EXIT_IPI              30
+#define KVM_EXIT_WRMSR            31
 
 /* For KVM_EXIT_INTERNAL_ERROR */
 /* Emulate instruction failed. */
@@ -373,6 +375,10 @@ struct kvm_run {
 		struct {
 			__u32 epr;
 		} epr;
+		/* KVM_EXIT_EXTERNAL_INTERRUPT */
+		struct {
+			__u16 intno;
+		} intno;
 		/* KVM_EXIT_SYSTEM_EVENT */
 		struct {
 #define KVM_SYSTEM_EVENT_SHUTDOWN       1

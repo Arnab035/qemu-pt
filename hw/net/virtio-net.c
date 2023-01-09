@@ -1532,9 +1532,9 @@ static ssize_t virtio_net_receive_rcu(NetClientState *nc, const uint8_t *buf,
     // only record packets which have made it past all checks.
     if (start_recording) {
         if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            arnab_replay_put_byte(0, "network");
-            arnab_replay_put_dword(0, "network");  // flags do not matter for virtio
-            arnab_replay_put_array(buf, size, "network");
+            arnab_replay_put_byte(0, "network", -1);
+            arnab_replay_put_dword(0, "network", -1);  // flags do not matter for virtio
+            arnab_replay_put_array(buf, size, "network", -1);
         }
     }
 

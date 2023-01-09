@@ -37,6 +37,7 @@
 
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-blk.h"
+#include "hw/i386/pc.h"
 #include "index_array_header.h"
 
 #define PREFIX_REPZ   0x01
@@ -64,8 +65,6 @@
 # define clztl  clz32
 #endif
 
-#define KERNEL_BASE   0xffffffff80000000
-
 /* For a switch indexed by MODRM, match all memory operands for a given OP.  */
 #define CASE_MODRM_MEM_OP(OP) \
     case (0 << 6) | (OP << 3) | 0 ... (0 << 6) | (OP << 3) | 7: \
@@ -92,15 +91,7 @@ static TCGv_i64 cpu_bndu[4];
 FILE *arnab_trace_insns_file;
 FILE *arnab_trace_mem_file;
 
-int is_handle_interrupt_in_userspace=0;
-
 #include "exec/gen-icount.h"
-
-int index_array_incremented=1;
-int index_tip_address_incremented=1;
-
-unsigned long long index_array = 0;
-unsigned long long prev_index_array = 0;
 
 typedef struct DisasContext {
     DisasContextBase base;
@@ -253,12 +244,6 @@ static const uint8_t cc_op_live[CC_OP_NB] = {
     [CC_OP_CLR] = 0,
     [CC_OP_POPCNT] = USES_CC_SRC,
 };
-
-int index_tip_address = 0;
-int index_fup_address= 0;
-
-int prev_index_tip_address = 0;
-int prev_index_fup_address = 0;
 
 static void set_cc_op(DisasContext *s, CCOp op)
 {
@@ -2252,7 +2237,6 @@ static inline bool use_goto_tb(DisasContext *s, target_ulong pc)
 static inline void gen_goto_tb(DisasContext *s, int tb_num, target_ulong eip)
 {
     target_ulong pc = s->cs_base + eip;
-
     if (use_goto_tb(s, pc))  {
         /* jump to same page: we can use a direct jump */
         tcg_gen_goto_tb(tb_num);
@@ -4555,49 +4539,40 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     int rex_w, rex_r;
     target_ulong pc_start = s->base.pc_next;
 
-    if (index_array >= intel_pt_state.tnt_index_limit) {
-        if (tnt_array) {
-            free(tnt_array);
-            tnt_array = NULL;
-            intel_pt_state.total_packets_consumed += index_array;
-            index_array = 0;
+    if (cpu->index_array >= cpu->tnt_index_limit) {
+        if (cpu->tnt_array) {
+            free(cpu->tnt_array);
+            cpu->tnt_array = NULL;
+            cpu->total_packets_consumed += cpu->index_array;
+            cpu->index_array = 0;
         }
-        if (tip_addresses) {
-            for(i=0; i < index_tip_address; i++) {
-                free((char *)tip_addresses[i].address);
+        if (cpu->tip_addresses) {
+            for(i=0; i < cpu->index_tip_address; i++) {
+                free((char *)(cpu->tip_addresses[i].address));
             }
-            free(tip_addresses);
-            tip_addresses = NULL;
-            index_tip_address = 0;
+            free(cpu->tip_addresses);
+            cpu->tip_addresses = NULL;
+            cpu->index_tip_address = 0;
         }
-        if (fup_addresses) {
-            for(i=0; i < index_fup_address; i++) {
-                free((char *)fup_addresses[i].address);
+        if (cpu->fup_addresses) {
+            for(i=0; i < cpu->index_fup_address; i++) {
+                free((char *)(cpu->fup_addresses[i].address));
             }
-            free(fup_addresses);
-            fup_addresses = NULL;
-            index_fup_address = 0;
+            free(cpu->fup_addresses);
+            cpu->fup_addresses = NULL;
+            cpu->index_fup_address = 0;
         }
-        if (!intel_pt_state.is_simulation_finished) {
-            get_array_of_tnt_bits();
+        if (!cpu->is_core_simulation_finished) {
+            get_array_of_tnt_bits(cpu);
         }
-	else {
-            printf("Simulation Finished!\n");
-            printf("Divergence count: %d\n", intel_pt_state.divergence_count);
-            exit(EXIT_SUCCESS);
-	}
     }
 
-    if(index_array_incremented) {
-      index_array_incremented = 0;
+    if(cpu->index_array_incremented) {
+      cpu->index_array_incremented = 0;
     }
 
-    if(index_tip_address_incremented) {
-      index_tip_address_incremented=0;
-    }
-
-    if(is_handle_interrupt_in_userspace) {
-      is_handle_interrupt_in_userspace=0;
+    if(cpu->index_tip_address_incremented) {
+      cpu->index_tip_address_incremented = 0;
     }
 
     s->pc_start = s->pc = pc_start;
@@ -4611,37 +4586,58 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     s->vex_l = 0;
     s->vex_v = 0;
 
-    prev_index_array = index_array;
-    prev_index_fup_address = index_fup_address;
-    prev_index_tip_address = index_tip_address;
+    cpu->prev_index_array = cpu->index_array;
+    cpu->prev_index_fup_address = cpu->index_fup_address;
+    cpu->prev_index_tip_address = cpu->index_tip_address;
 
     if (sigsetjmp(s->jmpbuf, 0) != 0) {
         gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
         return s->pc;
     }
-    if (fup_addresses[index_fup_address].type == 'V' &&
-        tnt_array[index_array] == 'F' && 
-        do_strtoul(fup_addresses[index_fup_address].address) == s->pc) {
-            index_array++;
-            index_fup_address++;
-            index_tip_address++;
+    if (cpu->fup_addresses[cpu->index_fup_address].type == 'V' &&
+        cpu->tnt_array[cpu->index_array] == 'F' && 
+        do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc) {
+            cpu->index_array++;
+            cpu->index_fup_address++;
+            cpu->index_tip_address++;
             return s->pc;
     }
-
-    if (fup_addresses[index_fup_address].type == 'I' &&
-        tnt_array[index_array] == 'F' &&
-	(do_strtoul(fup_addresses[index_fup_address].address) == s->pc)) {
-            while(!tip_addresses[index_tip_address].is_useful)
-                index_tip_address++;
-            intno = get_interrupt_number_from_interrupt_address(env, do_strtoul(tip_addresses[index_tip_address].address));
+    if (cpu->tnt_array[cpu->index_array] == 'M' ||
+            cpu->tnt_array[cpu->index_array] == 'S') {
+        return s->pc;
+    }
+    if (cpu->fup_addresses[cpu->index_fup_address].type == 'I' &&
+        cpu->tnt_array[cpu->index_array] == 'F' &&
+	(do_strtoul(cpu->fup_addresses[cpu->index_fup_address].address) == s->pc)) {
+            while(!cpu->tip_addresses[cpu->index_tip_address].is_useful)
+                cpu->index_tip_address++;
+            intno = get_interrupt_number_from_interrupt_address(env,
+                              do_strtoul(cpu->tip_addresses[cpu->index_tip_address].address));
             if (intno < 0) {
                 gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);
                 return s->pc;
             }
-            index_array += 2;
-            index_tip_address++;
-            index_fup_address++;
-            if (intno == 113) {
+            printf("intno: %d\n", intno);
+            /*
+             * the way we increment the pointer to the array containing
+             * intel PT packets is very hacky here.. we assume that
+             * a TIP packet follows an FUP packet.. but this is not necessary
+             * especially with the introduction of the timing packets
+             * an MTC/CYC packet might just be produced between an FUP & a TIP
+             * which further complicates things... since MTC/TSC packets
+             * are scheduling points...
+             * for now, we ignore such scheduling to make our lives easy ;-)
+             */
+            cpu->index_array += 1;
+            while (cpu->tnt_array[cpu->index_array] == 'M' ||
+                   cpu->tnt_array[cpu->index_array] == 'S') {
+                cpu->index_array += 1;
+                precomputed_tsc_values_index[cpu->cpu_index] += 1;
+            }
+            cpu->index_array += 1;
+            cpu->index_tip_address++;
+            cpu->index_fup_address++;
+            if (intno == 37) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
                     ReplayIOEvent *event;
@@ -4656,7 +4652,7 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     g_free(event);
                 }
                 gen_interrupt(s, intno, pc_start - s->cs_base, s->pc - s->cs_base);
-            } else if (intno == 81) {
+            } else if (intno == 145) {
                 /* disk interrupt
                  * disk I/O buffers that have been recorded will now be pushed into the guest
 		 * following steps are taken
@@ -4672,27 +4668,27 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                 size_t len;
                 size_t in_len;
                 while (!stopped_execution_of_tb_chain) {
-                    index = arnab_replay_get_qword("disk");
+                    index = arnab_replay_get_qword("disk", -1);
                     if (index == EVENT_BLK_INTERRUPT) {
                         break;
                     }
                     VirtQueueElement *vqe;
                     vqe = g_malloc(sizeof(VirtQueueElement));
                     vqe->index = index;
-                    vqe->len = arnab_replay_get_qword("disk");
-                    vqe->ndescs = arnab_replay_get_qword("disk");
-                    vqe->out_num = arnab_replay_get_qword("disk");
-                    vqe->in_num = arnab_replay_get_qword("disk");
-                    in_len = arnab_replay_get_qword("disk");
+                    vqe->len = arnab_replay_get_qword("disk", -1);
+                    vqe->ndescs = arnab_replay_get_qword("disk", -1);
+                    vqe->out_num = arnab_replay_get_qword("disk", -1);
+                    vqe->in_num = arnab_replay_get_qword("disk", -1);
+                    in_len = arnab_replay_get_qword("disk", -1);
                     vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
                     vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
                     vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
                     vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
                     /* this is a 'read to the guest memory' operation */
                     for (i = 0; i < vqe->in_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
-			uint8_t *data;
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                        uint8_t *data;
+                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 1, 
                                             MEMTXATTRS_UNSPECIFIED);
@@ -4705,9 +4701,9 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
                     }
                     /* this is a 'write to the guest memory' operation */
                     for (i = 0; i < vqe->out_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
+                        hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
 			uint8_t *data;
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
+                        arnab_replay_get_array_alloc(&data, &len, "disk", -1);
                         iov[i].iov_base = address_space_map(
                                             global_vdev->dma_as, rep_addr, &len, 0,
                                             MEMTXATTRS_UNSPECIFIED);
@@ -5284,14 +5280,14 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 2: /* call Ev */
             /* XXX: optimize if memory (no 'and' is necessary) */
-	    if(tnt_array[index_array] == 'P') {
-	        index_array++;
-                index_array_incremented = 1;
-	        while(tip_addresses[index_tip_address].is_useful == 0) {
-	            index_tip_address++;
+	    if(cpu->tnt_array[cpu->index_array] == 'P') {
+	        cpu->index_array++;
+                cpu->index_array_incremented = 1;
+	        while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
+	            cpu->index_tip_address++;
 	        }
-	        index_tip_address++;     // consume the TIP address
-	        index_tip_address_incremented=1;
+	        cpu->index_tip_address++;     // consume the TIP address
+	        cpu->index_tip_address_incremented=1;
             }
 	    if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
@@ -5324,15 +5320,15 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             break;
         case 4: /* jmp Ev */
 	    /* jmp Ev points to a TIP bit in the array do not forget to consume it */
-	    if(tnt_array[index_array] == 'P') {
-	        index_array++;
-	        index_array_incremented=1;
-                while(tip_addresses[index_tip_address].is_useful == 0) {
-	            index_tip_address++;
-	        }
-	            // consume the TIP address
-	        index_tip_address++;
-	        index_tip_address_incremented=1;
+            if (cpu->tnt_array[cpu->index_array] == 'P') {
+                cpu->index_array++;
+                cpu->index_array_incremented = 1;
+	        // consume the TIP address
+                while (cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
+                    cpu->index_tip_address++;
+                }
+                cpu->index_tip_address++;
+                cpu->index_tip_address_incremented=1;
             }
             if (dflag == MO_16) {
                 tcg_gen_ext16u_tl(s->T0, s->T0);
@@ -6761,18 +6757,18 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         gen_jr(s, s->T0);
         break;
     case 0xc3: /* ret */
-        if(tnt_array[index_array] != 'P') {
-            index_array++;
-            index_array_incremented = 1;
+        if(cpu->tnt_array[cpu->index_array] != 'P') {
+            cpu->index_array++;
+            cpu->index_array_incremented = 1;
         }
         else {
-	    index_array++;
-	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful == 0) {
-	        index_tip_address++;
+	    cpu->index_array++;
+	    cpu->index_array_incremented = 1;
+	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful == 0) {
+	        cpu->index_tip_address++;
 	    }
-	    index_tip_address++;     // consume the TIP bit
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address++;     // consume the TIP bit
+	    cpu->index_tip_address_incremented=1;
         }
         ot = gen_pop_T0(s);
         gen_pop_update(s, ot);
@@ -6809,14 +6805,14 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         val = 0;
         goto do_lret;
     case 0xcf: /* iret */
-        if(tnt_array[index_array] == 'P') {
-	    index_array++;
-	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
-	        index_tip_address++;
+        if(cpu->tnt_array[cpu->index_array] == 'P') {
+	    cpu->index_array++;
+	    cpu->index_array_incremented=1;
+	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
+	        cpu->index_tip_address++;
 	    }
-	    index_tip_address++;
-	    index_tip_address_incremented = 1;
+	    cpu->index_tip_address++;
+	    cpu->index_tip_address_incremented = 1;
 	}
         gen_svm_check_intercept(s, pc_start, SVM_EXIT_IRET);
         if (!s->pe) {
@@ -6919,24 +6915,9 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         }
     do_jcc:
         next_eip = s->pc - s->cs_base;
-        /*
-	if(tnt_array[index_array] == 'T') {
-	    is_branch_taken=1;
-	}
-	else {
-	    is_branch_taken=0;
-	}
-        // tval += next_eip;
-	if(is_branch_taken == 1) {
-	    tval += next_eip;
-	    next_eip=tval;
-	}
-	else {
-	    tval = next_eip;
-	}*/
         tval += next_eip;
-	index_array++;
-	index_array_incremented=1;
+	cpu->index_array++;
+	cpu->index_array_incremented=1;
         if (dflag == MO_16) {
             tval &= 0xffff;
         }
@@ -7489,6 +7470,8 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             gen_jmp(s, s->pc - s->cs_base);
         }
+        gen_jmp_im(s, s->pc - s->cs_base);
+        gen_eob(s);
         break;
     case 0x133: /* rdpmc */
         gen_update_cc_op(s);
@@ -7521,14 +7504,14 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
     case 0x105: /* syscall */
         /* XXX: is it usable in real mode ? */
 	// consume TIP address if possible here as well
-	if(tnt_array[index_array] == 'P') {
-	    index_array++;
-	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
-	        index_tip_address++;
+	if(cpu->tnt_array[cpu->index_array] == 'P') {
+	    cpu->index_array++;
+	    cpu->index_array_incremented=1;
+	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
+	        cpu->index_tip_address++;
 	    }
-	    index_tip_address++;
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address++;
+	    cpu->index_tip_address_incremented=1;
         }
         gen_update_cc_op(s);
         gen_jmp_im(s, pc_start - s->cs_base);
@@ -7540,14 +7523,14 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
         break;
     case 0x107: /* sysret */
 	// consume TIP address here as well
-	if(tnt_array[index_array] == 'P') {
-	    index_array++;
-	    index_array_incremented=1;
-	    while(tip_addresses[index_tip_address].is_useful==0) {
-	        index_tip_address++;
+	if(cpu->tnt_array[cpu->index_array] == 'P') {
+	    cpu->index_array++;
+	    cpu->index_array_incremented=1;
+	    while(cpu->tip_addresses[cpu->index_tip_address].is_useful==0) {
+	        cpu->index_tip_address++;
 	    }
-	    index_tip_address++;
-	    index_tip_address_incremented=1;
+	    cpu->index_tip_address++;
+	    cpu->index_tip_address_incremented=1;
         }
         if (!s->pe) {
             gen_exception(s, EXCP0D_GPF, pc_start - s->cs_base);

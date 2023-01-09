@@ -3894,7 +3894,7 @@ DEF("arnab_network_replay", HAS_ARG, QEMU_OPTION_NETWORK_rr, \
 
 SRST
 ``-arnab_network_replay [mode=record|replay][,rrfile=@var{filename}]``
-This option records and replays network packets. Network packets are written to a file. And during the process of replay, these network packets are read and replayed. The replay happens when there is a hardware interrupt(indicating a network I/O event) in the guest flow. 
+    This option records and replays network packets. Network packets are written to a file. And during the process of replay, these    network packets are read and replayed. The replay happens when there is a hardware interrupt(indicating a network I/O event) in    the guest flow. 
 ERST
 
 DEF("arnab_clock_replay", HAS_ARG, QEMU_OPTION_CLOCK_rr, \
@@ -3903,8 +3903,8 @@ DEF("arnab_clock_replay", HAS_ARG, QEMU_OPTION_CLOCK_rr, \
 
 SRST
 ``-arnab_clock_replay [mode=record|replay,file=<filename>,host-clock-file=<filename>]``
-This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix the guest to use the hpet clock, we'll record and replay hpet clock values.
-We also need to record the host clock values when they are accessed, host clocks being non-deterministic in nature.
+    This option records and replays hpet clock values. Clock values are periodically read during the guest execution. Since we fix     the guest to use the hpet clock, we'll record and replay hpet clock values.
+    We also need to record the host clock values when they are accessed, host clocks being non-deterministic in nature.
 ERST
 
 DEF("arnab_disk_replay", HAS_ARG, QEMU_OPTION_DISK_rr, \
@@ -3913,7 +3913,7 @@ DEF("arnab_disk_replay", HAS_ARG, QEMU_OPTION_DISK_rr, \
 
 SRST
 ``-arnab_disk_replay [mode=record|replay][,rrfile=@var{filename}]``
-This option records and replays disk I/O events. Record and replay of disk I/O events will re-use the record and replay design that has already been designed for QEMU. The only change being that there will be no -icount to indicate when to inject events. This will be taken care of by looking at hardware interrupts and injecting I/O events at the correct hardware interrupt.
+    This option records and replays disk I/O events. Record and replay of disk I/O events will re-use the record and replay design     that has already been designed for QEMU. The only change being that there will be no -icount to indicate when to inject events.    This will be taken care of by looking at hardware interrupts and injecting I/O events at the correct hardware interrupt.
 ERST
 
 DEF("record_artifacts", HAS_ARG, QEMU_OPTION_RECORD_artifacts, \
@@ -3922,7 +3922,7 @@ DEF("record_artifacts", HAS_ARG, QEMU_OPTION_RECORD_artifacts, \
 
 SRST
 ``-record_artifacts [insns=@var{filename}][,mem=@var{filename}]``
-This option only works when replay mode is enabled. This will collect cr3 and virtual IP of instructions in file specified by insns_file and sequence of memory access addresses in file specified by mem_file.
+    This option only works when replay mode is enabled. This will collect cr3 and virtual IP of instructions in file specified by i    nsns_file and sequence of memory access addresses in file specified by mem_file.
 ERST
 
 DEF("icount", HAS_ARG, QEMU_OPTION_icount, \

@@ -116,17 +116,19 @@ void *replay_event_net_load(void)
 void *arnab_replay_event_net_load(void)
 {
     NetEvent *event = g_new(NetEvent, 1);
-    event->id = arnab_replay_get_byte("network");
+    event->id = arnab_replay_get_byte("network", -1);
     // this check is possible since we won't have too many network devices
     // in the guest. So the network device id isn't going to balloon.
     while (event->id == EVENT_VMEXIT) {
-        event->id = arnab_replay_get_byte("network");
+        event->id = arnab_replay_get_byte("network", -1);  // network I/O replay independent of cpu
     }
-    if (event->id == EVENT_NET_TX_INTERRUPT || event->id == EVENT_NET_RX_INTERRUPT) {
+    if (event->id == EVENT_NET_TX_INTERRUPT ||
+		    event->id == EVENT_NET_RX_INTERRUPT ||
+                    event->id == EVENT_END) {
         return NULL;
     }
-    event->flags = arnab_replay_get_dword("network");
-    arnab_replay_get_array_alloc(&event->data, &event->size, "network");
+    event->flags = arnab_replay_get_dword("network", -1);
+    arnab_replay_get_array_alloc(&event->data, &event->size, "network", -1);
 
     return event;
 }

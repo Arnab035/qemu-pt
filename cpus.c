@@ -60,6 +60,7 @@
 #include "sysemu/runstate.h"
 #include "hw/boards.h"
 
+#include "hw/i386/pc.h"
 #include "hw/virtio/virtio.h"
 #include "hw/virtio/virtio-blk.h"
 #include "index_array_header.h"
@@ -88,15 +89,25 @@ static QemuMutex qemu_global_mutex;
 int64_t max_delay;
 int64_t max_advance;
 
+static bool network_replay_done_at_init = false;
+static bool disk_replay_done_at_init = false;
+
 /* vcpu throttling controls */
 static QEMUTimer *throttle_timer;
 static unsigned int throttle_percentage;
 
-char *tnt_array = NULL;   // tnt_array is NOW a global 
+/* precomputed tsc values per CPU */
+unsigned long **useful_precomputed_tsc_values = NULL;
+unsigned long *precomputed_tsc_values_index = NULL;
+
 
 #define CPU_THROTTLE_PCT_MIN 1
 #define CPU_THROTTLE_PCT_MAX 99
 #define CPU_THROTTLE_TIMESLICE_NS 10000000
+
+
+/* FULL path of Intel PT trace file location */
+const char *intel_pt_trace_file_prefix = "/home/arnabjyoti/linux-4.14.3/tools/perf/linux_05may22";
 
 bool cpu_is_stopped(CPUState *cpu)
 {
@@ -1195,11 +1206,13 @@ static void qemu_tcg_rr_wait_io_event(void)
     CPUState *cpu;
 
     while (all_cpu_threads_idle()) {
-        stop_tcg_kick_timer();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY)
+            stop_tcg_kick_timer();
         qemu_cond_wait(first_cpu->halt_cond, &qemu_global_mutex);
     }
 
-    start_tcg_kick_timer();
+    if (arnab_replay_mode != REPLAY_MODE_PLAY)
+        start_tcg_kick_timer();
 
     CPU_FOREACH(cpu) {
         qemu_wait_io_event_common(cpu);
@@ -1340,7 +1353,7 @@ static int64_t tcg_get_icount_limit(void)
          * was set (as there is no QEMU_CLOCK_VIRTUAL timer) or it is more than
          * INT32_MAX nanoseconds ahead, we still use INT32_MAX
          * nanoseconds. */
-         
+
     if ((deadline < 0) || (deadline > INT32_MAX)) {
         deadline = INT32_MAX;
     }
@@ -1405,6 +1418,489 @@ static void process_icount_data(CPUState *cpu)
     }
 }
 
+/* preprocess_tip_array - preprocesses the tip array so that truncated addresses contain the fully-qualified address */
+
+static void construct_fully_qualified_address(CPUState *cpu, int i, char *reference_address) {
+    int num_chars_to_copy, j;
+    int ref_addr_len = strlen(reference_address);
+    if (cpu->tip_addresses[i].ip_bytes == 4 ||
+		cpu->tip_addresses[i].ip_bytes == 2) {
+        num_chars_to_copy = ref_addr_len - strlen(cpu->tip_addresses[i].address);
+        if (num_chars_to_copy > 0) {
+            cpu->tip_addresses[i].address = realloc(cpu->tip_addresses[i].address, ref_addr_len + 1);
+            for (j = strlen(cpu->tip_addresses[i].address) - 1; j >= 0; j--) {
+                cpu->tip_addresses[i].address[j + num_chars_to_copy] = cpu->tip_addresses[i].address[j];
+            }
+            /* initialize the remaining address to 0s */
+            memset(cpu->tip_addresses[i].address, '0', num_chars_to_copy);
+            /* now start the process of copying the remaining address from the previous address */
+            if (num_chars_to_copy >= 12)
+                num_chars_to_copy = 12;
+            else if (num_chars_to_copy >= 8 && num_chars_to_copy < 12)
+                num_chars_to_copy = 8;
+            else if (num_chars_to_copy >= 4 && num_chars_to_copy < 8)
+                num_chars_to_copy = 4;
+            for (j = 0; j < num_chars_to_copy; j++) {
+                cpu->tip_addresses[i].address[j] = reference_address[j];
+            }
+            cpu->tip_addresses[i].address[ref_addr_len] = '\0';
+        }
+    }
+}
+
+static void preprocess_tip_array(CPUState *cpu, int size) {
+
+    if (cpu->last_tip_address) {
+        construct_fully_qualified_address(cpu, 0, cpu->last_tip_address);
+    }
+    int i;
+    for(i=1;i<=size;i++) {
+        construct_fully_qualified_address(cpu, i, cpu->tip_addresses[i-1].address);
+    }
+}
+
+/* find_newline_and_copy(char *buffer, int pos, int end, char *copy)
+ *    - copies characters into copy till a newline
+ *    - returns number of characters copied
+ */
+
+int find_newline_and_copy(char *buffer, int pos, int end, char *copy) {
+    int i = 0;
+    int count = 0;
+    while(buffer[pos+i] != '\n' && pos+i <= end) {
+        copy[i] = buffer[pos+i];
+        count++;
+        i++;
+    }
+    if(pos+i > end) return -1;
+    copy[i] = '\0'; return count;
+}
+
+static int compute_mtc_delta(int mtc, int last_mtc) {
+    if (mtc > last_mtc) {
+        return mtc - last_mtc;
+    } else {
+        return mtc + 256 - last_mtc;
+    }
+}
+
+static uint64_t conv_ctc_tsc_delta(uint64_t t, uint32_t n, uint32_t d) {
+    return t * (n/d);
+}
+
+/*
+ * TMA pkt looks like this - TMA CTC 0x8618 FC 0x48
+ * we find the position of 'F', return it
+ *
+ */
+
+static int location_of_fc(char *copy_str) {
+    int i = 0;
+    int count_of_spaces = 0;
+
+    if (!copy_str)
+        return i;
+
+    while(copy_str[i] != '\n') {
+        if (copy_str[i] == ' ')
+            count_of_spaces++;
+        if (count_of_spaces == 3)
+            break;
+        i++;
+    }
+
+    return i+1;
+}
+
+static void copy_non_root_tsc_values(int cpu_index, int length, struct tsc_val_meta *precomputed_tsc_val)
+{
+    int i = 0;
+    int sz = 0;
+    while (i < length) {
+        if (precomputed_tsc_val[i].is_useful) {
+            useful_precomputed_tsc_values[cpu_index] = realloc(useful_precomputed_tsc_values[cpu_index],
+                                                                  (sz+1) * sizeof(unsigned long));
+            if (!useful_precomputed_tsc_values[cpu_index]) {
+                printf("Could not allocate memory to store non-root TSC values\n");
+                exit(EXIT_FAILURE);
+            }
+            useful_precomputed_tsc_values[cpu_index][sz++] = precomputed_tsc_val[i].tsc_value;
+        }
+        i++;
+    }
+}
+
+/*
+ * the intel pt trace now is read in 2 passes
+ * the first pass gets us all the TSC, MTC, TMA packets
+ * this segregation helps because we need all timing values
+ * from intel pt trace. The intel pt trace timing packets
+ * will now be used as reference, since they
+ * are more fine-grained.
+ * at the same time, this function also computes all the
+ * TSC values, this saves memory and time
+ *
+ * get_array_of_timing_values()
+ * parameters: none
+ * returns the array containing the timing values when
+ * guest runs in non-root mode
+ * useful_precomputed_tsc_values
+ */
+
+static void get_array_of_timing_values(int index) {
+    int cpu_index = index;
+    printf("starting for cpu %d\n", index);
+    /* todo: make this a command line option */
+    long long int tsc_offset = -3116029756375259;
+    bool use_tsc_offset = true;
+    bool is_useful = false;
+    char *pch_pip;
+    struct tsc_val_meta *precomputed_tsc_values = NULL;
+    char filename[100] = {'\0'};
+    sprintf(filename, "%s_%d.txt.gz", intel_pt_trace_file_prefix, cpu_index);
+    gzFile intel_pt_file = NULL;
+
+    if (!intel_pt_file) {
+        intel_pt_file = gzopen(filename, "r");
+        if (!intel_pt_file) {
+            fprintf(stderr, "gzopen of %s failed.\n", filename);
+            exit(EXIT_FAILURE);
+        }
+    }
+    int computed_tsc_index = 0;
+    uint32_t ctc, fc, /*ctc_rem,*/ mtc_value, last_mtc, mtc_delta;
+    uint64_t ctc_timestamp, ctc_delta, tsc_value;
+    /* http://halobates.de/blog/p/432 */
+    int mtcfreq = 3;
+    char tsc[16], mtc[3], tma_ctc[5], tma_fc[3];
+    char copy[50];
+    bool is_tsc_seen = false;
+    while (1) {
+        if (gzgets(intel_pt_file, copy, 50) != 0) {
+            copy[strcspn(copy, "\n")] = 0;
+        } else {
+            break;
+        }
+        if (strncmp(copy, "PIP", 3) == 0) {
+            pch_pip = strchr(copy, '=');
+            if ((*++pch_pip - '0') == 0) {
+                is_useful = false;
+            }
+	    else {
+                is_useful = true;
+                /* start recording timing values from the first vmentry */
+            }
+        }
+        if (strncmp(copy, "MTC", 3) == 0) {
+            if (!is_tsc_seen)
+                continue;
+            precomputed_tsc_values = realloc(precomputed_tsc_values,
+                                   (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
+            if (!precomputed_tsc_values) {
+                printf("Running out of memory while computing and storing TSC values\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(mtc, copy+6, strlen(copy+6));
+            mtc[strlen(copy+6)] = '\0';
+            mtc_value = do_strtoul(mtc);
+            mtc_delta = compute_mtc_delta(mtc_value, last_mtc);
+            ctc_delta += mtc_delta << mtcfreq;
+            if (use_tsc_offset) {
+                precomputed_tsc_values[computed_tsc_index].tsc_value =
+                                                 ctc_timestamp + conv_ctc_tsc_delta(ctc_delta, 126, 2) + tsc_offset;
+            }
+            else {
+                precomputed_tsc_values[computed_tsc_index].tsc_value =
+                                                 ctc_timestamp + conv_ctc_tsc_delta(ctc_delta, 126, 2);
+            }
+            precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
+            last_mtc = mtc_value;
+            computed_tsc_index += 1;
+            fc = 0;
+        } else if (strncmp(copy, "TSC", 3) == 0) {
+            is_tsc_seen = true;
+            precomputed_tsc_values = realloc(precomputed_tsc_values,
+                              (computed_tsc_index+1) * sizeof(struct tsc_val_meta));
+            if (!precomputed_tsc_values) {
+                printf("Running out of memory while computing and storing TSC values\n");
+                exit(EXIT_FAILURE);
+            }
+            memcpy(tsc, copy+6, strlen(copy+6));
+            tsc[strlen(copy+6)] = '\0';
+            tsc_value = do_strtoul(tsc);
+            if (is_useful) {
+                use_tsc_offset = false;
+                precomputed_tsc_values[computed_tsc_index].tsc_value = tsc_value;
+            } else {
+                use_tsc_offset = true;
+                precomputed_tsc_values[computed_tsc_index].tsc_value = tsc_value + tsc_offset;
+            }
+            precomputed_tsc_values[computed_tsc_index].is_useful = is_useful;
+            computed_tsc_index += 1;
+        } else if (strncmp(copy, "TMA", 3) == 0) {
+            int loc_of_fc = location_of_fc(copy);
+            int len_of_ctc = loc_of_fc - 1 - 10;
+            int len_of_fc = 2;
+            memcpy(tma_ctc, copy+10, len_of_ctc);
+            tma_ctc[len_of_ctc] = '\0';
+            memcpy(tma_fc, copy+loc_of_fc+5, len_of_fc);
+            tma_fc[2] = '\0';
+            ctc = do_strtoul(tma_ctc);
+            fc = do_strtoul(tma_fc);
+            last_mtc = (ctc >> mtcfreq) & 0xff;
+            ctc_timestamp = tsc_value - fc;
+            ctc_delta = 0;
+        } else
+             continue;
+    }
+    copy_non_root_tsc_values(cpu_index, computed_tsc_index, precomputed_tsc_values);
+    free(precomputed_tsc_values);
+    if (intel_pt_file)
+        gzclose(intel_pt_file);
+}
+
+/*  get_array_of_tnt_bits()
+ *  parameters : none
+ *  returns : the array containing the TNT bits
+ *  also maintains 2 arrays - one having the TIP addresses with some metadata
+ *  the other being the FUP addresses with metadata
+ *  use the gzlib standard library
+ */
+
+void get_array_of_tnt_bits(CPUState *cpu) {
+    char *pch;
+    char *pch_pip;
+    bool stop_parsing_due_to_heartbeat = false;
+    bool stop_parsing_due_to_guest_in_nonroot_mode = true;
+    //int len;
+
+    int is_ignore_tip = 0;
+    int is_ignore_pip = 0;
+    unsigned long long k, prev_count;
+    unsigned long long j;
+    int max_lines_read = 3000000, curr_lines_read = 0;
+    int cpu_index = cpu->cpu_index;
+
+    char filename[100] = {'\0'};
+
+    sprintf(filename, "%s_%d.txt.gz", intel_pt_trace_file_prefix, cpu_index);
+    if (!cpu->tnt_array) {
+        cpu->tnt_array = malloc(1);
+    }
+
+    //tnt_array[0] = 'P';
+    if (!cpu->intel_pt_file) {
+        cpu->intel_pt_file = gzopen(filename, "r");
+    }
+    cpu->tnt_index_limit = 0;
+
+    int count = 0;
+
+    int count_tip = 0;
+    int count_fup = 0;
+
+    cpu->tip_addresses = malloc(1 * sizeof(struct tip_address_info));
+    cpu->fup_addresses = malloc(1 * sizeof(struct fup_address_info));
+
+    if(!cpu->intel_pt_file) {
+        fprintf(stderr, "gzopen of %s failed.\n", filename);
+        exit(EXIT_FAILURE);
+    }
+
+    char copy[50];
+    while(1) {
+        if(gzgets(cpu->intel_pt_file, copy, 50) != 0) {
+            copy[strcspn(copy, "\n")] = 0;
+        } else {
+            printf("Incorrect read from gz file. Simulation probably finished...\n");
+            cpu->is_core_simulation_finished = true;
+            break;
+        }
+        if (strncmp(copy, "PIP", 3) == 0) {
+            pch_pip = strchr(copy, '=');
+            if((*++pch_pip - '0') == 1) {
+                stop_parsing_due_to_guest_in_nonroot_mode = false;
+            }
+        }
+        if (stop_parsing_due_to_guest_in_nonroot_mode) {
+            continue;
+        }
+        curr_lines_read += 1;
+
+        //pos = find_newline_and_copy(buffer, start, bytes_read, copy+remainder);
+        if (strncmp(copy, "PSBEND", 6) == 0) {
+            stop_parsing_due_to_heartbeat = false;
+            continue;
+        }
+        else if (strncmp(copy, "PSB", 3) == 0) {
+            stop_parsing_due_to_heartbeat = true;
+            continue;
+        }
+        /*
+	 * OVF packets masquerade as a VMEXIT situation
+	 * the PIP (NR=0) packet which indicates a VMEXIT
+	 * situation ends up being missing, possibly because
+	 * of overflow.
+	 */
+        else if (strncmp(copy, "OVF", 3) == 0) {
+            stop_parsing_due_to_guest_in_nonroot_mode = true;
+            continue;
+        }
+        if (!stop_parsing_due_to_heartbeat) {
+	    if (strncmp(copy, "TNT", 3) == 0) {
+                if(is_ignore_tip == 1) {
+	            is_ignore_tip = 0;
+	        }
+	        pch = strchr(copy, '(');
+	        prev_count = count;
+	        count += ((*++pch) - '0');
+	        cpu->tnt_array = realloc(cpu->tnt_array, count);
+                if (!cpu->tnt_array) {
+                    printf("Running out of memory while allocating TNT array\n");
+                    exit(EXIT_FAILURE);
+                }
+	        for(j=prev_count,k=0; j<count; j++, k++) {
+	            cpu->tnt_array[j]=copy[4+k];
+	        }
+            }
+            else if(strncmp(copy, "PIP", 3) == 0) {
+                pch_pip = strchr(copy, '=');
+	  /* VMEXIT */
+	        if((*++pch_pip - '0') == 0) {
+	    // the next PIP bit should be (NR = 1) - you need to ignore those PIP bits
+	    // only stray PIP (NR=1) packets should be considered and stored
+	    // these stray PIP packets indicate context switch events
+	            is_ignore_pip = 1;
+            // the FUP preceding this PIP will represent the source address for a VMEXIT
+                    cpu->fup_addresses[count_fup-1].type = 'V';
+                    stop_parsing_due_to_guest_in_nonroot_mode = true;
+	        }
+	    /* VMENTRY */
+                else {
+                    is_ignore_tip = 1;
+                    if(is_ignore_pip == 1) {
+                        is_ignore_pip = 0;
+                    }
+                }
+            }
+            else {
+                if(strncmp(copy, "TIP", 3) == 0) {
+	            if(is_ignore_tip == 0) {
+	                cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                        if (!cpu->tnt_array) {
+                            printf("Running out of memory while allocating TNT array\n");
+                            exit(EXIT_FAILURE);
+                        }
+	                cpu->tnt_array[count] = 'P';
+	                count++;
+	                // enter TIP addresses into global tip_address_array //
+	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+                        if (!cpu->tip_addresses) {
+                            printf("Running out of memory while storing TIP addresses\n");
+                            exit(EXIT_FAILURE);
+                        }
+	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                        if (!cpu->tip_addresses[count_tip].address) {
+                            printf("Running out of memory while storing address of TIP packet\n");
+                            exit(EXIT_FAILURE);
+                        }
+	                memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
+	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                cpu->tip_addresses[count_tip].is_useful=1;
+	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
+	                cpu->tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                count_tip++;
+	            }
+	            else {
+	                cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
+                        if (!cpu->tip_addresses) {
+                            printf("Running out of memory while stroing TIP addresses\n");
+                            exit(EXIT_FAILURE);
+                        }
+	                cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)*sizeof(char));
+                        if (!cpu->tip_addresses[count_tip].address) {
+                            printf("Running out of memory while storing address of TIP packet\n");
+                            exit(EXIT_FAILURE);
+                        }
+	                memcpy(cpu->tip_addresses[count_tip].address,copy+6,strlen(copy+6)-3);
+	                cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
+	                cpu->tip_addresses[count_tip].is_useful=0;
+	                cpu->tip_addresses[count_tip].ip_bytes=copy[strlen(copy)-2]-'0';
+	                count_tip++;
+                        //printf("count: %llu\n", count);
+	                is_ignore_tip=0;
+                    }
+	        }
+                else if(strncmp(copy, "FUP", 3) == 0) {
+                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    if (!cpu->tnt_array) {
+                        printf("Running out of memory while storing TNT packets\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    cpu->tnt_array[count] = 'F';
+                    count++;
+                    cpu->fup_addresses = realloc(cpu->fup_addresses, (count_fup+1)*sizeof(struct fup_address_info));
+                    if (!cpu->fup_addresses) {
+                        printf("Running out of memory while storing FUP addresses\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    cpu->fup_addresses[count_fup].address = malloc(strlen(copy+6)-3 * sizeof(char));
+                    if (!cpu->fup_addresses[count_fup].address) {
+                        printf("Running out of memory while storing address of FUP packet\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    memcpy(cpu->fup_addresses[count_fup].address, copy+6, strlen(copy+6)-3);
+                    cpu->fup_addresses[count_fup].address[strlen(copy+6)-3] = '\0';
+                    cpu->fup_addresses[count_fup].type = 'I';
+                    count_fup++;
+                }
+                else if (strncmp(copy, "MTC", 3) == 0) {
+                    /* store MTC values */
+                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                    if (!cpu->tnt_array) {
+                        printf("Running out of memory while storing TNT packets\n");
+                        exit(EXIT_FAILURE);
+                    }
+                    cpu->tnt_array[count] = 'M';
+                    count++;
+                }
+            }
+        } else {
+            if (strncmp(copy, "TSC", 3) == 0) {
+                cpu->tnt_array = realloc(cpu->tnt_array, count+1);
+                if (!cpu->tnt_array) {
+                    printf("Running out of memory while storing TSC packets in TNT array\n");
+                    exit(EXIT_FAILURE);
+                }
+                cpu->tnt_array[count] = 'S';
+                count++;
+            }
+        }
+        if (curr_lines_read >= max_lines_read) {
+            if (strncmp(copy, "TNT", 3) == 0) {
+                break;
+            }
+        }
+    }
+    cpu->tnt_index_limit = count;
+    cpu->number_of_lines_consumed += curr_lines_read;
+    printf("Number of lines consumed: %llu\n for cpu %d\n", cpu->number_of_lines_consumed, cpu->cpu_index);
+#if 0
+    printf("TNT array: %d\n", count);
+    printf("FUP array: %d\n", count_fup);
+    printf("TIP array: %d\n", count_tip);
+# endif
+   // preprocess the tip addresses //
+    preprocess_tip_array(cpu, count_tip);
+
+    cpu->last_tip_address = malloc(sizeof(cpu->tip_addresses[count_tip-1].address));
+    strcpy(cpu->last_tip_address, cpu->tip_addresses[count_tip-1].address);
+
+#if 0
+    printf("final count : %d\n", count);
+#endif
+}
+
 
 static int tcg_cpu_exec(CPUState *cpu)
 {
@@ -1412,18 +1908,6 @@ static int tcg_cpu_exec(CPUState *cpu)
 #ifdef CONFIG_PROFILER
     int64_t ti;
 #endif
-
-    /* create tnt_array here */
-    // static char *tnt_array = NULL;
-
-    if(tnt_array == NULL) {
-        get_array_of_tnt_bits();
-    }
-
-    if(!tnt_array) {
-      printf("get_array_of_tnt_bits returns NULL\n");
-    }
-
     assert(tcg_enabled());
 #ifdef CONFIG_PROFILER
     ti = profile_getclock();
@@ -1467,6 +1951,8 @@ static void deal_with_unplugged_cpus(void)
 static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
 {
     CPUState *cpu = arg;
+    struct iovec iov[VIRTQUEUE_MAX_SIZE];
+    hwaddr addr[VIRTQUEUE_MAX_SIZE];
 
     assert(tcg_enabled());
     rcu_register_thread();
@@ -1476,10 +1962,43 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
     qemu_thread_get_self(cpu->thread);
 
     cpu->thread_id = qemu_get_thread_id();
+
     cpu->created = true;
     cpu->can_do_io = 1;
     qemu_cond_signal(&qemu_cpu_cond);
     qemu_guest_random_seed_thread_part2(cpu->random_seed);
+
+    if (useful_precomputed_tsc_values == NULL) {
+        useful_precomputed_tsc_values = (unsigned long **)malloc(2 * sizeof(unsigned long *));
+        if (!useful_precomputed_tsc_values) {
+            printf("Could not allocate array for precomputed tsc values\n");
+            exit(EXIT_FAILURE);
+        }
+        useful_precomputed_tsc_values[0] = NULL;
+        useful_precomputed_tsc_values[1] = NULL;
+
+        precomputed_tsc_values_index = (unsigned long *)malloc(2 * sizeof(unsigned long));
+        if (!precomputed_tsc_values_index) {
+            printf("Could not allocate array for storing index into precomputed tsc values\n");
+            exit(EXIT_FAILURE);
+        }
+        precomputed_tsc_values_index[0] = 0;
+        precomputed_tsc_values_index[1] = 0;
+        // do it once, not tied to any cpu //
+        get_array_of_timing_values(0);
+        get_array_of_timing_values(1);
+    }
+
+    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] >
+            useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+        /* cpu0 is scheduled, cpu1 is stalled */
+        is_cpu0_stalled = true;
+        is_cpu1_stalled = false;
+    } else if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]] <=
+               useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+        is_cpu0_stalled = false;
+        is_cpu1_stalled = true;
+    }
 
     /* wait for initial kick-off after machine start */
     while (first_cpu->stopped) {
@@ -1491,8 +2010,8 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
             qemu_wait_io_event_common(cpu);
         }
     }
-
-    start_tcg_kick_timer();
+    if (arnab_replay_mode != REPLAY_MODE_PLAY)
+        start_tcg_kick_timer();
 
     cpu = first_cpu;
 
@@ -1504,12 +2023,14 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         replay_mutex_lock();
         qemu_mutex_lock_iothread();
         /* Account partial waits to QEMU_CLOCK_VIRTUAL.  */
-        qemu_account_warp_timer();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            qemu_account_warp_timer();
 
-        /* Run the timers here.  This is much more efficient than
-         * waking up the I/O thread and waiting for completion.
-         */
-        handle_icount_deadline();
+            /* Run the timers here.  This is much more efficient than
+             * waking up the I/O thread and waiting for completion.
+             */
+            handle_icount_deadline();
+	}
 
         replay_mutex_unlock();
 
@@ -1518,40 +2039,158 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         }
 
         while (cpu && !cpu->queued_work_first && !cpu->exit_request) {
-
-            atomic_mb_set(&tcg_current_rr_cpu, cpu);
-            current_cpu = cpu;
-
-            qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
-                              (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
-
-            if (cpu_can_run(cpu)) {
-                int r;
-
-                qemu_mutex_unlock_iothread();
-                prepare_icount_for_run(cpu);
-
-                r = tcg_cpu_exec(cpu);
-
-                process_icount_data(cpu);
-                qemu_mutex_lock_iothread();
-
-                if (r == EXCP_DEBUG) {
-                    cpu_handle_guest_debug(cpu);
-                    break;
-                } else if (r == EXCP_ATOMIC) {
-                    qemu_mutex_unlock_iothread();
-                    cpu_exec_step_atomic(cpu);
-                    qemu_mutex_lock_iothread();
-                    break;
-                }
-            } else if (cpu->stop) {
-                if (cpu->unplug) {
-                    cpu = CPU_NEXT(cpu);
-                }
-                break;
+            if (cpu->tnt_array == NULL) {
+                get_array_of_tnt_bits(cpu);
             }
 
+            if (!cpu->tnt_array) {
+                printf("get_array_of_tnt_bits returns NULL, for CPU index: %d\n",
+                           cpu->cpu_index);
+                exit(EXIT_FAILURE);
+            }
+            atomic_mb_set(&tcg_current_rr_cpu, cpu);
+            current_cpu = cpu;
+            if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
+                              (cpu->singlestep_enabled & SSTEP_NOTIMER) == 0);
+            }
+
+            if (cpu->tnt_array[cpu->index_array] == 'M' ||
+                   cpu->tnt_array[cpu->index_array] == 'S') {
+                if (cpu->cpu_index == 0) {
+                    printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
+                    printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
+                    if (useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0] + 1] >
+                         useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]) {
+                        is_cpu0_stalled = true;
+                        is_cpu1_stalled = false;
+                    }
+                    precomputed_tsc_values_index[0] += 1;
+                } else if (cpu->cpu_index == 1) {
+                    printf("CPU 1-> TSC: 0x%lx\n", useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1]]);
+                    printf("CPU 0-> TSC: 0x%lx\n", useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]);
+                    if (useful_precomputed_tsc_values[1][precomputed_tsc_values_index[1] + 1] >
+                         useful_precomputed_tsc_values[0][precomputed_tsc_values_index[0]]) {
+                        is_cpu0_stalled = false;
+                        is_cpu1_stalled = true;
+                    }
+                    precomputed_tsc_values_index[1] += 1;
+                }
+                cpu->index_array++;
+            } else {
+                if (cpu_can_run(cpu)) {
+                    int r;
+                    qemu_mutex_unlock_iothread();
+                    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                        prepare_icount_for_run(cpu);
+                    }
+
+                    if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                        while(true) {
+                            network_replay_done_at_init = true;
+                            ReplayIOEvent *event;
+                            event = g_malloc0(sizeof(ReplayIOEvent));
+                            event->event_kind = REPLAY_ASYNC_EVENT_NET;
+                            event->opaque = arnab_replay_event_net_load();
+                            if (!event->opaque) {
+                                g_free(event);
+                                break;
+                            }
+                            replay_event_net_run(event->opaque);
+                            g_free(event);
+                        }
+                    }
+
+                    if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
+                        disk_replay_done_at_init = true;
+                        unsigned int index;
+                        size_t len;
+                        size_t in_len;
+                        int i;
+                        while (true) {
+                            index = arnab_replay_get_qword("disk", -1); // disk replay is independent of cpu
+                            if (index == EVENT_BLK_INTERRUPT) {
+                                break;
+                            }
+                            VirtQueueElement *vqe;
+                            vqe = g_malloc(sizeof(VirtQueueElement));
+                            vqe->index = index;
+                            vqe->len = arnab_replay_get_qword("disk", -1);
+                            vqe->ndescs = arnab_replay_get_qword("disk", -1);
+                            vqe->out_num = arnab_replay_get_qword("disk", -1);
+                            vqe->in_num = arnab_replay_get_qword("disk", -1);
+                            in_len = arnab_replay_get_qword("disk", -1);
+                            vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
+                            vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
+                            vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
+                            vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
+                            for (i = 0; i < vqe->in_num; i++) {
+                                hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                                uint8_t *data;
+                                arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                                iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 1,
+                                            MEMTXATTRS_UNSPECIFIED);
+                                iov[i].iov_len = len;
+                                addr[i] = rep_addr;
+                                memcpy(iov[i].iov_base, data, len);
+                                vqe->in_sg[i] = iov[i];
+                                vqe->in_addr[i] = addr[i];
+                                g_free((void *)data);
+                            }
+                            for (i = 0; i < vqe->out_num; i++) {
+                                hwaddr rep_addr = arnab_replay_get_qword("disk", -1);
+                                uint8_t *data;
+                                arnab_replay_get_array_alloc(&data, &len, "disk", -1);
+                                iov[i].iov_base = address_space_map(
+                                            global_vdev->dma_as, rep_addr, &len, 0,
+                                            MEMTXATTRS_UNSPECIFIED);
+                                iov[i].iov_len = len;
+                                addr[i] = rep_addr;
+                                memcpy(iov[i].iov_base, data, len);
+                                vqe->out_sg[i] = iov[i];
+                                vqe->out_addr[i] = addr[i];
+                                g_free((void *)data);
+                            }
+                            virtqueue_increment_inuse(global_vdev);
+                            virtqueue_push_first_vq(global_vdev, vqe, in_len);
+                            g_free(vqe->in_sg);
+                            g_free(vqe->in_addr);
+                            g_free(vqe->out_sg);
+                            g_free(vqe->out_addr);
+                        }
+                    }
+                    r = tcg_cpu_exec(cpu);
+
+                    if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+                        process_icount_data(cpu);
+                    }
+                    qemu_mutex_lock_iothread();
+
+                    if (r == EXCP_DEBUG) {
+                        cpu_handle_guest_debug(cpu);
+                        break;
+                    } else if (r == EXCP_ATOMIC) {
+                        qemu_mutex_unlock_iothread();
+                        cpu_exec_step_atomic(cpu);
+                        qemu_mutex_lock_iothread();
+                        break;
+                    } else if (arnab_replay_mode == REPLAY_MODE_PLAY &&
+                            (r == EXCP_HALTED || r == EXCP_INTERRUPT)) {
+                        continue;
+                    }
+                } else if (cpu->stop) {
+                    if (cpu->unplug) {
+                        cpu = CPU_NEXT(cpu);
+                    }
+                    break;
+                }
+            }
+            /* do not swap CPUs if one of them is stalled */
+            if ((cpu->cpu_index == 1 && is_cpu0_stalled) ||
+                    (cpu->cpu_index == 0 && is_cpu1_stalled)) {
+                continue;
+            }
             cpu = CPU_NEXT(cpu);
         } /* while (cpu && !cpu->exit_request).. */
 
@@ -1561,15 +2200,15 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg)
         if (cpu && cpu->exit_request) {
             atomic_mb_set(&cpu->exit_request, 0);
         }
-
-        if (use_icount && all_cpu_threads_idle()) {
-            /*
-             * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
-             * in the main_loop, wake it up in order to start the warp timer.
-             */
-            qemu_notify_event();
+        if (arnab_replay_mode != REPLAY_MODE_PLAY) {
+            if (use_icount && all_cpu_threads_idle()) {
+                /*
+                 * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+                 * in the main_loop, wake it up in order to start the warp timer.
+                 */
+                qemu_notify_event();
+            }
         }
-
         qemu_tcg_rr_wait_io_event();
         deal_with_unplugged_cpus();
     }
@@ -1710,14 +2349,9 @@ static void CALLBACK dummy_apc_func(ULONG_PTR unused)
  * current CPUState for a given thread.
  */
 
-static bool network_replay_done_at_init = false;
-static bool disk_replay_done_at_init = false;
-
 static void *qemu_tcg_cpu_thread_fn(void *arg)
 {
     CPUState *cpu = arg;
-    struct iovec iov[VIRTQUEUE_MAX_SIZE];
-    hwaddr addr[VIRTQUEUE_MAX_SIZE];
 
     assert(tcg_enabled());
     g_assert(!use_icount);
@@ -1742,77 +2376,6 @@ static void *qemu_tcg_cpu_thread_fn(void *arg)
         if (cpu_can_run(cpu)) {
             int r;
             qemu_mutex_unlock_iothread();
-            if(!network_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                while(true) {
-                    network_replay_done_at_init = true;
-                    ReplayIOEvent *event;
-                    event = g_malloc0(sizeof(ReplayIOEvent));
-                    event->event_kind = REPLAY_ASYNC_EVENT_NET;
-                    event->opaque = arnab_replay_event_net_load();
-                    if (!event->opaque) {
-                        g_free(event);
-                        break;
-                    }
-                    replay_event_net_run(event->opaque);
-                    g_free(event);
-                }
-            }
-            if(!disk_replay_done_at_init && arnab_replay_mode == REPLAY_MODE_PLAY) {
-                disk_replay_done_at_init = true;
-                unsigned int index;
-                size_t len;
-                size_t in_len;
-                uint8_t *data;
-                int i;
-                while (true) {
-                    index = arnab_replay_get_qword("disk");
-                    if (index == EVENT_BLK_INTERRUPT) {
-                        break;
-                    }
-                    VirtQueueElement *vqe;
-                    vqe = g_malloc(sizeof(VirtQueueElement));
-                    vqe->index = index;
-                    vqe->len = arnab_replay_get_qword("disk");
-                    vqe->ndescs = arnab_replay_get_qword("disk");
-                    vqe->out_num = arnab_replay_get_qword("disk");
-                    vqe->in_num = arnab_replay_get_qword("disk");
-                    in_len = arnab_replay_get_qword("disk");
-                    vqe->in_sg = g_malloc(sizeof(struct iovec) * vqe->in_num);
-                    vqe->in_addr = g_malloc(sizeof(hwaddr) * vqe->in_num);
-                    vqe->out_sg = g_malloc(sizeof(struct iovec) * vqe->out_num);
-                    vqe->out_addr = g_malloc(sizeof(hwaddr) * vqe->out_num);
-                    for (i = 0; i < vqe->in_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
-                        iov[i].iov_base = address_space_map(
-                                            global_vdev->dma_as, rep_addr, &len, 1,
-                                            MEMTXATTRS_UNSPECIFIED);
-                        iov[i].iov_len = len;
-                        addr[i] = rep_addr;
-                        memcpy(iov[i].iov_base, data, len);
-                        vqe->in_sg[i] = iov[i];
-                        vqe->in_addr[i] = addr[i];
-                    }
-                    for (i = 0; i < vqe->out_num; i++) {
-                        hwaddr rep_addr = arnab_replay_get_qword("disk");
-                        arnab_replay_get_array_alloc(&data, &len, "disk");
-                        iov[i].iov_base = address_space_map(
-                                            global_vdev->dma_as, rep_addr, &len, 0,
-                                            MEMTXATTRS_UNSPECIFIED);
-                        iov[i].iov_len = len;
-                        addr[i] = rep_addr;
-                        memcpy(iov[i].iov_base, data, len);
-                        vqe->out_sg[i] = iov[i];
-                        vqe->out_addr[i] = addr[i];
-                    }
-                    virtqueue_increment_inuse(global_vdev);
-                    virtqueue_push_first_vq(global_vdev, vqe, in_len);
-                    g_free(vqe->in_sg);
-                    g_free(vqe->in_addr);
-                    g_free(vqe->out_sg);
-                    g_free(vqe->out_addr);
-                }
-            } 
             r = tcg_cpu_exec(cpu);
             qemu_mutex_lock_iothread();
             switch (r) {

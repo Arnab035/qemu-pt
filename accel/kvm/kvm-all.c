@@ -24,6 +24,7 @@
 #include "qemu/error-report.h"
 #include "qapi/error.h"
 #include "hw/pci/msi.h"
+#include "hw/i386/pc.h"
 #include "hw/pci/msix.h"
 #include "hw/s390x/adapter.h"
 #include "exec/gdbstub.h"
@@ -2149,17 +2150,13 @@ static void kvm_handle_rdtsc(CPUState *cs)
     //fprintf(stdout, "KVM handle rdtsc\n");
     uint64_t tsc_clock;
     uint32_t eax, edx;
-    if (start_recording) {
-        if (arnab_replay_mode == REPLAY_MODE_RECORD) {
-            kvm_cpu_synchronize_state(cs);
-            X86CPU *cpu = X86_CPU(cs);
-            CPUX86State *env = &cpu->env;
-            eax = (uint32_t)env->regs[R_EAX];
-            edx = (uint32_t)env->regs[R_EDX];
-            tsc_clock = (uint64_t) edx << 32 | eax;
-            arnab_replay_put_qword((int64_t)tsc_clock, "host-clock");
-        }
-    }
+    kvm_cpu_synchronize_state(cs);
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
+    eax = (uint32_t)env->regs[R_EAX];
+    edx = (uint32_t)env->regs[R_EDX];
+    tsc_clock = (uint64_t) edx << 32 | eax;
+    arnab_replay_put_qword((int64_t)tsc_clock, "host-clock", cs->cpu_index);
 }
 
 static int kvm_handle_internal_error(CPUState *cpu, struct kvm_run *run)
@@ -2322,6 +2319,22 @@ static void kvm_eat_signals(CPUState *cpu)
     } while (sigismember(&chkset, SIG_IPI));
 }
 
+
+static void kvm_handle_ipi(CPUState *cs)
+{
+    uint64_t tsc_clock;
+    uint32_t eax, edx;
+    kvm_cpu_synchronize_state(cs);
+    X86CPU *cpu = X86_CPU(cs);
+    CPUX86State *env = &cpu->env;
+    eax = env->regs[R_EAX];
+    edx = env->regs[R_EDX];
+    tsc_clock = (uint64_t) edx << 32 | eax;
+    qemu_mutex_lock(&timer_access_sequence_file_lock);
+    fprintf(timer_access_sequence_file,"TSC-VAL:%lx\n", tsc_clock);
+    qemu_mutex_unlock(&timer_access_sequence_file_lock);
+}
+
 int kvm_cpu_exec(CPUState *cpu)
 {
     struct kvm_run *run = cpu->kvm_run;
@@ -2420,9 +2433,25 @@ int kvm_cpu_exec(CPUState *cpu)
             ret = 0;
             break;
         case KVM_EXIT_RDTSC:
-            kvm_handle_rdtsc(cpu);
+            /*
+	     * write to timer access sequence file first
+	     * worry about the actual value later
+	     */
+            if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
+                qemu_mutex_lock(&timer_access_sequence_file_lock);
+                fprintf(timer_access_sequence_file, "TSC:%d\n", cpu->cpu_index);
+	        qemu_mutex_unlock(&timer_access_sequence_file_lock);
+                kvm_handle_rdtsc(cpu);
+            }
             ret = 0;
             break;
+        case KVM_EXIT_IPI:
+            if (start_recording && arnab_replay_mode == REPLAY_MODE_RECORD) {
+                qemu_mutex_lock(&timer_access_sequence_file_lock);
+                fprintf(timer_access_sequence_file, "IPI-SRC:%d\n", cpu->cpu_index);
+                qemu_mutex_unlock(&timer_access_sequence_file_lock);
+                kvm_handle_ipi(cpu);
+            }
         case KVM_EXIT_IRQ_WINDOW_OPEN:
             DPRINTF("irq_window_open\n");
             ret = EXCP_INTERRUPT;

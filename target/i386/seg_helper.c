@@ -20,6 +20,7 @@
 
 
 #include "qemu/osdep.h"
+#include "hw/i386/pc.h"
 #include "cpu.h"
 #include "qemu/log.h"
 #include "exec/helper-proto.h"
@@ -856,37 +857,39 @@ static inline target_ulong get_rsp_from_tss(CPUX86State *env, int level)
 }
 
 
-/*  convert a string address to an unsigned long integer
+/*
+ *  convert a string address to an unsigned long integer
  *  address
  */
 
 unsigned long do_strtoul(char *address) {
-  char *full_address = malloc(17 * sizeof(char));
-  int i;
-  unsigned long address_in_int;
-  if(strncmp(address, "ffff", 4)==0) {
-    for(i=0;i<=3;i++) {
-      full_address[i]='f';
+    char *full_address = malloc(17 * sizeof(char));
+    int i;
+    unsigned long address_in_int;
+    /*
+     * sometimes the addresses in kernel space are shortened (for e.g.
+     *     like this : 0xffff80000000)
+     * this if condition is to ensure that
+     * we still compute the correct address when that happens
+     */
+    if(strncmp(address, "ffff", 4)==0 &&
+		strncmp(address+4, "ffff", 4) != 0) {
+        for(i=0;i<=3;i++) {
+            full_address[i]='f';
+        }
+        for(i=4;i<=15;i++) {
+            full_address[i] = address[i-4];
+        }
+        full_address[i]='\0';
     }
-    for(i=4;i<=15;i++) {
-      full_address[i] = address[i-4];
+    else {
+        for(i=0;i<=15;i++)
+            full_address[i]=address[i];
     }
-    full_address[i]='\0';
-  }
-  else {
-    for(i=0;i<=15;i++) {
-      if(address[i] == '\0') {
-        break;
-      }
-      full_address[i]=address[i];
-      
-    }
-    full_address[i]='\0';
-  }
-  //printf("full_address : %s\n", full_address);
-  address_in_int = strtoul(full_address, NULL, 16);
-  free(full_address);
-  return address_in_int;
+    //printf("full_address : %s\n", full_address);
+    address_in_int = strtoul(full_address, NULL, 16);
+    free(full_address);
+    return address_in_int;
 }
 
 
@@ -901,30 +904,32 @@ static void do_interrupt64(CPUX86State *env, int intno, int is_int,
     uint64_t last_pc_of_tb = first_pc_of_tb + size_of_tb;
     target_ulong old_eip, esp, offset;
     int number_of_fups = 0;
-    if (intno == 81 || intno == 113 || intno == 239) {
-        if (index_array_incremented) index_array--;
+    CPUState *cpu = env_cpu(env);
+    if (intno == 81 || intno == 161 || intno == 48 || intno == 239
+		    || intno == 253 || intno == 251) {
+        if (cpu->index_array_incremented) cpu->index_array--;
     }
     if (intno == 14) {
         assert(error_code != 0 || is_upcoming_page_fault);
-        if (index_array_incremented) {
+        if (cpu->index_array_incremented) {
             if (env->eip >= first_pc_of_tb && env->eip <= last_pc_of_tb) // only if interrupt happens 'before' an instruction that falls within a TB.
-                index_array--;
+                cpu->index_array--;
         }
-        if (index_tip_address_incremented && error_code == 0) {
-            index_tip_address--;
+        if (cpu->index_tip_address_incremented && error_code == 0) {
+            cpu->index_tip_address--;
         }
         if (!is_upcoming_page_fault) {
-            index_tip_address++;
-            index_fup_address++;
+            cpu->index_tip_address++;
+            cpu->index_fup_address++;
             /* ugly hack */
-            while(tnt_array[index_array] != 'T' && tnt_array[index_array] != 'N') {
-                if (tnt_array[index_array] == 'F') {
+            while(cpu->tnt_array[cpu->index_array] != 'T' && cpu->tnt_array[cpu->index_array] != 'N') {
+                if (cpu->tnt_array[cpu->index_array] == 'F') {
                     number_of_fups++;
                 }
-                index_array++;
+                cpu->index_array++;
             }
-            index_tip_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
-            index_fup_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
+            cpu->index_tip_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
+            cpu->index_fup_address += (number_of_fups == 0) ? 0 : number_of_fups - 1;
         }
         is_upcoming_page_fault = 0;
     }
@@ -2411,6 +2416,24 @@ void helper_iret_protected(CPUX86State *env, int shift, int next_eip)
 {
     int tss_selector, type;
     uint32_t e1, e2;
+
+    if (cpuid_doing_ipi == 0) {
+        /* this means cpu 0 is executing
+	 * we will stop its execution now, since
+	 * the return from interrupt happened.
+	 * We go back to executing CPU 1 */
+        if (timer_cpuid_sequence_array[timer_index_array] != '0') {
+            is_cpu0_stalled = true;
+            is_cpu1_stalled = false;
+            cpuid_doing_ipi = 255;
+        }
+    } else if (cpuid_doing_ipi == 1) {
+        if (timer_cpuid_sequence_array[timer_index_array] != '1') {
+            is_cpu0_stalled = false;
+            is_cpu1_stalled = true;
+            cpuid_doing_ipi = 255;
+        }
+    }
 
     /* specific case for TSS */
     if (env->eflags & NT_MASK) {

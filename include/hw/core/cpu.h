@@ -20,6 +20,7 @@
 #ifndef QEMU_CPU_H
 #define QEMU_CPU_H
 
+#include <zlib.h>
 #include "hw/qdev-core.h"
 #include "disas/dis-asm.h"
 #include "exec/hwaddr.h"
@@ -383,6 +384,28 @@ struct CPUState {
     AddressSpace *as;
     MemoryRegion *memory;
 
+    /* start of intel pt specific data */
+    char *tnt_array;
+    struct tip_address_info *tip_addresses;
+    struct fup_address_info *fup_addresses;
+    gzFile intel_pt_file;
+
+    int divergence_count;
+    char *last_tip_address;
+    int tnt_index_limit;
+    int index_tip_address;
+    int index_fup_address;
+    int index_array;
+    int prev_index_tip_address;
+    int prev_index_fup_address;
+    int prev_index_array;
+    bool is_core_simulation_finished;
+    unsigned long long total_packets_consumed;
+    unsigned long long number_of_lines_consumed;
+    int index_array_incremented;
+    int index_tip_address_incremented;
+    /* end of intel pt specific data */
+
     void *env_ptr; /* CPUArchState */
     IcountDecr *icount_decr_ptr;
 
@@ -463,6 +486,9 @@ static inline void cpu_tb_jmp_cache_clear(CPUState *cpu)
         atomic_set(&cpu->tb_jmp_cache[i], NULL);
     }
 }
+
+extern bool is_cpu0_stalled;
+extern bool is_cpu1_stalled;
 
 /**
  * qemu_tcg_mttcg_enabled:
