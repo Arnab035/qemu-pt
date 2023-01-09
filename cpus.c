@@ -1671,13 +1671,11 @@ void get_array_of_tnt_bits(CPUState *cpu) {
     char *pch;
     char *pch_pip;
     bool stop_parsing_due_to_heartbeat = false;
-    bool stop_parsing_due_to_overflow = false;
     bool stop_parsing_due_to_guest_in_nonroot_mode = true;
     //int len;
 
     int is_ignore_tip = 0;
     int is_ignore_pip = 0;
-    int count_fup_after_ovf = 0;
     unsigned long long k, prev_count;
     unsigned long long j;
     int max_lines_read = 3000000, curr_lines_read = 0;
@@ -1738,45 +1736,14 @@ void get_array_of_tnt_bits(CPUState *cpu) {
             stop_parsing_due_to_heartbeat = true;
             continue;
         }
+        /*
+	 * OVF packets masquerade as a VMEXIT situation
+	 * the PIP (NR=0) packet which indicates a VMEXIT
+	 * situation ends up being missing, possibly because
+	 * of overflow.
+	 */
         else if (strncmp(copy, "OVF", 3) == 0) {
-            stop_parsing_due_to_overflow = true;
-            continue;
-        }
-        if (stop_parsing_due_to_overflow) {
-            if (strncmp(copy, "FUP", 3) == 0) {
-                if (strncmp(copy+6, "ffffc", 5) == 0) {
-                    count_fup_after_ovf += 1;
-                    if (stop_parsing_due_to_heartbeat) {
-                        stop_parsing_due_to_heartbeat = false;
-                    }
-                } else {
-                    /* this is a useful TIP, not FUP packet */
-                    cpu->tnt_array = realloc(cpu->tnt_array, count+1);
-                    if (!cpu->tnt_array) {
-                        printf("Running out of memory while allocating TNT array\n");
-                        exit(EXIT_FAILURE);
-                    }
-                    cpu->tnt_array[count] = 'P';
-                    count++;
-                    cpu->tip_addresses = realloc(cpu->tip_addresses, (count_tip+1)*sizeof(struct tip_address_info));
-                    cpu->tip_addresses[count_tip].address = malloc(strlen(copy+6)-3 * sizeof(char));
-                    if (!cpu->tip_addresses[count_tip].address) {
-                        printf("Running out of memory. We allocated %d packets\n", count_tip);
-                        exit(EXIT_FAILURE);
-                    }
-                    memcpy(cpu->tip_addresses[count_tip].address, copy+6, strlen(copy+6)-3);
-                    cpu->tip_addresses[count_tip].address[strlen(copy+6)-3] = '\0';
-                    cpu->tip_addresses[count_tip].is_useful=1;
-	                /* ip bytes appear in the trace as "TIP 0x40184c 6d" here 6 is the IP Bytes */
-                    cpu->tip_addresses[count_tip].ip_bytes=6;
-                    count_tip++;
-                    stop_parsing_due_to_overflow = false;
-                }
-            }
-            if (count_fup_after_ovf == 2) {
-                count_fup_after_ovf = 0;
-                stop_parsing_due_to_overflow = false;
-            }
+            stop_parsing_due_to_guest_in_nonroot_mode = true;
             continue;
         }
         if (!stop_parsing_due_to_heartbeat) {
