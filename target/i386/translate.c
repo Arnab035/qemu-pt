@@ -4632,11 +4632,12 @@ static target_ulong disas_insn(DisasContext *s, TranslationBlock *tb, CPUState *
             while (cpu->tnt_array[cpu->index_array] == 'M' ||
                    cpu->tnt_array[cpu->index_array] == 'S') {
                 cpu->index_array += 1;
+                precomputed_tsc_values_index[cpu->cpu_index] += 1;
             }
             cpu->index_array += 1;
             cpu->index_tip_address++;
             cpu->index_fup_address++;
-            if (intno == 161) {
+            if (intno == 37) {
                 /* network interrupt */
                 while (!stopped_execution_of_tb_chain) {
                     ReplayIOEvent *event;
